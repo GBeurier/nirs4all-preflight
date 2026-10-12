@@ -9,14 +9,14 @@
       "bytes": 2709375
     },
     {
-      "filename": ".gitignore",
-      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
-      "bytes": 1
-    },
-    {
       "filename": "nirs4all_preflight-0.1.0a1-py3-none-linux_x86_64.whl",
       "sha256": "3f7488280941c97da899c7e7c49f83aaab8b1542a5ffae453a523b04142d3eb7",
       "bytes": 2262776
+    },
+    {
+      "filename": "nirs4all-preflight-0.1.0-alpha.2.tgz",
+      "sha256": "608771f939f178469df127126049cfd30c9ef5e41f2e46bc4fc20f45fa50e9cc",
+      "bytes": 227729
     }
   ],
   "upstream_commits": {
