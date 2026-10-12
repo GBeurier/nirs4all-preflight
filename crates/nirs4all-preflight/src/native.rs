@@ -1,0 +1,404 @@
+//! Thin adapter to the public Methods ABI. No scientific kernels live here.
+use crate::*;
+use libloading::Library;
+use std::ffi::{c_char, c_void, CStr};
+use std::marker::PhantomData;
+use std::path::Path;
+use std::rc::Rc;
+
+#[repr(C)]
+struct MatrixView {
+    data: *mut c_void,
+    rows: i64,
+    cols: i64,
+    row_stride: i64,
+    col_stride: i64,
+    dtype: i32,
+    reserved: i32,
+}
+impl MatrixView {
+    fn new(data: &mut [f64], rows: usize, cols: usize) -> Self {
+        Self {
+            data: data.as_mut_ptr().cast(),
+            rows: rows as i64,
+            cols: cols as i64,
+            row_stride: cols as i64,
+            col_stride: 1,
+            dtype: 1,
+            reserved: 0,
+        }
+    }
+}
+type Create = unsafe extern "C" fn(*mut *mut c_void) -> i32;
+type Destroy = unsafe extern "C" fn(*mut c_void);
+type LastError = unsafe extern "C" fn(*const c_void) -> *const c_char;
+type Pca = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    i32,
+    *const MatrixView,
+    *const MatrixView,
+    *mut f64,
+    *mut f64,
+) -> i32;
+type Repeats = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    *const u8,
+    *mut f64,
+    *mut f64,
+    *mut i64,
+    *mut i32,
+) -> i32;
+type Summary = unsafe extern "C" fn(*mut c_void, *const f64, *const u8, i64, *mut f64) -> i32;
+type LocalContrast = unsafe extern "C" fn(
+    *mut c_void,
+    *const f64,
+    *const i64,
+    *const i64,
+    i64,
+    i32,
+    i32,
+    *mut f64,
+) -> i32;
+type Knn = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const MatrixView,
+    *const i64,
+    *const i64,
+    i32,
+    *mut i64,
+    *mut f64,
+) -> i32;
+
+/// Each provider owns one context, and stays on its creating thread.
+pub struct NativeMethodsProvider {
+    _library: Library,
+    context: *mut c_void,
+    destroy: Destroy,
+    last_error: LastError,
+    pca_fn: Pca,
+    repeats_fn: Repeats,
+    summary_fn: Summary,
+    knn_fn: Knn,
+    local_fn: LocalContrast,
+    version: String,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+impl NativeMethodsProvider {
+    /// Load only an explicitly selected Methods library; no checkout search.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ProviderError> {
+        // SAFETY: all symbols are checked before context creation; Library stays
+        // alive longer than its function pointers and the owned context.
+        unsafe {
+            let library = Library::new(path.as_ref())
+                .map_err(|_| ProviderError("METHODS_LIBRARY_LOAD_FAILED".into()))?;
+            let compat = *library
+                .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
+                .map_err(err)?;
+            if compat(2, 18) != 0 {
+                return Err(ProviderError("METHODS_ABI_2_18_REQUIRED".into()));
+            }
+            let create = *library
+                .get::<Create>(b"n4m_context_create\0")
+                .map_err(err)?;
+            let destroy = *library
+                .get::<Destroy>(b"n4m_context_destroy\0")
+                .map_err(err)?;
+            let last_error = *library
+                .get::<LastError>(b"n4m_context_last_error\0")
+                .map_err(err)?;
+            let pca_fn = *library
+                .get::<Pca>(b"n4m_preflight_pca_compute\0")
+                .map_err(err)?;
+            let repeats_fn = *library
+                .get::<Repeats>(b"n4m_preflight_repeatability_compute\0")
+                .map_err(err)?;
+            let summary_fn = *library
+                .get::<Summary>(b"n4m_preflight_summary_compute\0")
+                .map_err(err)?;
+            let knn_fn = *library
+                .get::<Knn>(b"n4m_preflight_nearest_neighbors\0")
+                .map_err(err)?;
+            let local_fn = *library
+                .get::<LocalContrast>(b"n4m_preflight_local_contrast\0")
+                .map_err(err)?;
+            let get_version = *library
+                .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
+                .map_err(err)?;
+            let ptr = get_version();
+            let version = if ptr.is_null() {
+                "unknown".into()
+            } else {
+                CStr::from_ptr(ptr).to_string_lossy().into_owned()
+            };
+            let mut context = std::ptr::null_mut();
+            if create(&mut context) != 0 || context.is_null() {
+                return Err(ProviderError("METHODS_CONTEXT_CREATE_FAILED".into()));
+            }
+            Ok(Self {
+                _library: library,
+                context,
+                destroy,
+                last_error,
+                pca_fn,
+                repeats_fn,
+                summary_fn,
+                knn_fn,
+                local_fn,
+                version,
+                _thread_bound: PhantomData,
+            })
+        }
+    }
+    fn check(&self, status: i32) -> Result<(), ProviderError> {
+        if status == 0 {
+            return Ok(());
+        }
+        // SAFETY: live provider context; error string copied before next call.
+        let _message = unsafe {
+            let p = (self.last_error)(self.context);
+            if p.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        Err(ProviderError(format!("METHODS_STATUS_{status}")))
+    }
+}
+fn err(_e: libloading::Error) -> ProviderError {
+    ProviderError("METHODS_LIBRARY_LOAD_FAILED".into())
+}
+fn flatten(matrix: &[Vec<f64>]) -> Result<(Vec<f64>, usize, usize), ProviderError> {
+    let n = matrix.len();
+    let p = matrix.first().map_or(0, Vec::len);
+    if n == 0
+        || p == 0
+        || matrix
+            .iter()
+            .any(|row| row.len() != p || row.iter().any(|v| !v.is_finite()))
+    {
+        return Err(ProviderError("INVALID_PROVIDER_MATRIX".into()));
+    }
+    if n.checked_mul(p).is_none_or(|cells| cells > 10_000_000) {
+        return Err(ProviderError("PROVIDER_MEMORY_BUDGET_EXCEEDED".into()));
+    }
+    Ok((matrix.iter().flatten().copied().collect(), n, p))
+}
+impl Drop for NativeMethodsProvider {
+    fn drop(&mut self) {
+        unsafe {
+            (self.destroy)(self.context);
+        }
+    }
+}
+impl MethodsProvider for NativeMethodsProvider {
+    fn capabilities(&self) -> Vec<Capability> {
+        [
+            "methods.pca",
+            "methods.repeatability",
+            "methods.summary",
+            "methods.nearest_neighbors",
+            "methods.local_contrast",
+        ]
+        .iter()
+        .map(|id| Capability {
+            capability_id: (*id).into(),
+            available: true,
+            qualified: false,
+            reason: Some(format!("Methods {} ABI 2.18; alpha protocol", self.version)),
+        })
+        .collect()
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        let k = r.n_components;
+        if k == 0 || k > n.min(p) || k > i32::MAX as usize {
+            return Err(ProviderError("INVALID_PCA_COMPONENTS".into()));
+        }
+        let mut scores = vec![0.; n * k];
+        let mut loadings = vec![0.; k * p];
+        let mut eigenvalues = vec![0.; k];
+        let mut full_moments = [0.; 2];
+        let xv = MatrixView::new(&mut x, n, p);
+        let sv = MatrixView::new(&mut scores, n, k);
+        let lv = MatrixView::new(&mut loadings, k, p);
+        // SAFETY: all views/outputs have verified dimensions and owned buffers.
+        self.check(unsafe {
+            (self.pca_fn)(
+                self.context,
+                &xv,
+                k as i32,
+                &sv,
+                &lv,
+                eigenvalues.as_mut_ptr(),
+                full_moments.as_mut_ptr(),
+            )
+        })?;
+        Ok(PcaDiagnostics {
+            eigenvalues,
+            scores: scores.chunks(k).map(<[f64]>::to_vec).collect(),
+            full_moments,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn repeatability(
+        &self,
+        r: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        if r.group_ids.len() != n
+            || r.valid_mask.len() != n
+            || r.valid_mask.iter().any(|row| row.len() != p)
+        {
+            return Err(ProviderError("INVALID_REPEATABILITY_SHAPE".into()));
+        }
+        let mask: Vec<u8> = r
+            .valid_mask
+            .iter()
+            .flatten()
+            .map(|v| u8::from(*v))
+            .collect();
+        let mut sd = vec![f64::NAN; p];
+        let mut icc = vec![f64::NAN; p];
+        let mut counts = vec![0i64; p];
+        let mut status = vec![0; p];
+        let xv = MatrixView::new(&mut x, n, p);
+        self.check(unsafe {
+            (self.repeats_fn)(
+                self.context,
+                &xv,
+                r.group_ids.as_ptr(),
+                mask.as_ptr(),
+                sd.as_mut_ptr(),
+                icc.as_mut_ptr(),
+                counts.as_mut_ptr(),
+                status.as_mut_ptr(),
+            )
+        })?;
+        Ok(RepeatabilityDiagnostics {
+            pooled_sd: sd.into_iter().map(|v| v.is_finite().then_some(v)).collect(),
+            icc: icc
+                .into_iter()
+                .map(|v| v.is_finite().then_some(v))
+                .collect(),
+            n_complete_groups: counts.into_iter().map(|v| v.max(0) as usize).collect(),
+            band_status: status,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn summary(&self, r: &SummaryRequest) -> Result<SummaryDiagnostics, ProviderError> {
+        if r.values.is_empty()
+            || r.values.len() > 10_000_000
+            || r.values.iter().any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("INVALID_SUMMARY_VALUES".into()));
+        }
+        let mut out = [0.; 8];
+        self.check(unsafe {
+            (self.summary_fn)(
+                self.context,
+                r.values.as_ptr(),
+                std::ptr::null(),
+                r.values.len() as i64,
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(SummaryDiagnostics {
+            count: out[0] as usize,
+            min: out[1],
+            max: out[2],
+            mean: out[3],
+            sample_sd: out[4].is_finite().then_some(out[4]),
+            q25: out[5],
+            median: out[6],
+            q75: out[7],
+            backend_version: self.version.clone(),
+        })
+    }
+    fn nearest_neighbors(
+        &self,
+        r: &NearestNeighborsRequest,
+    ) -> Result<NearestNeighborsDiagnostics, ProviderError> {
+        let (mut query, n, p) = flatten(&r.query)?;
+        let (mut reference, nr, pr) = flatten(&r.reference)?;
+        let k = r.k;
+        if pr != p
+            || r.query_group_ids.len() != n
+            || r.reference_group_ids.len() != nr
+            || k == 0
+            || k > 100
+            || n.checked_mul(nr)
+                .and_then(|v| v.checked_mul(p))
+                .is_none_or(|v| v > 250_000_000)
+        {
+            return Err(ProviderError("KNN_SHAPE_OR_WORK_BUDGET_EXCEEDED".into()));
+        }
+        let qv = MatrixView::new(&mut query, n, p);
+        let rv = MatrixView::new(&mut reference, nr, p);
+        let mut indices = vec![-1i64; n * k];
+        let mut distances = vec![f64::NAN; n * k];
+        self.check(unsafe {
+            (self.knn_fn)(
+                self.context,
+                &qv,
+                &rv,
+                r.query_group_ids.as_ptr(),
+                r.reference_group_ids.as_ptr(),
+                k as i32,
+                indices.as_mut_ptr(),
+                distances.as_mut_ptr(),
+            )
+        })?;
+        Ok(NearestNeighborsDiagnostics {
+            indices: indices.chunks(k).map(<[i64]>::to_vec).collect(),
+            distances: distances
+                .chunks(k)
+                .map(|row| row.iter().map(|v| v.is_finite().then_some(*v)).collect())
+                .collect(),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn local_contrast(
+        &self,
+        r: &LocalContrastRequest,
+    ) -> Result<LocalContrastDiagnostics, ProviderError> {
+        let n = r.targets.len();
+        let k = r.neighbor_indices.first().map_or(0, Vec::len);
+        if n == 0
+            || k == 0
+            || k > 100
+            || r.group_ids.len() != n
+            || r.neighbor_indices.len() != n
+            || r.neighbor_indices.iter().any(|row| row.len() != k)
+            || n.checked_mul(n).is_none_or(|v| v > 250_000_000)
+            || r.targets.iter().any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("LOCAL_CONTRAST_SHAPE_OR_WORK_BUDGET".into()));
+        }
+        let indices: Vec<i64> = r.neighbor_indices.iter().flatten().copied().collect();
+        let mut out = [f64::NAN; 4];
+        self.check(unsafe {
+            (self.local_fn)(
+                self.context,
+                r.targets.as_ptr(),
+                indices.as_ptr(),
+                r.group_ids.as_ptr(),
+                n as i64,
+                k as i32,
+                i32::from(r.categorical),
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(LocalContrastDiagnostics {
+            contrast: out[0].is_finite().then_some(out[0]),
+            fraction_rows_with_neighbors: out[1],
+            observed_same_class_fraction: out[2].is_finite().then_some(out[2]),
+            expected_same_class_fraction: out[3].is_finite().then_some(out[3]),
+            backend_version: self.version.clone(),
+        })
+    }
+}

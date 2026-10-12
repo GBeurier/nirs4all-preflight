@@ -1,0 +1,11 @@
+{
+  "reviewed_files": {
+    "docs/SPECIFICATION.md": "a91ce5bb60317777a17794b22b13173d7ec67a65df88b823995863e23c2c4806",
+    "docs/ROADMAP.md": "6239780864b50ba29691741a2918adfd7c0896d134bf207782874d7597e1069d",
+    "docs/AUDIT_ECOSYSTEME.md": "26985424559b7488e8e48106649a5facfb8186413a37994497b7b58d8c810718",
+    "docs/reviews/review_opus_source.md": "d26c77e8b2ff51ef525c3391b222f7261c6d3dd14448cf29751c839ce17187e1"
+  },
+  "review_requested": "claude-opus-5-5 via opus alias",
+  "draft_version": "0.1",
+  "created": "2026-10-12"
+}

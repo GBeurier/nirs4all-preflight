@@ -1,0 +1,11 @@
+{
+  "model": [
+    "claude-opus-5-5"
+  ],
+  "is_error": false,
+  "duration_ms": 158088,
+  "word_count": 1677,
+  "review_file": "review_opus_spec.md",
+  "repo_tools_available": false,
+  "scope": "document-only; attempted Bash invocations in stream were text, not executed tools"
+}

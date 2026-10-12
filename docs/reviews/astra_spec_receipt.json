@@ -1,0 +1,7 @@
+{
+  "model": "gpt-6-astra",
+  "scope": "independent document review of SPECIFICATION.md v0.1 and ROADMAP.md",
+  "review_file": "review_astra_spec.md",
+  "word_count": 1114,
+  "created": "2026-10-12"
+}

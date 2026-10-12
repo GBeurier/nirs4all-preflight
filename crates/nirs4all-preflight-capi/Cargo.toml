@@ -1,0 +1,15 @@
+[package]
+name = "nirs4all-preflight-capi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Versioned C ABI for nirs4all dataset qualification"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+nirs4all-preflight = { path = "../nirs4all-preflight", version = "=0.1.0-alpha.1" }
+serde_json = "1"

@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-12",
+  "source_sha256": "7670941ce51943f37a8b92b7c1df16ca3b67b5b4970f1a96d41555853db77d1c",
+  "source_unchanged": true,
+  "local_links_valid": true,
+  "review_order": "Codex + Opus source, then spec/roadmap, then independent Astra + Opus, then integrated corrections",
+  "runtime_tests_run": false,
+  "pdf_tables_and_summary_visually_checked": true,
+  "validation": {
+    "docs/SYNTHESE.pdf": {
+      "pages": 2,
+      "limit": 2,
+      "text_chars": 4714,
+      "no_page_edge_clipping": true,
+      "sha256": "fc109f8a3dee87e3f6b88113d7d8f1a363944baddd5abaecf1aa4883c2f7fdc5"
+    },
+    "docs/nirs4all_preflight_specification_roadmap.pdf": {
+      "pages": 26,
+      "limit": null,
+      "text_chars": 88472,
+      "no_page_edge_clipping": true,
+      "sha256": "0627e371596825c5663a8c7ae40a7fd1b1e330287b8659d39996f5ec6ea35e51"
+    },
+    "docs/reviews/review_astra_spec.pdf": {
+      "pages": 2,
+      "limit": 4,
+      "text_chars": 7825,
+      "no_page_edge_clipping": true,
+      "sha256": "e64f00dfb02a10f79b6e8ed5182643b42e49042876bcbec018981bf2750ec814"
+    },
+    "docs/reviews/review_codex_source.pdf": {
+      "pages": 1,
+      "limit": null,
+      "text_chars": 4609,
+      "no_page_edge_clipping": true,
+      "sha256": "9e3e5acbb08c9016d6ff3e74e3a77e7e7baf9ef6fa90459da1b1a97dd17a6a9b"
+    },
+    "docs/reviews/review_opus_source.pdf": {
+      "pages": 2,
+      "limit": 2,
+      "text_chars": 6226,
+      "no_page_edge_clipping": true,
+      "sha256": "8d2deae508288b82670923681ed1b5b7c94513b936b704803d8789aea8d6de40"
+    },
+    "docs/reviews/review_opus_spec.pdf": {
+      "pages": 3,
+      "limit": 4,
+      "text_chars": 10316,
+      "no_page_edge_clipping": true,
+      "sha256": "850a6dd6aa883cdbb420a9ecc29cb3a59847f0ce3542891a6acc6d17bc2b1338"
+    },
+    "docx": {
+      "tables": 17,
+      "explicit_table_grids": true,
+      "sha256": "e6f901706013b8f9116408eb265f10943a561063d23f87f5dae201f8936bdafe"
+    }
+  }
+}

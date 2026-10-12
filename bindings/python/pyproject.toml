@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nirs4all-preflight"
+version = "0.1.0a1"
+description = "Portable NIRS dataset qualification with Rust protocols and Methods diagnostics"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "CECILL-2.1 OR AGPL-3.0-or-later"
+license-files = ["LICENSE", "LICENSES/*"]
+authors = [{ name = "nirs4all contributors" }]
+classifiers = ["Development Status :: 3 - Alpha", "Topic :: Scientific/Engineering", "Programming Language :: Python :: 3"]
+
+[project.urls]
+Repository = "https://github.com/GBeurier/nirs4all-preflight"
+Demo = "https://gbeurier.github.io/nirs4all-preflight/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nirs4all_preflight = ["py.typed", "_native/*"]

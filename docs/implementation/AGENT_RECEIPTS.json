@@ -1,0 +1,21 @@
+{
+  "sonnet-ui": {
+    "session_id": "1bce15f7-2e65-4fcf-8b14-9690f71ecb4d",
+    "is_error": false,
+    "duration_ms": 363496,
+    "num_turns": 24
+  },
+  "opus-review": {
+    "session_id": "26e8bed2-53a7-4863-ab7a-315e9bcb3cc5",
+    "is_error": false,
+    "duration_ms": 816543,
+    "num_turns": 89
+  },
+  "models": {
+    "backend_methods": "gpt-6-sol medium",
+    "engine": "gpt-6-sol medium",
+    "frontend_author": "claude-sonnet-5-5 medium",
+    "implementation_review": "claude-opus-5-5 high"
+  },
+  "scope": "Executed code review and tests; source model labels recorded by agent launch and CLI transcript metadata."
+}

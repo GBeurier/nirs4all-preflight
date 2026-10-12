@@ -1,0 +1,16 @@
+# Methods reuse audit for Preflight
+
+Methods was inspected through the repository CodeGraph index before code changes. The authoritative source is the Methods C ABI and native tests.
+
+| Need | Existing implementation | Finding / action |
+| --- | --- | --- |
+| PCA | `cpp/src/core/common/pca_helper.{h,c}` uses the shared SVD in `svd.c`, returns centered training scores, component loadings and `S²/(n−1)` eigenvalues | Internal only. `n4m_preflight_pca_compute` exposes caller-owned outputs through the public C ABI, accepting strided f64 views. No new eigensolver. |
+| Full PCA variance moments | PCA helper returns only retained components when truncated | New wrapper computes trace(C) and trace(C²) exactly from the centered data using the smaller of XcXcᵀ and XcᵀXc, without allocating the Gram matrix. It rejects over 250 million products. D_eff must not be computed from the retained eigenvalues alone. |
+| Repeatability / ICC | No public pooled per-feature technical-repeat diagnostic or balanced ICC(1,1) | New C ABI takes sample/group IDs and optional per-cell validity mask. It pools within-group SS/df across repeated groups, reports unbalanced ICC as unavailable, and preserves negative balanced ANOVA estimates. |
+| Summary / quantiles | Regression metrics include RPIQ-related internal quantile work but no generic finite-value public summary with masks | New summary returns count, min/max, mean, sample SD and type-7 quartiles. |
+| Neighbors | Splitters and outlier methods have specific distance use, but no generic public group-excluding nearest-neighbor output | New brute-force Euclidean operation returns sorted indices/distances and unavailable slots, without allocating an n×n distance matrix. |
+| Local target contrast | No reusable public metric over a supplied independent-neighbor graph | New C ABI returns continuous `1−roughness/(2s²)` or categorical observed-versus-admissible expected coherence, with equal focal-row weight, coverage and raw same-class fractions. No inference or permutation is done here. |
+
+The public functions are in `cpp/include/n4m/metrics.h`; ABI version is 2.18.0 and the prepared Methods package version is 1.3.5. Thin npm wrappers in `bindings/js/src/preflightDiagnostics.ts` call the same five Emscripten exports. Every output array belongs to the caller. Native Methods validates shapes, types, positive strides, offset overflow and finite unmasked values; the caller must still guarantee that pointers refer to sufficiently large live allocations. Missing numeric outputs use NaN at this ABI level and must be converted to null by JSON-producing layers. There is no implicit imputation, automatic mask construction, or alternative scientific implementation in a language binding.
+
+The hand-computed native test covers rank-one PCA and exact moments, column-major input/strided outputs, balanced and negative ICC, masked unbalanced repeats, quartiles, group-excluding neighbors, and continuous/categorical local contrast. Extreme finite values check representable summary SD and neighbor distances, while unrepresentable outputs return a numerical error. The Emscripten export list is generated from the ABI symbol snapshot, so the five functions enter the WASM module after snapshot regeneration.

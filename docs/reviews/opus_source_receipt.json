@@ -1,0 +1,10 @@
+{
+  "model": [
+    "claude-opus-5-5"
+  ],
+  "is_error": false,
+  "duration_ms": 99793,
+  "word_count": 966,
+  "source_sha256": "7670941ce51943f37a8b92b7c1df16ca3b67b5b4970f1a96d41555853db77d1c",
+  "review_file": "review_opus_source.md"
+}

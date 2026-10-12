@@ -1,0 +1,28 @@
+{
+  "name": "nirs4all-preflight-demo",
+  "private": true,
+  "version": "0.1.0-alpha.1",
+  "type": "module",
+  "description": "Static dashboard for nirs4all-preflight: canonical JSON in, Rust/WASM engine report out.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@nirs4all/preflight": "0.1.0-alpha.1",
+    "nirs4all-ui": "0.1.16",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.4"
+  }
+}

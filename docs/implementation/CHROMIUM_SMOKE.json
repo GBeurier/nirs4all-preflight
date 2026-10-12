@@ -1,0 +1,23 @@
+{
+  "configScope": 1,
+  "validation": "Input is valid.",
+  "demoLabel": "Demonstration \u2014 synthetic data \u2014 this report qualifies no real dataset.",
+  "findings": 1,
+  "focusAfterResults": "main",
+  "pcaSvg": 22,
+  "pcaCaption": "PCA scores PC1\u2013PC2 \u2014 Source synthetic_nir \u2014 View canonical:centered; aggregated units: 22; retained variance fraction (engine): 0.999744 (10 components)",
+  "evidenceRows": 22,
+  "repeatContexts": 2,
+  "filteredRows": 4,
+  "dataCaption": "Source synthetic_nir \u2014 development spectra drawn: 12 / 40; incomplete development not drawn: 1; not drawn: 6 retained test, 0 prediction, 0 augmented, 0 undeclared sample",
+  "spectraPaths": 12,
+  "tabAfterArrow": "Downloads",
+  "jsonName": "nirs4all-preflight-synthetic-demo-report.json",
+  "htmlName": "nirs4all-preflight-synthetic-demo-report.html",
+  "cancelEnabledSync": true,
+  "cancelled": true,
+  "resultsEnabledAfterCancel": false,
+  "rerunAfterCancel": "0 findings; demo label 1",
+  "overflowX320": false,
+  "errors": []
+}
