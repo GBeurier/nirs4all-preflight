@@ -2,7 +2,7 @@
 
 Portable qualification of NIRS datasets before training. Rust owns the protocols and input/report contracts; reusable numerical diagnostics live in [nirs4all-methods](https://github.com/GBeurier/nirs4all-methods), and shared presentation components in [nirs4all-ui](https://github.com/GBeurier/nirs4all-ui).
 
-**First exploratory alpha: 0.1.0-alpha.1.** This release computes integrity and linked-identity checks, exact duplicate suspicions including development/test overlap, per-band technical repeatability, balanced ICC(1,1), centered PCA with full variance moments, target distributions and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
+**First exploratory alpha: engine 0.1.0-alpha.1; npm binding 0.1.0-alpha.2.** This release computes integrity and linked-identity checks, exact duplicate suspicions including development/test overlap, per-band technical repeatability, balanced ICC(1,1), centered PCA with full variance moments, target distributions and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
 
 [Browser demo](https://gbeurier.github.io/nirs4all-preflight/) · [npm binding](https://www.npmjs.com/package/@nirs4all/preflight) · [Scientific and integration specification](docs/SPECIFICATION.md)
 

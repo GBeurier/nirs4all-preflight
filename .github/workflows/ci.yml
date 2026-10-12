@@ -13,7 +13,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: actions/checkout@v4
+        with:
+          repository: GBeurier/nirs4all-methods
+          ref: a8b61e46912a77b6152120e3b604659542a6a6c2
+          path: upstream-methods
+      - run: cmake --preset dev-release && cmake --build --preset dev-release --target n4m_c --parallel 2
+        working-directory: upstream-methods
       - run: cargo test --workspace
+        env:
+          N4M_LIBRARY_PATH: ${{ github.workspace }}/upstream-methods/build/dev-release/cpp/src/libn4m.so
       - run: cargo run -p nirs4all-preflight-cli -- validate examples/first_run.json
   wasm:
     runs-on: ubuntu-latest

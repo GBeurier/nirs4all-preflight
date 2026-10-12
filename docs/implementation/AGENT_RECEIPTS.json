@@ -17,5 +17,11 @@
     "frontend_author": "claude-sonnet-5-5 medium",
     "implementation_review": "claude-opus-5-5 high"
   },
-  "scope": "Executed code review and tests; source model labels recorded by agent launch and CLI transcript metadata."
+  "scope": "Executed code review and tests; source model labels recorded by agent launch and CLI transcript metadata.",
+  "opus-closure": {
+    "session_id": "da9e1cad-4a05-48bc-a400-d46fd393c46c",
+    "is_error": false,
+    "duration_ms": 95767,
+    "num_turns": 14
+  }
 }

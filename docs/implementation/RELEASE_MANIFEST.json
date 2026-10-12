@@ -24,7 +24,7 @@
     "nirs4all-ui": "325073ce7fd51382c2e3a7079b82bc290b54dd4d"
   },
   "distributions": {
-    "npm": "@nirs4all/preflight@0.1.0-alpha.1",
+    "npm": "@nirs4all/preflight@0.1.0-alpha.2",
     "methods_npm": "@nirs4all/methods@1.3.5",
     "ui_npm": "nirs4all-ui@0.1.16",
     "crates": [
@@ -34,5 +34,9 @@
       "nirs4all-preflight-capi"
     ],
     "python": "GitHub release Linux wheel; not uploaded to PyPI"
-  }
+  },
+  "npm_binding_version": "0.1.0-alpha.2",
+  "notes": [
+    "npm alpha.2 corrects omitted WASM assets; engine/protocol/Rust versions remain alpha.1."
+  ]
 }

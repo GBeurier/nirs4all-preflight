@@ -12,7 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nirs4all/preflight": "0.1.0-alpha.1",
+    "@nirs4all/preflight": "0.1.0-alpha.2",
     "nirs4all-ui": "0.1.16",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"

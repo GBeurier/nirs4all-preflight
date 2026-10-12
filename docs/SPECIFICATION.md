@@ -303,4 +303,3 @@ La licence proposée suit `CECILL-2.1 OR AGPL-3.0-or-later` des couches Rust/UI 
 Sont fixés pour lancer le travail : core Rust pur ; trois vues nommées ; unités explicites ; contrat commun et états d'absence ; réutilisation de Methods/DAG ; worker à deux modules ; page Web et composants UI ; MVP indépendant du clustering ; absence de score global et de suppression automatique.
 
 Le lot 0 ferme les décisions dépendantes d'un test : cohorte publique compatible, API de diagnostic PCA, transport asynchrone, outillage MEX et accès MATLAB, disponibilité Rust HDBSCAN, coûts des copies. Si un spike échoue, la roadmap réduit un profil en le rendant visible ; elle ne change pas silencieusement de langage ou d'algorithme. Les réseaux restent hors calendrier de V1. Les reviews finales et leur traitement sont enregistrés dans [les décisions de review](DECISIONS_REVUES.md).
-

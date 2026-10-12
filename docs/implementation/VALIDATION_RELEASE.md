@@ -11,7 +11,7 @@ The Opus backend findings were reconciled before release: cross-partition exact 
 | Gate | Executed result |
 | --- | --- |
 | Methods | 21 native CTest tests; full JS/WASM tests; Emscripten build; ABI snapshots, version sync and C11 header compile. Analytic covariance, omitted-spectrum moments, balanced/negative ICC, unequal repeats, type-7 quantiles, excluded-group neighbors, categorical/continuous contrast and extreme finite inputs. |
-| Rust | Workspace fmt, clippy `-D warnings`, 25 tests with the actual Methods Release ABI. WASM target clippy and build passed. |
+| Rust | Workspace fmt, clippy `-D warnings`, 27 tests with the actual Methods Release ABI. WASM target clippy and build passed. |
 | WASM runtime | Two tests using the real Rust and Methods modules: computed diagnostics and refusal of identity leakage. CPU/WASM parity on both browser scenarios was checked by Opus, with maximum relative difference 2.7e-15. |
 | Python | Installed Linux x86_64 wheel under isolated Python 3.11; four fixtures exactly match CLI reports, three binding tests pass. See `VALIDATION_PYTHON.md`. |
 | UI | Typecheck, 420 tests, build and package smoke; the qualification domain passed independent Opus review. |
@@ -21,3 +21,7 @@ The Opus backend findings were reconciled before release: cross-partition exact 
 Screenshots depict synthetic data only: [report](screenshots/smoke-report.png), [PCA and equivalent table](screenshots/smoke-structure.png), [narrow layout](screenshots/smoke-320.png). The numerical/report artifacts, not screenshots, remain the evidence of scientific calculations.
 
 Open qualification gates: nested validation probe, clustering, domain shift, calibrated permutations/inference, noise proxy, SNV sensitivity, quasi-duplicate thresholds, repetition uncertainty, progress/partial cancellation snapshots, R/MATLAB bindings, other platforms, Firefox/WebKit, screen reader and full memory/performance profiling. Availability and exploratory status remain explicit in the report. The Linux wheel does not claim a manylinux baseline. No PyPI upload was performed; the wheel is a GitHub release artifact.
+
+The first npm binding archive (0.1.0-alpha.1) omitted wasm-pack output because its generated ignore file was applied during packing. The corrective npm binding 0.1.0-alpha.2 includes an explicit asset guard and was tested from its actual tarball in an isolated installation using the public Methods package. Engine/protocol and Rust versions remain 0.1.0-alpha.1. The old npm binding is deprecated after the correction becomes available.
+
+A targeted Opus 5.5 closure review (`REVIEW_OPUS_CLOSURE.md`) found no unresolved critical/high issue in the corrections. Its JS commands were unavailable in that shell; root independently ran the installed npm artifact and the Chromium checks with Node 24. The remaining stable-context-key improvement is low priority and documented.
