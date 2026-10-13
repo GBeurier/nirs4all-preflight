@@ -97,11 +97,11 @@ test('WASM clustering matches the full-chain Python golden',async()=>{
    assert.ok(near(g.coverage_weighted_stability,w.coverage_weighted_stability),`${c.name} null T ${i}`);
   });
   assert.ok(near(nullModel.observed.coverage_weighted_stability,e.null.observed_statistic),c.name);
-  assert.ok(near(nullModel.test.p_value,e.null.p_value),c.name);
-  assert.equal(nullModel.test.decisional,e.null.decisional,c.name);
+  assert.ok(near(nullModel.fitted_null_tail.tail_fraction,e.null.tail_fraction),c.name);
+  assert.equal(nullModel.fitted_null_tail.decisional,e.null.decisional,c.name);
   assessments.push(m['clustering.partition_assessment'].value.assessment);
  }
- assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_partition','compatible_with_continuous_structure','uncertain_partition','no_density_separated_groups','stable_candidate_partition']);
+ assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_versus_fitted_gaussian','compatible_with_fitted_gaussian','uncertain_partition','no_density_separated_groups','stable_candidate_versus_fitted_gaussian']);
 });
 test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  // SG window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.

@@ -301,10 +301,13 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     let nv = null.value.as_ref().unwrap();
     assert_eq!(nv["null"]["fraction_with_at_least_two_clusters"], 1.0);
     // Every mock replicate equals the observation: p = (1 + 99) / 100.
-    assert_eq!(nv["test"]["statistic"], "coverage_weighted_stability");
+    assert_eq!(
+        nv["fitted_null_tail"]["statistic"],
+        "coverage_weighted_stability"
+    );
     assert_eq!(nv["observed"]["coverage_weighted_stability"], 1.0);
-    assert_eq!(nv["test"]["p_value"], 1.0);
-    assert_eq!(nv["test"]["decisional"], true);
+    assert_eq!(nv["fitted_null_tail"]["tail_fraction"], 1.0);
+    assert_eq!(nv["fitted_null_tail"]["decisional"], true);
     assert_eq!(
         nv["description"]["joint_dominance"]["n_null_dominating"],
         99
@@ -316,16 +319,17 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     let assessment = metric(&report, "clustering.partition_assessment");
     assert_eq!(
         assessment.value.as_ref().unwrap()["assessment"],
-        "compatible_with_continuous_structure"
+        "compatible_with_fitted_gaussian"
     );
     let finding = report
         .findings
         .iter()
-        .find(|f| f.rule_id == "structure.clustering.continuous_structure.v2")
+        .find(|f| f.rule_id == "structure.clustering.continuous_structure.v3")
         .unwrap();
     assert_eq!(finding.confidence, "unknown");
     assert!(finding.message.contains("candidate groups"));
-    assert!(finding.message.contains("continuous structure"));
+    assert!(finding.message.contains("fitted to the same data"));
+    assert!(finding.message.contains("no type-I error guarantee"));
 }
 
 #[test]
@@ -343,7 +347,7 @@ fn subsampling_is_seeded_and_respects_independence_groups() {
     // Two-row units: independent simulated rows would erase the within-unit
     // dependence, so the null is descriptive and cannot decide (review P1).
     let null = metric(&first, "clustering.gaussian_null_model");
-    let test = &null.value.as_ref().unwrap()["test"];
+    let test = &null.value.as_ref().unwrap()["fitted_null_tail"];
     assert_eq!(test["decisional"], false);
     assert_eq!(test["decisional_reason"], "MULTI_ROW_RESAMPLING_UNITS");
     let assessment = metric(&first, "clustering.partition_assessment")
@@ -352,7 +356,7 @@ fn subsampling_is_seeded_and_respects_independence_groups() {
         .unwrap();
     assert_eq!(assessment["assessment"], "uncertain_partition");
     assert_eq!(
-        assessment["criteria"]["null_monte_carlo_p_value"]["passed"],
+        assessment["criteria"]["fitted_null_tail_fraction"]["passed"],
         serde_json::Value::Null
     );
     // The plans are drawn once and reused by both variants and the null.

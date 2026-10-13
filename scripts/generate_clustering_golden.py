@@ -199,7 +199,7 @@ def protocol(x: np.ndarray, spec: dict, root: int, source_id: str) -> dict:
     ge = sum(r["coverage_weighted_stability"] >= observed_statistic for r in replicates)
     decisional = spec["unit"] in ("sample", "group", "reference_group") and all(len(u) == 1 for u in units)
     out["null"] = {"per_replicate": replicates, "observed_statistic": observed_statistic,
-                   "observed_frozen_median_ari": observed_ari, "p_value": (1 + ge) / (1 + N_NULL),
+                   "observed_frozen_median_ari": observed_ari, "tail_fraction": (1 + ge) / (1 + N_NULL),
                    "decisional": decisional}
     return out
 
@@ -278,7 +278,7 @@ def main() -> None:
         e = cases[-1]["expected"]
         print(f"{name}: clusters={e['cluster_count']} noise={e['noise']} stock_ari={e['stock_sklearn_ari']:.3f}"
               f" scaled_median_ari={(e['variants']['scaled']['ari_assigned_in_both'] or {}).get('median')}"
-              f" T={e['null']['observed_statistic']:.3f} p={e['null']['p_value']} decisional={e['null']['decisional']}")
+              f" T={e['null']['observed_statistic']:.3f} tail={e['null']['tail_fraction']} decisional={e['null']['decisional']}")
     body = {"format": "n4pf_clustering_v3_golden", "protocol": PROTOCOL,
             "reference": {**versions, "python": sys.version.split()[0],
                           "hdbscan": "scikit-learn 1.9.1 internals with a stable MST edge sort (Methods tie rule)"},

@@ -192,11 +192,14 @@ fn native_clustering_matches_the_independent_python_golden() {
             &golden_null["observed_frozen_median_ari"]
         ));
         assert!(
-            near(&null["test"]["p_value"], &golden_null["p_value"]),
+            near(
+                &null["fitted_null_tail"]["tail_fraction"],
+                &golden_null["tail_fraction"]
+            ),
             "{name}"
         );
         assert_eq!(
-            null["test"]["decisional"], golden_null["decisional"],
+            null["fitted_null_tail"]["decisional"], golden_null["decisional"],
             "{name}"
         );
         let assessment = get("clustering.partition_assessment")
@@ -211,11 +214,73 @@ fn native_clustering_matches_the_independent_python_golden() {
         [
             "uncertain_partition",
             "uncertain_partition",
-            "stable_candidate_partition",
-            "compatible_with_continuous_structure",
+            "stable_candidate_versus_fitted_gaussian",
+            "compatible_with_fitted_gaussian",
             "uncertain_partition",
             "no_density_separated_groups",
-            "stable_candidate_partition",
+            "stable_candidate_versus_fitted_gaussian",
         ]
     );
+}
+
+/// Robustness rule: scaling every band by 2^k must keep the partition, or
+/// make the clustering explicitly unavailable. At 2.20 the upstream Methods
+/// PCA (`n4m_preflight_pca_compute`, not part of this module) reports
+/// `ZERO_NUMERICAL_RANK` for k <= -1014, numerical or convergence failures for
+/// |k| >= 500 and for a constant 1e300 band; clustering then stays
+/// unavailable with that reason rather than computing on wrong scores.
+#[test]
+fn native_clustering_magnitude_sweep() {
+    let Ok(path) = std::env::var("N4M_LIBRARY_PATH") else {
+        return;
+    };
+    let provider = NativeMethodsProvider::load(path).expect("compatible Methods ABI");
+    let golden: Value =
+        serde_json::from_str(include_str!("fixtures/clustering_v3_golden.json")).unwrap();
+    let case = &golden["cases"][2];
+    assert_eq!(case["name"], "separated_blobs");
+    let base: QualificationInput = serde_json::from_value(case["input"].clone()).unwrap();
+    let want = labels(&case["expected"]["labels"]);
+    for k in [-1014, -1022, -500, -100, 100, 500, 1000] {
+        let mut input = base.clone();
+        for row in &mut input.sources[0].x {
+            for v in row.iter_mut().flatten() {
+                *v *= 2f64.powi(k);
+            }
+        }
+        let report = analyze(&input, &provider);
+        let partition = report
+            .metrics
+            .iter()
+            .find(|m| m.metric_id == "clustering.partition")
+            .unwrap();
+        match partition.status {
+            Availability::Computed => {
+                label_map(&labels(&partition.value.as_ref().unwrap()["labels"]), &want);
+                println!("k={k}: invariant partition");
+            }
+            ref status => {
+                assert!(partition.reason_code.is_some() && partition.value.is_none());
+                println!("k={k}: {status:?} {:?}", partition.reason_code);
+            }
+        }
+    }
+    // A constant band of huge amplitude carries no variance.
+    let mut input = base.clone();
+    for row in &mut input.sources[0].x {
+        row.push(Some(1e300));
+    }
+    input.sources[0].axis.push(1e3);
+    let report = analyze(&input, &provider);
+    let partition = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "clustering.partition")
+        .unwrap();
+    if matches!(partition.status, Availability::Computed) {
+        label_map(&labels(&partition.value.as_ref().unwrap()["labels"]), &want);
+        println!("constant 1e300 band: invariant partition");
+    } else {
+        println!("constant 1e300 band: {:?}", partition.reason_code);
+    }
 }

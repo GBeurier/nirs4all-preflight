@@ -646,6 +646,10 @@ fn base_parameters(min_size: usize, columns: usize, backend: &str) -> BTreeMap<S
                 "scores rounded half away from zero to multiples of 2^(e-{SCORE_GRID_BITS}), max|score| in [2^(e-1), 2^e), per score matrix"
             )),
         ),
+        (
+            "cross_host_parity".into(),
+            json!("native and WASM partitions are pinned by goldens, not guaranteed: a score within one ulp of a grid midpoint, or a max|score| within one ulp of a power of two, can round to a different grid value on another host"),
+        ),
         ("n_components".into(), json!(columns)),
         ("min_cluster_size".into(), json!(min_size)),
         (
@@ -1082,8 +1086,8 @@ struct Observed<'a> {
 }
 
 struct NullSummary {
-    /// Monte Carlo p-value of the coverage-weighted stability, when decisional.
-    p_value: Option<f64>,
+    /// Exploratory fitted-null tail of the coverage-weighted stability, when decisional.
+    tail_fraction: Option<f64>,
     decisional: bool,
     fraction_two_or_more: f64,
 }
@@ -1175,7 +1179,12 @@ fn gaussian_null(
         )?),
         None => None,
     };
-    let mean_eigenvalue = geometry.eigenvalues.iter().sum::<f64>() / d as f64;
+    // Mean of the eigenvalues without an overflowing intermediate sum.
+    let mean_eigenvalue = geometry
+        .eigenvalues
+        .iter()
+        .map(|v| v / d as f64)
+        .sum::<f64>();
     let ridge = NULL_RIDGE * mean_eigenvalue;
     let covariance: Vec<Vec<f64>> = (0..d)
         .map(|i| {
@@ -1225,22 +1234,27 @@ fn gaussian_null(
     let count_f: Vec<f64> = counts.iter().map(|&c| c as f64).collect();
     let two_or_more = counts.iter().filter(|&&c| c >= 2).count() as f64 / N_NULL_REPLICATES as f64;
     let somes = |v: &[f64]| v.iter().map(|&x| Some(x)).collect::<Vec<_>>();
-    let test = match observed_frozen {
+    // Exploratory fitted-null tail: the Gaussian is fitted on the same data,
+    // so observed and simulated statistics are not exchangeable and the tail
+    // fraction carries no type-I error guarantee.
+    let fitted_tail = match observed_frozen {
         Some((obs, _)) => {
             let ge = statistics.iter().filter(|&&t| t >= obs).count();
             json!({
                 "statistic": "coverage_weighted_stability",
                 "observed": obs,
                 "n_null_greater_or_equal": ge,
-                "p_value": (1 + ge) as f64 / (1 + N_NULL_REPLICATES) as f64,
+                "tail_fraction": (1 + ge) as f64 / (1 + N_NULL_REPLICATES) as f64,
+                "resolution": 1.0 / (1 + N_NULL_REPLICATES) as f64,
                 "threshold": NULL_TAIL,
+                "type_i_error_control": "none_demonstrated",
                 "decisional": decisional_reason.is_none(),
                 "decisional_reason": decisional_reason,
             })
         }
         None => Value::Null,
     };
-    let p_value = test["p_value"]
+    let tail_fraction = fitted_tail["tail_fraction"]
         .as_f64()
         .filter(|_| decisional_reason.is_none());
     // Joint dominance stays descriptive: it is not a calibrated tail.
@@ -1280,7 +1294,7 @@ fn gaussian_null(
             "coverage_weighted_stability": summarize(provider, &statistics)?,
             "fraction_with_at_least_two_clusters": two_or_more,
         },
-        "test": test,
+        "fitted_null_tail": fitted_tail,
         "description": {
             "cluster_count": tail(&somes(&count_f), observed.clusters as f64, N_NULL_REPLICATES),
             "noise_fraction": tail(&somes(&noises), observed.noise_fraction, N_NULL_REPLICATES),
@@ -1294,7 +1308,7 @@ fn gaussian_null(
         .insert("n_replicates".into(), N_NULL_REPLICATES);
     for (key, value) in [
         ("protocol", json!(PROTOCOL)),
-        ("model", json!("unimodal_gaussian_independent_rows")),
+        ("model", json!("unimodal_gaussian_fitted_on_the_same_data_independent_rows")),
         ("space", json!("canonical_pca_scores (frozen full-sample projection)")),
         (
             "fit",
@@ -1326,12 +1340,16 @@ fn gaussian_null(
             json!("coverage_weighted_stability = median over the 50 subsamples of ARI x (assigned in both / drawn), 0 when ARI is not evaluable; pre-specified"),
         ),
         (
-            "p_value",
-            json!("Monte Carlo (1 + #null >= observed) / (1 + B), B = 99; ties count against the observation"),
+            "tail_fraction",
+            json!("exploratory fitted-null tail (1 + #null >= observed) / (1 + B), B = 99, resolution 0.01; ties count against the observation. The Gaussian (PCA eigenvalues and retained dimension) is estimated from the same data, so observed and simulated statistics are not exchangeable: this is not an exact Monte Carlo test and no type-I error level is guaranteed"),
         ),
         (
             "decision_rule",
-            json!("p_value > 0.05: compatible with this Gaussian null; threshold declared and not validated"),
+            json!("tail_fraction > 0.05: compatible with the fitted Gaussian; threshold declared and not validated"),
+        ),
+        (
+            "qualification_path",
+            json!("parametric bootstrap re-estimating the PCA and the Gaussian in every simulated dataset, with the level of the resulting rule checked by simulation, before any calibrated claim"),
         ),
         (
             "decisional_scope",
@@ -1352,7 +1370,7 @@ fn gaussian_null(
     Ok((
         metric,
         NullSummary {
-            p_value,
+            tail_fraction,
             decisional: decisional_reason.is_none(),
             fraction_two_or_more: two_or_more,
         },
@@ -1384,20 +1402,20 @@ fn assess(
         "lowest_appearance_frequency_scaled": criterion(scaled.and_then(|v| v.lowest_appearance), STABLE_APPEARANCE, true),
         "median_assigned_in_both_fraction_of_eligible_scaled": criterion(scaled.and_then(|v| v.stability.median_assigned_fraction), STABLE_ASSIGNED_FRACTION, true),
         "null_decisional": {"value": null_summary.map(|s| s.decisional), "passed": null_summary.map(|s| s.decisional)},
-        "null_monte_carlo_p_value": criterion(null_summary.and_then(|s| s.p_value), NULL_TAIL, false),
+        "fitted_null_tail_fraction": criterion(null_summary.and_then(|s| s.tail_fraction), NULL_TAIL, false),
     });
     let passed = |key: &str| criteria[key]["passed"].as_bool();
     let assessment = if observed.clusters < 2 {
         "no_density_separated_groups"
-    } else if passed("null_monte_carlo_p_value") == Some(false) {
-        "compatible_with_continuous_structure"
+    } else if passed("fitted_null_tail_fraction") == Some(false) {
+        "compatible_with_fitted_gaussian"
     } else if criteria
         .as_object()
         .expect("object")
         .keys()
         .all(|k| passed(k) == Some(true))
     {
-        "stable_candidate_partition"
+        "stable_candidate_versus_fitted_gaussian"
     } else {
         "uncertain_partition"
     };
@@ -1408,11 +1426,11 @@ fn assess(
         n,
     );
     for (key, value) in [
-        ("rule_version", json!("clustering_assessment.v2")),
+        ("rule_version", json!("clustering_assessment.v3")),
         ("status", json!("exploratory_uncalibrated")),
         (
             "rule",
-            json!("fewer than 2 clusters: no_density_separated_groups; else decisional null Monte Carlo p-value > 0.05: compatible_with_continuous_structure; else every criterion passed: stable_candidate_partition; otherwise uncertain_partition. Thresholds are declared and not validated."),
+            json!("fewer than 2 clusters: no_density_separated_groups; else decisional fitted-null tail fraction > 0.05: compatible_with_fitted_gaussian; else every criterion passed: stable_candidate_versus_fitted_gaussian; otherwise uncertain_partition. The tail fraction compares with a Gaussian fitted to the same data and guarantees no type-I error level; thresholds are declared and not validated."),
         ),
         ("confidence", json!("unknown")),
         (
@@ -1443,23 +1461,23 @@ fn assess(
     });
     let (rule_id, message, action) = match assessment {
         "no_density_separated_groups" => (
-            "structure.clustering.continuous_structure.v2",
+            "structure.clustering.continuous_structure.v3",
             format!("HDBSCAN found no density-separated groups in {source_id}; the data are compatible with a continuous structure (exploratory; Gaussian null replicates with at least two groups: {null_two})"),
             "Do not derive group-based splits from clustering; inspect PCA scores and metadata",
         ),
-        "compatible_with_continuous_structure" => (
-            "structure.clustering.continuous_structure.v2",
-            format!("HDBSCAN proposes {clusters} candidate groups in {source_id}, but a unimodal Gaussian null with the same size and frozen-projection protocol gives a coverage-weighted stability at least as high in more than 5 % of replicates; the data are compatible with a continuous structure (exploratory, uncalibrated; null replicates with at least two groups: {null_two})"),
+        "compatible_with_fitted_gaussian" => (
+            "structure.clustering.continuous_structure.v3",
+            format!("HDBSCAN proposes {clusters} candidate groups in {source_id}, but a unimodal Gaussian fitted to the same data, run through the same frozen-projection protocol, gives a coverage-weighted stability at least as high in more than 5 % of replicates; the data are compatible with this continuous model (exploratory fitted-null tail, no type-I error guarantee; replicates with at least two groups: {null_two})"),
             "Do not derive group-based splits from clustering; inspect PCA scores and metadata",
         ),
-        "stable_candidate_partition" => (
-            "structure.clustering.stable_candidate_partition.v1",
-            format!("HDBSCAN proposes {clusters} candidate groups in {source_id} that pass the exploratory stability, appearance and Gaussian-null rules; this number of groups is not confirmed because the rules are not calibrated"),
+        "stable_candidate_versus_fitted_gaussian" => (
+            "structure.clustering.stable_candidate_partition.v2",
+            format!("HDBSCAN proposes {clusters} candidate groups in {source_id} that pass the exploratory stability and appearance rules and are more stable than a Gaussian fitted to the same data in at least 95 % of replicates (exploratory fitted-null tail, no type-I error guarantee); this number of groups is not confirmed because the rules are not calibrated"),
             "Treat the candidate groups as hypotheses to check against metadata and chemistry before any use in validation splits",
         ),
         _ => (
-            "structure.clustering.uncertain_partition.v2",
-            format!("HDBSCAN proposes {clusters} candidate groups in {source_id} with {:.0} % of samples as noise; the partition is uncertain because the exploratory stability, appearance or null-model rules are not all met", 100.0 * observed.noise_fraction),
+            "structure.clustering.uncertain_partition.v3",
+            format!("HDBSCAN proposes {clusters} candidate groups in {source_id} with {:.0} % of samples as noise; the partition is uncertain because the exploratory stability, appearance or fitted-Gaussian comparison rules are not all met", 100.0 * observed.noise_fraction),
             "Treat candidate groups as hypotheses; check subsample stability and metadata before using them",
         ),
     };
@@ -1483,6 +1501,36 @@ mod tests {
     /// (half away from zero, symmetric in sign), so a one-ulp host difference
     /// there moves the score by exactly one grid step (2^-24 of the scale
     /// exponent). One ulp away from any other point leaves it unchanged.
+    /// Robustness rule: the grid follows the exponent of max|score|, so
+    /// scaling the scores by 2^k scales the rounded scores by exactly 2^k
+    /// while the step stays normal, and leaves them unchanged otherwise.
+    #[test]
+    fn grid_is_scale_equivariant() {
+        let base = vec![vec![1.5, -0.3, 0.123_456_789], vec![-1.25, 0.7, 1e-9]];
+        let q0 = quantize(&base);
+        for k in [-1074 + 60, -1022, -500, -100, 100, 500, 1000] {
+            let scaled: Vec<Vec<f64>> = base
+                .iter()
+                .map(|r| r.iter().map(|v| v * 2f64.powi(k)).collect())
+                .collect();
+            let q = quantize(&scaled);
+            let step_exponent = 1 + k - SCORE_GRID_BITS;
+            for (row, row0) in q.iter().zip(&q0) {
+                for (v, v0) in row.iter().zip(row0) {
+                    if step_exponent >= -1022 {
+                        assert_eq!(*v, v0 * 2f64.powi(k), "k={k}");
+                    }
+                }
+            }
+            if step_exponent < -1022 {
+                assert_eq!(
+                    q, scaled,
+                    "k={k}: below the normal range the scores are kept"
+                );
+            }
+        }
+    }
+
     #[test]
     fn grid_rounding_at_one_ulp_of_a_midpoint() {
         // max|score| = 1.5 lies in [2^0, 2^1): e = 1, step = 2^-23.
