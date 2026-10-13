@@ -291,6 +291,73 @@
    ]
   }
  ],
+ "metadata": {
+  "columns": [
+   {
+    "name": "site",
+    "kind": "categorical"
+   },
+   {
+    "name": "temperature",
+    "kind": "continuous",
+    "unit": "degC"
+   }
+  ],
+  "values": {
+   "s00": {
+    "site": "north",
+    "temperature": 18.0
+   },
+   "s01": {
+    "site": "north",
+    "temperature": 19.5
+   },
+   "s02": {
+    "site": "south",
+    "temperature": 17.2
+   },
+   "s03": {
+    "site": "south",
+    "temperature": 21.0
+   },
+   "s04": {
+    "site": "north",
+    "temperature": 22.4
+   },
+   "s05": {
+    "site": "south",
+    "temperature": 20.1
+   },
+   "s06": {
+    "site": "north",
+    "temperature": 19.9
+   },
+   "s07": {
+    "site": "south",
+    "temperature": 21.7
+   },
+   "s08": {
+    "site": "north",
+    "temperature": 23.0
+   },
+   "s09": {
+    "site": "south",
+    "temperature": 22.2
+   },
+   "s10": {
+    "site": "north",
+    "temperature": 24.5
+   },
+   "s11": {
+    "site": "south",
+    "temperature": 23.8
+   },
+   "t00": {
+    "site": "north",
+    "temperature": 21.1
+   }
+  }
+ },
  "options": {
   "independence_unit": "sample",
   "exchangeable_units": true,

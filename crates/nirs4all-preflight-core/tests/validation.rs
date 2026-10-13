@@ -39,6 +39,7 @@ fn fixture() -> QualificationInput {
             },
         ],
         targets: vec![],
+        metadata: MetadataTable::default(),
         options: Options::default(),
     }
 }
@@ -164,4 +165,139 @@ fn unknown_augmentation_parent_is_rejected() {
         .issues
         .iter()
         .any(|i| i.code == "UNKNOWN_AUGMENTATION_PARENT"));
+}
+
+fn with_metadata(metadata: serde_json::Value) -> QualificationInput {
+    let mut value = serde_json::to_value(fixture()).unwrap();
+    value["metadata"] = metadata;
+    serde_json::from_value(value).unwrap()
+}
+
+fn codes(input: &QualificationInput) -> Vec<(String, String, bool)> {
+    validate_input(input)
+        .issues
+        .into_iter()
+        .map(|i| (i.code, i.path, i.blocking))
+        .collect()
+}
+
+#[test]
+fn typed_metadata_is_validated_at_the_input_boundary() {
+    let ok = with_metadata(serde_json::json!({
+        "columns": [{"name": "site", "kind": "categorical"},
+                    {"name": "temperature", "kind": "continuous", "unit": "degC"}],
+        "values": {"a": {"site": "north", "temperature": 21.5}, "b": {"site": null}}
+    }));
+    assert!(validate_input(&ok).valid);
+    let bad = with_metadata(serde_json::json!({
+        "columns": [{"name": "site", "kind": "categorical", "unit": "m"},
+                    {"name": "site", "kind": "categorical"},
+                    {"name": "instrument", "kind": "categorical"},
+                    {"name": " ", "kind": "categorical"},
+                    {"name": "temperature", "kind": "continuous"}],
+        "values": {"a": {"site": 3, "temperature": "21.5", "lot": "x"},
+                   "b": {"site": ""}, "ghost": {}}
+    }));
+    let issues = codes(&bad);
+    let has = |code: &str, path: &str| issues.iter().any(|(c, p, b)| c == code && p == path && *b);
+    assert!(has("INVALID_METADATA_COLUMN", "metadata.columns[0].unit"));
+    assert!(has("INVALID_METADATA_COLUMN", "metadata.columns[1].name"));
+    assert!(has("INVALID_METADATA_COLUMN", "metadata.columns[2].name"));
+    assert!(has("INVALID_METADATA_COLUMN", "metadata.columns[3].name"));
+    assert!(has("METADATA_TYPE_MISMATCH", "metadata.values.a.site"));
+    assert!(has(
+        "METADATA_TYPE_MISMATCH",
+        "metadata.values.a.temperature"
+    ));
+    assert!(has("UNKNOWN_METADATA_COLUMN", "metadata.values.a.lot"));
+    assert!(has("INVALID_METADATA_VALUE", "metadata.values.b.site"));
+    assert!(has("UNKNOWN_SAMPLE", "metadata.values.ghost"));
+    assert!(issues
+        .iter()
+        .any(|(c, p, b)| c == "UNKNOWN_METADATA_UNIT" && p == "metadata.columns[4].unit" && !*b));
+    // JSON booleans are neither levels nor values: rejected by the parser.
+    let mut value = serde_json::to_value(fixture()).unwrap();
+    value["metadata"] = serde_json::json!({"columns": [], "values": {"a": {"site": true}}});
+    assert!(serde_json::from_value::<QualificationInput>(value).is_err());
+}
+
+#[test]
+fn metadata_varying_inside_an_identity_component_is_a_warning() {
+    let mut input = with_metadata(serde_json::json!({
+        "columns": [{"name": "lot", "kind": "categorical"}],
+        "values": {"a": {"lot": "L1"}, "b": {"lot": "L2"}}
+    }));
+    input.samples[1].partition = Partition::Development;
+    assert!(!codes(&input)
+        .iter()
+        .any(|(c, _, _)| c == "METADATA_VARIES_WITHIN_INDEPENDENCE_UNIT"));
+    input.samples[1].individual_id = Some("I".into());
+    input.samples[0].individual_id = Some("I".into());
+    let issues = codes(&input);
+    assert!(issues
+        .iter()
+        .any(|(c, p, b)| c == "METADATA_VARIES_WITHIN_INDEPENDENCE_UNIT"
+            && p == "metadata.columns[0]"
+            && !*b));
+    assert!(validate_input(&input).valid);
+}
+
+#[test]
+fn independence_components_use_every_identity_and_reference_link() {
+    let mut input = fixture();
+    input.samples[1].partition = Partition::Development;
+    let mut c = input.samples[0].clone();
+    c.sample_id = "c".into();
+    c.physical_sample_id = None;
+    input.samples.push(c);
+    assert_eq!(independence_components(&input, &[]), vec![0, 1, 2]);
+    let target = Target {
+        target_id: "y".into(),
+        kind: TargetKind::Continuous,
+        values: vec![
+            TargetValue {
+                sample_id: "b".into(),
+                value: None,
+                category: None,
+                status: ReferenceStatus::Censored,
+                reference_id: None,
+                reference_group_id: Some("R".into()),
+            },
+            TargetValue {
+                sample_id: "c".into(),
+                value: Some(1.0),
+                category: None,
+                status: ReferenceStatus::Exact,
+                reference_id: None,
+                reference_group_id: Some("R".into()),
+            },
+        ],
+        unit: None,
+    };
+    assert_eq!(independence_components(&input, &[&target]), vec![0, 1, 1]);
+    input.samples[2].augmentation_parent_id = Some("a".into());
+    assert_eq!(independence_components(&input, &[&target]), vec![0, 0, 0]);
+}
+
+#[test]
+fn retained_test_y_content_is_never_inspected() {
+    let mut x = fixture();
+    x.targets.push(Target {
+        target_id: "y".into(),
+        kind: TargetKind::Continuous,
+        values: vec![TargetValue {
+            sample_id: "b".into(),
+            value: None,
+            category: Some("garbage".into()),
+            status: ReferenceStatus::Exact,
+            reference_id: None,
+            reference_group_id: None,
+        }],
+        unit: None,
+    });
+    assert!(validate_input(&x).valid);
+    x.samples[1].partition = Partition::Development;
+    assert!(codes(&x)
+        .iter()
+        .any(|(c, _, _)| c == "INVALID_EXACT_TARGET"));
 }

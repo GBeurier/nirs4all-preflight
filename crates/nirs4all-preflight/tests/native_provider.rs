@@ -146,6 +146,7 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
             })
             .collect(),
         targets: vec![],
+        metadata: MetadataTable::default(),
         options: Options::default(),
     };
     let report = analyze(&input, &provider);
@@ -290,6 +291,7 @@ fn input_with(rows: Vec<(&str, Partition, Vec<f64>)>, axis: Vec<f64>) -> Qualifi
         }],
         samples: rows.iter().map(|r| sample(r.0, r.1)).collect(),
         targets: vec![],
+        metadata: MetadataTable::default(),
         options: Options::default(),
     }
 }

@@ -18,20 +18,45 @@ test('actual Rust WASM + Methods WASM computes canonical report',()=>{
   assert.equal(metrics['local.global_contrast'].status,'computed');
   assert.ok(runtime.reportHtml(report).includes('<!doctype html>'));
 });
-// b=25 and b=409 are NumPy 2.2.6 default_rng(derived seed).permutation(12) goldens.
+// Goldens: NumPy 2.2.6 default_rng(derived seed).permutation(12) counts,
+// SciPy 1.15.3 spearmanr and statsmodels 0.15.0 holm / fdr_bh on
+// p = [0.026, 0.41, 0.911, 0.001] (instrument, campaign, site, temperature).
 test('WASM metadata associations match the native engine goldens',async()=>{
   const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  assert.equal(runtime.validate(fixture).valid,true);
   const report=runtime.analyze(fixture);
   const find=(id,metadata)=>report.metrics.find(m=>m.metric_id===id&&m.parameters.metadata===metadata);
-  const test=find('association.metadata_target_test','instrument');
-  assert.equal(test.status,'computed');
-  assert.equal(test.value.n_at_least_observed,25);
-  assert.equal(test.value.p_value_holm,0.052);
-  assert.equal(test.parameters.permutation_plan.seed,'12673246378241812381');
-  assert.equal(test.parameters.permutation_plan.n_permutations_executed,999);
+  const expected={instrument:[25,0.078,0.052],campaign:[409,0.82,0.5466666666666666],site:[910,0.911,0.911],temperature:[0,0.004,0.004]};
+  for(const [name,[b,holm,bh]] of Object.entries(expected)){
+    const t=find('association.metadata_target_test',name);
+    assert.equal(t.status,'computed',name);
+    assert.equal(t.value.n_at_least_observed,b,name);
+    assert.ok(Math.abs(t.value.p_value_holm-holm)<1e-12,name);
+    assert.ok(Math.abs(t.value.p_value_bh_exploratory-bh)<1e-12,name);
+    assert.equal(t.parameters.permutation_plan.n_permutations_executed,999,name);
+  }
+  assert.equal(find('association.metadata_target_test','instrument').parameters.permutation_plan.seed,'12673246378241812381');
+  assert.equal(find('association.metadata_target_test','temperature').parameters.permutation_plan.seed,'7991542096464906966');
   assert.ok(Math.abs(find('association.metadata_target','instrument').value.effect_size-0.5318805854300557)<1e-12);
-  assert.equal(find('association.metadata_target_test','campaign').value.n_at_least_observed,409);
+  assert.ok(Math.abs(find('association.metadata_target','temperature').value.effect_size-0.9300699300699302)<1e-12);
+  assert.equal(find('association.metadata_target','temperature').parameters.metadata_unit,'degC');
+  assert.equal(find('association.metadata_target_test','site').parameters.permutation_plan.resolution_basis,'exact_enumeration');
   assert.ok(runtime.capabilities().some(c=>c.capability_id==='metadata_association_tests'&&c.available));
+});
+// Root seeds above 2^53 travel as decimal strings (bigint or string input);
+// derived seeds are independent Python FNV-1a/SplitMix64 references.
+test('WASM keeps u64 root seeds exact',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const seedOf=root=>{
+    const report=runtime.analyze({...fixture,options:{...fixture.options,seed:root}});
+    return report.metrics.find(m=>m.metric_id==='association.metadata_target_test'&&m.parameters.metadata==='instrument').parameters.permutation_plan.seed;
+  };
+  assert.equal(seedOf(9007199254740993n),'11028598969094618448');
+  assert.equal(seedOf('9007199254740993'),'11028598969094618448');
+  assert.equal(seedOf(18446744073709551615n),'15693172765536804');
+  assert.equal(seedOf('18446744073709551615'),'15693172765536804');
+  assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:9007199254740993}}),/SEED_NOT_SAFE_INTEGER/);
+  assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:'18446744073709551616'}}));
 });
 test('WASM rejects identity leakage before diagnostics',()=>{
  const bad=structuredClone(input);

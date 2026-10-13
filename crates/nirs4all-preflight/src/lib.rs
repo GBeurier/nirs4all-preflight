@@ -39,7 +39,9 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
     }
     let association_available = [
         "methods.association",
+        "methods.correlation",
         "methods.holm_adjust",
+        "methods.bh_adjust",
         "methods.summary",
     ]
     .iter()

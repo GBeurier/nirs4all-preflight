@@ -60,6 +60,7 @@ fn input() -> QualificationInput {
         sources: vec![source],
         samples,
         targets: vec![],
+        metadata: MetadataTable::default(),
         options: Options::default(),
     }
 }

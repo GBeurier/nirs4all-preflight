@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, `n4m_stats_factor_association_exact`, `n4m_stats_correlation_exact`); the native and WASM providers refuse older libraries (`METHODS_ABI_2_20_REQUIRED`). All capabilities stay exploratory and unqualified.
+
+- Typed metadata in the input contract (schema version 1, optional fields only): `metadata.columns` (`name`, `kind` categorical/continuous, `unit`) and `metadata.values` (`sample_id` → column → JSON string level or JSON number, `null` = missing), validated at the boundary (`INVALID_METADATA_COLUMN`, `UNKNOWN_METADATA_COLUMN`, `METADATA_TYPE_MISMATCH`, `INVALID_METADATA_VALUE`, `UNKNOWN_SAMPLE`; warnings `UNKNOWN_METADATA_UNIT`, `METADATA_VARIES_WITHIN_INDEPENDENCE_UNIT`). Accessors `QualificationInput::metadata_factors()` and `metadata_value()` expose instrument, campaign and declared columns; `independence_components()` exposes the identity components.
+- `metadata_association_tests` covers continuous metadata: Spearman's rho with Pearson's r descriptive against continuous targets, eta²/F of the metadata across classes of categorical targets, with the same permutation machinery and Holm family. New parameters `metadata_kind`, `metadata_origin`, `metadata_unit`, `association_type`; new reason codes `CONSTANT_METADATA_VALUE` and `SATURATED_DESIGN`.
+- Exploratory Benjamini–Hochberg view (`p_value_bh_exploratory`, family `exploratory_secondary`), never used for findings.
+- Review fixes: units are built from every identity and reference link before exclusions, so the order of references no longer changes the units; retained-test Y is no longer inspected by validation (the report is invariant to it); `options.seed` accepts a canonical decimal string (and is serialized as one), the WASM wrapper converts bigint seeds and refuses unsafe numbers; the permutation plan separates the Monte Carlo step, the combinatorial bound and the exact minimal p-value of enumerated spaces (`monte_carlo_step`, `n_enumerated_arrangements`, `exact_minimum_p_value`, `resolution_basis`); structural non-identifiability is reported before `SINGLE_METADATA_LEVEL`; executed permutations are kept when Holm is unavailable (`multiplicity_available = false`, family `holm_available`). Methods fixes the translation instability of eta²/F.
+- `examples/metadata_association.json` declares `site` and `temperature` (degC).
+
 ## 0.1.0-alpha.3 — 2026-10-13
 
 Engine, crates, Python and npm binding move together to 0.1.0-alpha.3 and require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.

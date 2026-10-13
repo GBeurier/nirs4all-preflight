@@ -18,14 +18,27 @@ function nested(values, width) {
 }
 const nullable = value => Number.isFinite(value) ? value : null;
 
+/** The u64 root seed travels as a decimal string: bigint and safe-integer
+ * numbers are converted, unsafe numbers are refused (they are already
+ * rounded), strings are validated by the Rust engine. */
+function seedAsDecimal(input) {
+  const seed = input?.options?.seed;
+  if (seed === undefined || typeof seed === 'string') return input;
+  if (typeof seed === 'number' && !Number.isSafeInteger(seed)) {
+    throw new RangeError('SEED_NOT_SAFE_INTEGER: pass a bigint or a decimal string');
+  }
+  if (typeof seed !== 'number' && typeof seed !== 'bigint') throw new TypeError('SEED_TYPE');
+  return { ...input, options: { ...input.options, seed: seed.toString() } };
+}
+
 /** Create in a worker; the host cancels by terminating that worker. */
 export async function createQualificationRuntime(options = {}) {
   await init(options.wasmModule ? { module_or_path: options.wasmModule } : undefined);
   await methods.loadModule();
   const abi = methods.abiVersion();
-  if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
+  if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -114,13 +127,32 @@ export async function createQualificationRuntime(options = {}) {
         result = { adjusted: Array.from(methods.preflightHolmAdjust(Float64Array.from(request.p_values))), backend_version };
         break;
       }
+      case 'correlation': {
+        const output = methods.statsCorrelationTest(Float64Array.from(request.x), Float64Array.from(request.y), request.method, request.n_permutations, BigInt(request.seed));
+        result = { coefficient: nullable(output.coefficient), n_distinct_x: output.nDistinctX, n_distinct_y: output.nDistinctY, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'association_exact': {
+        const output = methods.statsFactorAssociationExact(request.factor_codes, Float64Array.from(request.targets), request.categorical, request.max_arrangements);
+        result = { n_arrangements: output.nArrangements, p_value: nullable(output.pValue), minimum_p_value: nullable(output.minimumPValue), maximum_statistic: nullable(output.maximumStatistic), backend_version };
+        break;
+      }
+      case 'correlation_exact': {
+        const output = methods.statsCorrelationExact(Float64Array.from(request.x), Float64Array.from(request.y), request.method, request.max_arrangements);
+        result = { n_arrangements: output.nArrangements, p_value: nullable(output.pValue), minimum_p_value: nullable(output.minimumPValue), maximum_statistic: nullable(output.maximumStatistic), backend_version };
+        break;
+      }
+      case 'bh_adjust': {
+        result = { adjusted: Array.from(methods.statsBhAdjust(Float64Array.from(request.p_values))), backend_version };
+        break;
+      }
       default: throw new Error(`METHODS_OPERATION_UNSUPPORTED: ${operation}`);
     }
     return JSON.stringify(result);
   };
   return {
-    analyze: input => JSON.parse(rust.analyze_json(JSON.stringify(input), callback)),
-    validate: input => JSON.parse(rust.validate_json(JSON.stringify(input))),
+    analyze: input => JSON.parse(rust.analyze_json(JSON.stringify(seedAsDecimal(input)), callback)),
+    validate: input => JSON.parse(rust.validate_json(JSON.stringify(seedAsDecimal(input)))),
     reportHtml: report => rust.report_html_json(JSON.stringify(report)),
     capabilities: () => JSON.parse(rust.capabilities_json(callback)),
   };

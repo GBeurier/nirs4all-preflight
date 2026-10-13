@@ -91,6 +91,24 @@ impl MethodsProvider for CallbackProvider<'_> {
     fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
         self.invoke("holm_adjust", r)
     }
+    fn correlation(&self, r: &CorrelationRequest) -> Result<CorrelationDiagnostics, ProviderError> {
+        self.invoke("correlation", r)
+    }
+    fn bh_adjust(&self, r: &BhRequest) -> Result<BhDiagnostics, ProviderError> {
+        self.invoke("bh_adjust", r)
+    }
+    fn association_exact(
+        &self,
+        r: &AssociationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        self.invoke("association_exact", r)
+    }
+    fn correlation_exact(
+        &self,
+        r: &CorrelationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        self.invoke("correlation_exact", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {
