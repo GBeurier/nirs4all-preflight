@@ -11,6 +11,7 @@
   - The absolute and relative rules are decided exactly on the binary64 values (error-free transformations), with no overflow, underflow or cancellation. 1.7e308 against −1.7e308 at relative 1.5 is a conflict, and 1e16 against 9999999999999998 at relative 2.1e-16 is compatible. Listings add `relative_difference`, and parameters add `contradiction_definition` and `contradiction_decision`.
   - Shared reference and reference-group IDs use the sets of all admissible exact references (non-empty intersection), so they are independent of measurement order; listings report `reference_ids_a/b` as sorted sets.
   - Conflict metrics publish total, admissible and excluded development observations and name each fraction's denominator.
+- Methods round 3 (`fix/preflight-numerics`, ABI 2.20): tolerance-pair thresholds are decided exactly, and the noise proxy computes window-local residuals that a huge value outside the evaluable windows cannot erase. The metric `numerical_domain` parameters state both rules.
 - `options.quasi_duplicates.context` accepts `instrument`, which pairs observations of one instrument across campaigns. Listed quasi-duplicate pairs carry descriptive `concordant_indices`: instrument, campaign, individual, independence group and, for development pairs, per-target reference identity and shared reference IDs. The example `examples/quasi_duplicates.json` exercises both features. It needs no new Methods symbol.
 
 ## 0.1.0-alpha.3 — 2026-10-13

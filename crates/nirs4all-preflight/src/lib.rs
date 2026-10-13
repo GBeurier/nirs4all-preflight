@@ -1718,7 +1718,7 @@ fn analyze_noise_proxy(
                 .insert("smoother".into(), json!("methods_savitzky_golay_deriv_0"));
             m.parameters.insert(
                 "numerical_domain".into(),
-                json!("whole finite range: rows centred and rescaled by powers of two before smoothing; translation invariant for exact offsets; overflow is an error; positive values below 2^-1074 reported as 2^-1074"),
+                json!("whole finite range: window-local residuals from exactly summed second differences; values outside every evaluable window never change results; translation invariant for exact offsets; overflow is an error; positive values below 2^-1074 reported as 2^-1074"),
             );
             m.parameters
                 .insert("window_bands".into(), json!(options.window_bands));
@@ -2400,7 +2400,7 @@ fn analyze_quasi_duplicates(
     parameters.insert("distance".into(), json!("root_mean_square_band_difference"));
     parameters.insert(
         "numerical_domain".into(),
-        json!("whole finite range: RMS compared with the tolerance in a power-of-two scaled space before rounding; positive distances below 2^-1074 reported as 2^-1074"),
+        json!("whole finite range: exact threshold decisions (fast scaled estimate, exact fixed-point comparison of sum (q-r)^2 with cols tol^2 near the threshold); listed distance min(RMS, tolerance), at least 2^-1074"),
     );
     parameters.insert(
         "context".into(),

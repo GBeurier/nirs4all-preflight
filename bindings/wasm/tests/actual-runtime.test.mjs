@@ -192,3 +192,15 @@ test('WASM exact reference comparisons and unbalanced SNV repeats',()=>{
  assert.ok(['ZERO_SNV_TOTAL_VARIANCE','SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED'].includes(m.reason_code));
  assert.ok(m.parameters.snv_rms_band_deviation<=m.parameters.numerical_resolution_threshold);
 });
+test('WASM noise proxy ignores a masked huge value outside every evaluable window',()=>{
+ // Review b14fix2 #2: [H,0,0,0,0,1,0,0,0,0,0], index 1 masked, window 3 / order 1.
+ for(const H of [0,1e16,1e300]){
+  const report=runtime.analyze({schema_version:1,
+   sources:[{source_id:'x',observation_ids:['o'],sample_ids:['s'],x:[[H,null,0,0,0,1,0,0,0,0,0]],valid_mask:[[true,false,true,true,true,true,true,true,true,true,true]],axis:Array.from({length:11},(_,j)=>1000+j),axis_unit:'nm',signal_unit:'abs'}],
+   samples:[{sample_id:'s',physical_sample_id:'s'}],
+   options:{noise_proxy:{window_bands:3,polyorder:1},snv_sensitivity:false}});
+  const m=Object.fromEntries(report.metrics.map(x=>[x.metric_id,x]));
+  assert.ok(Math.abs(m['measurement.noise_proxy'].value[5]-Math.sqrt(2/3))<=1e-15*Math.sqrt(2/3),`H ${H}`);
+  assert.ok(Math.abs(m['measurement.noise_proxy_pooled'].value-1/Math.sqrt(7))<=1e-15/Math.sqrt(7),`H ${H}`);
+ }
+});
