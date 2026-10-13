@@ -84,7 +84,14 @@ type Association = unsafe extern "C" fn(
     *mut i64,
 ) -> i32;
 type Holm = unsafe extern "C" fn(*mut c_void, *const f64, i64, *mut f64) -> i32;
-type Snv = unsafe extern "C" fn(*mut c_void, *const MatrixView, *const MatrixView, *mut f64) -> i32;
+type Snv = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    i64,
+    *const MatrixView,
+    *mut f64,
+) -> i32;
 type NoiseProxy = unsafe extern "C" fn(
     *mut c_void,
     *const MatrixView,
@@ -576,16 +583,31 @@ impl MethodsProvider for NativeMethodsProvider {
     }
     fn snv(&self, r: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
         let (mut x, n, p) = flatten(&r.matrix)?;
-        let mut out = vec![0.; n * p];
-        let mut bounds = vec![f64::NAN; n];
+        let groups = match &r.group_ids {
+            Some(ids) if ids.len() == n => ids.iter().copied().max().map_or(0, |g| g + 1),
+            Some(_) => return Err(ProviderError("INVALID_SNV_GROUPS".into())),
+            None => n as i64,
+        };
+        if groups < 1 || groups > n as i64 {
+            return Err(ProviderError("INVALID_SNV_GROUPS".into()));
+        }
+        let g = groups as usize;
+        let mut out = vec![0.; g * p];
+        let mut bounds = vec![f64::NAN; g];
         let xv = MatrixView::new(&mut x, n, p);
-        let ov = MatrixView::new(&mut out, n, p);
-        // SAFETY: caller-owned buffers sized rows x cols and rows; Methods SNV
-        // (mean and population SD) with per-row rounding bounds.
-        self.check(unsafe { (self.snv_fn)(self.context, &xv, &ov, bounds.as_mut_ptr()) })?;
+        let ov = MatrixView::new(&mut out, g, p);
+        let ids = r
+            .group_ids
+            .as_ref()
+            .map_or(std::ptr::null(), |v| v.as_ptr());
+        // SAFETY: caller-owned buffers sized rows x cols, groups x cols and
+        // groups; Methods validates the group codes.
+        self.check(unsafe {
+            (self.snv_fn)(self.context, &xv, ids, groups, &ov, bounds.as_mut_ptr())
+        })?;
         Ok(SnvDiagnostics {
             matrix: out.chunks(p).map(<[f64]>::to_vec).collect(),
-            row_error_bounds: bounds,
+            error_bounds: bounds,
             backend_version: self.version.clone(),
         })
     }

@@ -187,6 +187,7 @@ fn native_snv_noise_proxy_and_pairs_match_hand_values() {
     // Population SD (ddof 0): both rows become (-sqrt(3/2), 0, sqrt(3/2)).
     let snv = provider
         .snv(&SnvRequest {
+            group_ids: None,
             matrix: vec![vec![1., 2., 3.], vec![2., 4., 6.]],
         })
         .unwrap();
@@ -547,6 +548,7 @@ fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
     // [1e200, 0, -1e200] standardizes to sqrt(3/2) * [1, 0, -1] instead of zeros.
     let snv = provider
         .snv(&SnvRequest {
+            group_ids: None,
             matrix: vec![
                 vec![1e200, 0., -1e200],
                 vec![0.1; 3],
@@ -556,7 +558,7 @@ fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
         })
         .unwrap();
     assert!(near(snv.matrix[0][0], 1.5f64.sqrt()) && near(snv.matrix[0][2], -(1.5f64.sqrt())));
-    assert!(snv.matrix[1].iter().all(|v| *v == 0.0) && snv.row_error_bounds[1] == 0.0);
+    assert!(snv.matrix[1].iter().all(|v| *v == 0.0) && snv.error_bounds[1] == 0.0);
     assert!(near(snv.matrix[2][0], 1.5f64.sqrt()) && near(snv.matrix[2][2], -(1.5f64.sqrt())));
 }
 
@@ -632,6 +634,7 @@ fn native_snv_rounding_bound_covers_wide_offset_spectra() {
     );
     let snv = provider
         .snv(&SnvRequest {
+            group_ids: None,
             matrix: input.sources[0]
                 .x
                 .iter()
@@ -640,7 +643,7 @@ fn native_snv_rounding_bound_covers_wide_offset_spectra() {
         })
         .unwrap();
     let (lo, hi) = (-1.0 / 99_999f64.sqrt(), 99_999f64.sqrt());
-    for (row, bound) in snv.matrix.iter().zip(&snv.row_error_bounds) {
+    for (row, bound) in snv.matrix.iter().zip(&snv.error_bounds) {
         let error = row
             .iter()
             .enumerate()
@@ -660,4 +663,57 @@ fn native_snv_rounding_bound_covers_wide_offset_spectra() {
             "{id}"
         );
     }
+}
+
+#[test]
+fn native_snv_bound_covers_aggregation_of_unbalanced_repeats() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b14fix #3: a [1,2,4] with a = 1, 2, 4, 8 and 1, 10000, 1, 1
+    // identical technical acquisitions: every analytic SNV row coincides, and
+    // a sequential mean of the 10000 repeats used to leave a 7e-14 residual.
+    let mut input = input_with(
+        ["a", "b", "c", "d"]
+            .iter()
+            .enumerate()
+            .map(|(g, id)| {
+                (
+                    *id,
+                    Partition::Development,
+                    [1.0, 2.0, 4.0]
+                        .iter()
+                        .map(|v| v * (1 << g) as f64)
+                        .collect(),
+                )
+            })
+            .collect(),
+        vec![1., 2., 3.],
+    );
+    let source = &mut input.sources[0];
+    for i in 1..10_000 {
+        source.observation_ids.push(format!("o-b-{i}"));
+        source.sample_ids.push("b".into());
+        source.x.push(vec![Some(2.0), Some(4.0), Some(8.0)]);
+    }
+    source.repetition_types = Some(vec![RepetitionType::Rescan; source.x.len()]);
+    let report = analyze(&input, &provider);
+    assert_eq!(
+        metric(&report, "structure.snv_pca_eigenvalues").denominators["n_aggregated_samples"],
+        4
+    );
+    // The compensated mean of identical rows is exact here, so the residual
+    // is zero; any residual must stay under the threshold, never "structure".
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert_eq!(m.status_wire(), "undefined");
+    assert!(matches!(
+        m.reason_code.as_deref(),
+        Some("ZERO_SNV_TOTAL_VARIANCE" | "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED")
+    ));
+    let rms = m.parameters["snv_rms_band_deviation"].as_f64().unwrap();
+    assert!(
+        rms <= m.parameters["numerical_resolution_threshold"]
+            .as_f64()
+            .unwrap()
+    );
 }

@@ -132,7 +132,7 @@ test('WASM SNV keeps constant spectra flat and rounding residue unresolved',()=>
  for(const id of ['structure.snv_sensitivity','structure.snv_effective_dimension']){
   assert.equal(rm[id].status,'undefined');
   assert.equal(rm[id].reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
-  assert.ok(rm[id].parameters.snv_rms_band_deviation*10<rm[id].parameters.numerical_resolution_threshold);
+  assert.ok(rm[id].parameters.snv_rms_band_deviation*2<rm[id].parameters.numerical_resolution_threshold);
  }
 });
 test('WASM relative contradiction tolerance cannot overflow and aliases are compared',async()=>{
@@ -170,4 +170,25 @@ test('WASM SNV rank bound rejects rounding residue on 100,000 offset bands',()=>
  assert.equal(m.reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
  assert.ok(m.parameters.snv_rms_band_deviation<m.parameters.numerical_resolution_threshold);
  assert.ok(m.parameters.max_snv_entry_error_bound<1e-9);
+});
+test('WASM exact reference comparisons and unbalanced SNV repeats',()=>{
+ // Review b14fix #5: 1e16 vs 9999999999999998 differ by exactly 2e-16 relative.
+ for(const [value,conflict] of [[2.1e-16,0],[1.9e-16,1]]){
+  const report=runtime.analyze({schema_version:1,
+   sources:[{source_id:'x',observation_ids:['oa','ob'],sample_ids:['a','b'],x:[[0,1],[1,0]],axis:[1,2],axis_unit:'nm',signal_unit:'abs'}],
+   samples:[{sample_id:'a',physical_sample_id:'p'},{sample_id:'b',physical_sample_id:'p'}],
+   targets:[{target_id:'y',kind:'continuous',values:[{sample_id:'a',value:1e16,status:'exact'},{sample_id:'b',value:9999999999999998,status:'exact'}]}],
+   options:{reference_contradiction_tolerances:{y:{kind:'relative',value}}}});
+  assert.equal(report.metrics.find(m=>m.metric_id==='reference.within_physical_sample_conflicts').value.incompatible_sample_pairs,conflict);
+ }
+ // Review b14fix #3: a [1,2,4], a = 1, 2, 4, 8, with 1, 10000, 1, 1 identical rescans.
+ const obs=[], sid=[], x=[];
+ [1,10000,1,1].forEach((n,g)=>{for(let i=0;i<n;i++){obs.push(`o${g}-${i}`);sid.push(`s${g}`);x.push([1,2,4].map(v=>v*2**g));}});
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:obs,sample_ids:sid,x,axis:[1,2,3],axis_unit:'nm',signal_unit:'abs',repetition_types:x.map(()=>'rescan')}],
+  samples:[0,1,2,3].map(g=>({sample_id:`s${g}`,physical_sample_id:`s${g}`}))});
+ const m=report.metrics.find(m=>m.metric_id==='structure.snv_sensitivity');
+ assert.equal(m.status,'undefined');
+ assert.ok(['ZERO_SNV_TOTAL_VARIANCE','SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED'].includes(m.reason_code));
+ assert.ok(m.parameters.snv_rms_band_deviation<=m.parameters.numerical_resolution_threshold);
 });

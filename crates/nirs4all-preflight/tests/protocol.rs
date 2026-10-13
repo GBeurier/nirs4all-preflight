@@ -1246,13 +1246,16 @@ impl MethodsProvider for SnvTrace {
         Err(ProviderError("NOT_UNDER_TEST".into()))
     }
     fn snv(&self, req: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
+        // Each sample of input() is its own group: output rows follow groups.
+        let ids = req.group_ids.clone().unwrap();
+        assert!(ids.iter().enumerate().all(|(i, g)| *g == i as i64));
         Ok(SnvDiagnostics {
             matrix: req
                 .matrix
                 .iter()
                 .map(|r| r.iter().map(|v| v + 1000.0).collect())
                 .collect(),
-            row_error_bounds: vec![0.0, 1e-12, 3e-12, 2e-12],
+            error_bounds: vec![0.0, 1e-12, 3e-12, 2e-12],
             backend_version: "fake".into(),
         })
     }
@@ -1557,4 +1560,37 @@ fn conflict_denominators_name_total_admissible_and_excluded_observations() {
         .clone()
         .unwrap();
     assert!(close(&v["affected_development_fraction"], 3. / 6.));
+}
+
+#[test]
+fn relative_tolerance_does_not_lose_precision_on_close_references() {
+    // Review b14fix #5: |1e16 - 9999999999999998| / 1e16 = 2e-16 exactly
+    // (rational oracle), compatible at 2.1e-16; x/m - y/m gave 2.22e-16.
+    for (tolerance, conflict) in [(2.1e-16, false), (1.9e-16, true)] {
+        let mut x = input();
+        x.samples = vec![dev_sample("a", "p"), dev_sample("b", "p")];
+        x.sources[0].observation_ids = vec!["oa".into(), "ob".into()];
+        x.sources[0].sample_ids = vec!["a".into(), "b".into()];
+        x.sources[0].x = vec![vec![Some(0.0), Some(1.0)], vec![Some(1.0), Some(0.0)]];
+        x.targets = vec![Target {
+            target_id: "y".into(),
+            kind: TargetKind::Continuous,
+            values: vec![exact("a", 1e16, None), exact("b", 9999999999999998.0, None)],
+            unit: None,
+        }];
+        x.options.reference_contradiction_tolerances.insert(
+            "y".into(),
+            ReferenceContradictionTolerance::Relative { value: tolerance },
+        );
+        let report = analyze(&x, &oracle());
+        let v = target_metric(&report, "reference.within_physical_sample_conflicts", "y")
+            .value
+            .clone()
+            .unwrap();
+        assert_eq!(
+            v["incompatible_sample_pairs"],
+            u64::from(conflict),
+            "{tolerance}"
+        );
+    }
 }

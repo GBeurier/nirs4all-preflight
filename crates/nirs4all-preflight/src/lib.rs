@@ -1411,7 +1411,9 @@ fn analyze_snv(
         push_unavailable(report, Availability::Undefined, "ZERO_TOTAL_VARIANCE");
         return;
     }
-    // SNV is a per-acquisition transform; aggregation follows it, as for the canonical view.
+    // SNV is a per-acquisition transform; aggregation follows it, as for the
+    // canonical view. Methods aggregates (compensated, equal weight per
+    // acquisition) and bounds the rounding error of every aggregated entry.
     let request = SnvRequest {
         matrix: group_rows
             .iter()
@@ -1422,14 +1424,19 @@ fn analyze_snv(
                     .collect()
             })
             .collect(),
+        group_ids: Some(
+            group_rows
+                .iter()
+                .enumerate()
+                .flat_map(|(g, rows)| std::iter::repeat_n(g as i64, rows.len()))
+                .collect(),
+        ),
     };
     let snv = match provider.snv(&request) {
         Ok(d)
-            if d.matrix.len() == request.matrix.len()
-                && d.row_error_bounds.len() == request.matrix.len()
-                && d.row_error_bounds
-                    .iter()
-                    .all(|b| b.is_finite() && *b >= 0.0)
+            if d.matrix.len() == group_rows.len()
+                && d.error_bounds.len() == group_rows.len()
+                && d.error_bounds.iter().all(|b| b.is_finite() && *b >= 0.0)
                 && d.matrix
                     .iter()
                     .all(|row| row.len() == p && row.iter().all(|v| v.is_finite())) =>
@@ -1445,17 +1452,7 @@ fn analyze_snv(
             return;
         }
     };
-    let mut offset = 0;
-    let matrix: Vec<Vec<f64>> = group_rows
-        .iter()
-        .map(|rows| {
-            let block = &snv.matrix[offset..offset + rows.len()];
-            offset += rows.len();
-            (0..p)
-                .map(|c| block.iter().map(|row| row[c]).sum::<f64>() / rows.len() as f64)
-                .collect()
-        })
-        .collect();
+    let matrix = snv.matrix.clone();
     let n = matrix.len();
     let req = PcaRequest {
         source_id: source.source_id.clone(),
@@ -1475,14 +1472,15 @@ fn analyze_snv(
         }
     };
     // Numerical rank of the SNV view. Methods bounds the rounding error of
-    // every SNV entry of acquisition i by B_i. If the analytic SNV rows were
+    // every entry of aggregated sample g by B_g (SNV of each acquisition and
+    // the compensated mean of its r_g repeats). If the analytic SNV rows were
     // identical, each aggregated row would differ from the band mean by at
     // most 2 max B, so the per-band RMS deviation (n-1 denominator, n >= 2)
     // would not exceed 2 sqrt(2) max B. The PCA column means add at most
     // n u max|z| per entry. Residual variance under
     // SNV_RESOLUTION_FACTOR (max B + n u max|z|) is rounding, not structure.
     let [sum, sum2] = result.full_moments;
-    let max_bound = snv.row_error_bounds.iter().copied().fold(0.0f64, f64::max);
+    let max_bound = snv.error_bounds.iter().copied().fold(0.0f64, f64::max);
     let max_entry = snv
         .matrix
         .iter()
@@ -1500,7 +1498,7 @@ fn analyze_snv(
     resolution_parameters.insert(
         "numerical_resolution_criterion".into(),
         json!(format!(
-            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*(max_i B_i + n*u*max|z|), B_i the Methods first-order rounding bound of acquisition i, n aggregated samples, u = 2^-53"
+            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*(max_g B_g + n*u*max|z|), B_g the Methods first-order rounding bound of aggregated sample g (SNV of its acquisitions and the compensated mean of its repeats), n aggregated samples, u = 2^-53"
         )),
     );
     resolution_parameters.insert("numerically_resolved".into(), json!(resolved));
@@ -1588,11 +1586,11 @@ fn analyze_snv(
     m.parameters.insert("n_components".into(), json!(k));
     m.parameters.insert(
         "snv".into(),
-        json!("methods_snv_row_mean_and_population_sd_ddof_0_zero_sd_rows_centered_only"),
+        json!("methods_snv_row_mean_and_population_sd_ddof_0_constant_rows_exact_zero"),
     );
     m.parameters.insert(
         "aggregation".into(),
-        json!("snv_per_observation_then_equal_sample_mean_within_physical_instrument_campaign"),
+        json!("snv_per_observation_then_methods_compensated_equal_weight_mean_within_physical_instrument_campaign"),
     );
     m.parameters
         .insert("shares_denominator".into(), json!("full_variance_trace"));
@@ -1718,6 +1716,10 @@ fn analyze_noise_proxy(
             m.parameters.insert("campaign".into(), json!(campaign));
             m.parameters
                 .insert("smoother".into(), json!("methods_savitzky_golay_deriv_0"));
+            m.parameters.insert(
+                "numerical_domain".into(),
+                json!("whole finite range: rows centred and rescaled by powers of two before smoothing; translation invariant for exact offsets; overflow is an error; positive values below 2^-1074 reported as 2^-1074"),
+            );
             m.parameters
                 .insert("window_bands".into(), json!(options.window_bands));
             m.parameters
@@ -1856,9 +1858,117 @@ fn shared_ids(a: &BTreeSet<&str>, b: &BTreeSet<&str>) -> serde_json::Value {
     }
 }
 
-/// Declared incompatibility of two exact references. Returns the decision,
-/// the absolute difference when representable and, for the relative rule,
-/// |x/m - y/m| with m = max(|x|, |y|) (0 when m = 0), which cannot overflow.
+/// Error-free transformation: a + b = s + e exactly (no overflow).
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bb = s - a;
+    (s, (a - (s - bb)) + (b - bb))
+}
+
+/// Exact sign of a sum of doubles (Shewchuk grow-expansion; the terms and
+/// their partial sums must stay finite).
+fn exact_sign(terms: &[f64]) -> std::cmp::Ordering {
+    let mut expansion: Vec<f64> = Vec::with_capacity(terms.len());
+    for &t in terms {
+        let mut q = t;
+        let mut next = Vec::with_capacity(expansion.len() + 1);
+        for &c in &expansion {
+            let (sum, err) = two_sum(q, c);
+            if err != 0.0 {
+                next.push(err);
+            }
+            q = sum;
+        }
+        next.push(q);
+        expansion = next;
+    }
+    expansion
+        .iter()
+        .rev()
+        .find(|c| **c != 0.0)
+        .map_or(std::cmp::Ordering::Equal, |c| {
+            if *c > 0.0 {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Less
+            }
+        })
+}
+
+/// floor(log2 |x|) for finite x != 0, subnormals included.
+fn binary_exponent(x: f64) -> i32 {
+    let bits = x.abs().to_bits();
+    let biased = (bits >> 52) as i32;
+    if biased == 0 {
+        -1011 - (bits.leading_zeros() as i32)
+    } else {
+        biased - 1023
+    }
+}
+
+/// x * 2^k by exact power-of-two factors (exact unless the result leaves
+/// the normal range).
+fn scale_pow2(mut x: f64, mut k: i32) -> f64 {
+    while k != 0 {
+        let step = k.clamp(-1000, 1000);
+        x *= f64::from_bits(((1023 + step) as u64) << 52);
+        k -= step;
+    }
+    x
+}
+
+/// Exact decision |x - y| > v for finite x, y and v > 0.
+fn exceeds_absolute(x: f64, y: f64, v: f64) -> bool {
+    let (s, e) = two_sum(x, -y);
+    if !s.is_finite() {
+        return true; // |x - y| > DBL_MAX >= v
+    }
+    if s == 0.0 {
+        return false;
+    }
+    let sign = s.signum();
+    exact_sign(&[sign * e, sign * s, -v]) == std::cmp::Ordering::Greater
+}
+
+/// Exact decision |x - y| > v * max(|x|, |y|) for finite x, y and v > 0.
+fn exceeds_relative(x: f64, y: f64, v: f64) -> bool {
+    use std::cmp::Ordering::Greater;
+    if x == y || v >= 2.0 {
+        return false; // |x - y| <= 2 max(|x|, |y|)
+    }
+    let (big, small) = if x.abs() >= y.abs() { (x, y) } else { (y, x) };
+    let m = big.abs();
+    let (eb, k) = (binary_exponent(big), 60);
+    if small == 0.0 || binary_exponent(small) < eb - k {
+        // |small| < m 2^-60: |x - y| = m -/+ delta with 0 <= delta/m < 2^-60,
+        // between the doubles next to 1, so only the sign pattern matters.
+        let same_sign = small != 0.0 && (small > 0.0) == (big > 0.0);
+        return if small == 0.0 || same_sign {
+            v < 1.0
+        } else {
+            v <= 1.0
+        };
+    }
+    // Both within 2^60 of m: rescale exactly so that m' is in [1, 2).
+    let xs = scale_pow2(x, -eb);
+    let ys = scale_pow2(y, -eb);
+    let ms = scale_pow2(m, -eb);
+    let (s, e) = two_sum(xs, -ys);
+    // Nonzero |x' - y'| >= 2^-113 (multiples of the smaller operand's ulp),
+    // so a tolerance with v m' < 2^-969 (fma error not representable) is exceeded.
+    if v < f64::from_bits(((1023 - 970) as u64) << 52) {
+        return true;
+    }
+    let p = v * ms;
+    let f = v.mul_add(ms, -p);
+    let sign = s.signum();
+    exact_sign(&[sign * e, sign * s, -f, -p]) == Greater
+}
+
+/// Declared incompatibility of two exact references, decided exactly in
+/// rational arithmetic on the binary64 values. Returns the decision, the
+/// absolute difference when representable and, for the relative rule,
+/// |x - y| / max(|x|, |y|) rounded (computed on exact halves on overflow).
 fn references_conflict(
     tolerance: ReferenceContradictionTolerance,
     a: &TargetValue,
@@ -1869,15 +1979,28 @@ fn references_conflict(
             (a.category != b.category, None, None)
         }
         (ReferenceContradictionTolerance::Absolute { value }, Some(x), Some(y)) => {
-            // An unrepresentable |x - y| is +inf, which exceeds every finite tolerance.
             let d = (x - y).abs();
-            (d > value, d.is_finite().then_some(d), None)
+            (
+                exceeds_absolute(x, y, value),
+                d.is_finite().then_some(d),
+                None,
+            )
         }
         (ReferenceContradictionTolerance::Relative { value }, Some(x), Some(y)) => {
             let d = (x - y).abs();
             let m = x.abs().max(y.abs());
-            let relative = if m == 0.0 { 0.0 } else { (x / m - y / m).abs() };
-            (relative > value, d.is_finite().then_some(d), Some(relative))
+            let relative = if m == 0.0 {
+                0.0
+            } else if d.is_finite() {
+                d / m
+            } else {
+                (0.5 * x - 0.5 * y).abs() / (0.5 * m)
+            };
+            (
+                exceeds_relative(x, y, value),
+                d.is_finite().then_some(d),
+                Some(relative),
+            )
         }
         _ => (false, None, None),
     }
@@ -1902,7 +2025,7 @@ fn contradiction_parameters(
             json!(target.unit),
         ),
         ReferenceContradictionTolerance::Relative { value } => (
-            "relative_difference_greater_than_tolerance: |x/m - y/m| > tolerance, m = max(|x|, |y|), equal when m = 0",
+            "relative_difference_greater_than_tolerance",
             json!(value),
             json!("fraction_of_max_absolute_reference"),
         ),
@@ -1914,6 +2037,19 @@ fn contradiction_parameters(
     };
     let mut p = BTreeMap::new();
     p.insert("contradiction_rule".to_string(), json!(rule));
+    p.insert(
+        "contradiction_definition".into(),
+        json!(match tolerance {
+            ReferenceContradictionTolerance::Absolute { .. } => "|x - y| > tolerance",
+            ReferenceContradictionTolerance::Relative { .. } =>
+                "|x - y| > tolerance * max(|x|, |y|); equal references never conflict",
+            ReferenceContradictionTolerance::DifferentClass => "class_a != class_b",
+        }),
+    );
+    p.insert(
+        "contradiction_decision".into(),
+        json!("exact rational comparison of the binary64 values (error-free transformations); published differences are rounded"),
+    );
     p.insert("contradiction_tolerance".into(), value);
     p.insert("contradiction_tolerance_unit".into(), unit);
     p.insert(
@@ -2065,7 +2201,10 @@ fn analyze_quasi_duplicates(
         .collect();
     // SNV is stateless per spectrum: transforming retained-test X fits nothing.
     let (values, snv_backend) = if options.view == QuasiDuplicateView::Snv && !raw.is_empty() {
-        match provider.snv(&SnvRequest { matrix: raw }) {
+        match provider.snv(&SnvRequest {
+            matrix: raw,
+            group_ids: None,
+        }) {
             Ok(d)
                 if d.matrix.len() == all.len()
                     && d.matrix
@@ -2259,6 +2398,10 @@ fn analyze_quasi_duplicates(
         json!("declared_in_options_quasi_duplicates"),
     );
     parameters.insert("distance".into(), json!("root_mean_square_band_difference"));
+    parameters.insert(
+        "numerical_domain".into(),
+        json!("whole finite range: RMS compared with the tolerance in a power-of-two scaled space before rounding; positive distances below 2^-1074 reported as 2^-1074"),
+    );
     parameters.insert(
         "context".into(),
         json!(match options.context {
@@ -3051,4 +3194,445 @@ pub fn report_html(report: &QualificationReport) -> String {
     }
     html.push_str("</ul></main></body></html>");
     html
+}
+
+#[cfg(test)]
+mod exact_comparison_tests {
+    use super::*;
+
+    /// (rule, x bits, y bits, tolerance bits, conflict): test-only goldens from
+    /// an exact rational oracle (Python 3.10 fractions.Fraction on the binary64
+    /// values: |X - Y| > V, or |X - Y| > V max(|X|, |Y|)).
+    const GOLDENS: &[(&str, u64, u64, u64, bool)] = &[
+        (
+            "relative",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3cae43a1ec3cf706,
+            false,
+        ),
+        (
+            "relative",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3cab61c343741c73,
+            true,
+        ),
+        (
+            "relative",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3cacd2b297d889bc,
+            true,
+        ),
+        (
+            "relative",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x3ff8000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x4000000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7fefffffffffffff,
+            0xffefffffffffffff,
+            0x3fffffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x4010000000000000,
+            0x4008000000000000,
+            0x3fd0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x4010000000000000,
+            0x4007ffffffffffff,
+            0x3fd0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x4010000000000000,
+            0x4008000000000001,
+            0x3fd0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x0000000000000000,
+            0x3fe0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x8000000000000000,
+            0x3fe0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x01a56e1fc2f8f359,
+            0x3fe0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x01a56e1fc2f8f359,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x0000000000000001,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x0000000000000001,
+            0x3fefffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x8000000000000001,
+            0x0000000000000001,
+            0x3ff8000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x8000000000000001,
+            0x0000000000000001,
+            0x4000000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000003,
+            0x0000000000000002,
+            0x3fd5555555555555,
+            true,
+        ),
+        (
+            "relative",
+            0x0000000000000003,
+            0x0000000000000002,
+            0x3fd5555555555554,
+            true,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x01a56e1fc2f8f359,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x81a56e1fc2f8f359,
+            0x3ff0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x01a56e1fc2f8f359,
+            0x3fefffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x0000000000000000,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7fefffffffffffff,
+            0x0000000000000001,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7fefffffffffffff,
+            0x8000000000000001,
+            0x3ff0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x3ff0000000000000,
+            0x3ff0000000000001,
+            0x3cb0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x3ff0000000000000,
+            0x3ff0000000000001,
+            0x3cafffffffffffff,
+            false,
+        ),
+        (
+            "relative",
+            0x3ff0000000000000,
+            0x3ff0000000000001,
+            0x00000000000007e8,
+            true,
+        ),
+        (
+            "relative",
+            0x4014000000000000,
+            0x4014000000000000,
+            0x00000000000007e8,
+            false,
+        ),
+        (
+            "relative",
+            0x3fb999999999999a,
+            0x3fd3333333333334,
+            0x3fe5555555555556,
+            false,
+        ),
+        (
+            "relative",
+            0xc01e000000000000,
+            0x4004000000000000,
+            0x3ff5555555555555,
+            true,
+        ),
+        (
+            "relative",
+            0x0010000000000000,
+            0x8008000000000000,
+            0x3ff8000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0010000000000000,
+            0x8008000000000000,
+            0x3ff7ffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x000012688b70e62b,
+            0x0000143fcc95c9fc,
+            0x3fb745d1745d1746,
+            false,
+        ),
+        (
+            "relative",
+            0x419d6f3454000000,
+            0x419d6f3450000000,
+            0x3e416505a7da8610,
+            true,
+        ),
+        (
+            "relative",
+            0x419d6f3454000000,
+            0x419d6f3450000000,
+            0x3e419bff678e358c,
+            false,
+        ),
+        (
+            "absolute",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x7fe1ccf385ebc8a0,
+            true,
+        ),
+        (
+            "absolute",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x7fefffffffffffff,
+            true,
+        ),
+        (
+            "absolute",
+            0x7fefffffffffffff,
+            0xffefffffffffffff,
+            0x7fefffffffffffff,
+            true,
+        ),
+        (
+            "absolute",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x4000000000000000,
+            false,
+        ),
+        (
+            "absolute",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3fffffffffffffff,
+            true,
+        ),
+        (
+            "absolute",
+            0x3fb999999999999a,
+            0x3fc999999999999a,
+            0x3fb999999999999a,
+            false,
+        ),
+        (
+            "absolute",
+            0x3fb999999999999a,
+            0x3fc999999999999a,
+            0x3fb9999999999999,
+            true,
+        ),
+        (
+            "absolute",
+            0x3fd3333333333333,
+            0x3fb999999999999a,
+            0x3fc9999999999999,
+            false,
+        ),
+        (
+            "absolute",
+            0x3fd3333333333333,
+            0x3fb999999999999a,
+            0x3fc999999999999a,
+            false,
+        ),
+        (
+            "absolute",
+            0x0000000000000001,
+            0x0000000000000000,
+            0x0000000000000001,
+            false,
+        ),
+        (
+            "absolute",
+            0x0000000000000002,
+            0x0000000000000000,
+            0x0000000000000001,
+            true,
+        ),
+        (
+            "absolute",
+            0x7e37e43c8800759c,
+            0x7e37e43c8800759b,
+            0x7af0000000000000,
+            false,
+        ),
+        (
+            "absolute",
+            0x7e37e43c8800759c,
+            0x7e37e43c8800759b,
+            0x7ab137367c236c65,
+            true,
+        ),
+        (
+            "absolute",
+            0x80000000000007e8,
+            0x00000000000007e8,
+            0x0000000000000fd0,
+            false,
+        ),
+        (
+            "absolute",
+            0x4014000000000000,
+            0x4014000000000000,
+            0x0000000000000001,
+            false,
+        ),
+    ];
+
+    fn decide(rule: &str, x: f64, y: f64, v: f64) -> bool {
+        if rule == "absolute" {
+            exceeds_absolute(x, y, v)
+        } else {
+            exceeds_relative(x, y, v)
+        }
+    }
+
+    #[test]
+    fn decisions_match_the_exact_rational_oracle() {
+        for &(rule, x, y, v, want) in GOLDENS {
+            let (x, y, v) = (f64::from_bits(x), f64::from_bits(y), f64::from_bits(v));
+            assert_eq!(decide(rule, x, y, v), want, "{rule} {x:e} {y:e} {v:e}");
+            assert_eq!(
+                decide(rule, y, x, v),
+                want,
+                "{rule} swapped {x:e} {y:e} {v:e}"
+            );
+            assert_eq!(
+                decide(rule, -x, -y, v),
+                want,
+                "{rule} negated {x:e} {y:e} {v:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn decisions_are_invariant_under_power_of_two_scaling_and_exact_offsets() {
+        // Integer data, exact at every scale 2^k (even 2^-1074).
+        let pairs = [
+            (5.0, 2.0),
+            (12.0, 0.0),
+            (9.0, 9.0),
+            (-7.0, 3.0),
+            (1.0, 2.0),
+            (16.0, 15.0),
+        ];
+        for k in [-1074, -1022, -500, -100, 0, 100, 500, 1000] {
+            for &(x, y) in &pairs {
+                for v in [0.25, 0.5, 1.0, 1.5, 0.0625] {
+                    let (xs, ys) = (scale_pow2(x, k), scale_pow2(y, k));
+                    assert_eq!(
+                        exceeds_relative(xs, ys, v),
+                        exceeds_relative(x, y, v),
+                        "k {k}"
+                    );
+                }
+                for v in [1.0, 3.0, 4.0, 7.0, 10.0] {
+                    let (xs, ys, vs) = (scale_pow2(x, k), scale_pow2(y, k), scale_pow2(v, k));
+                    if vs == 0.0 || scale_pow2(vs, -k) != v {
+                        continue; // the tolerance is not representable at this scale
+                    }
+                    assert_eq!(
+                        exceeds_absolute(xs, ys, vs),
+                        exceeds_absolute(x, y, v),
+                        "k {k}"
+                    );
+                }
+            }
+        }
+        // Absolute rule under exact translations: data on 2 (offset 1e16) and on
+        // 2^944 (offset 2^996) keep their differences.
+        for (unit, offset) in [(2.0, 1e16), (scale_pow2(1.0, 944), scale_pow2(1.0, 996))] {
+            for &(x, y) in &pairs {
+                for v in [1.0, 3.0, 4.0, 7.0] {
+                    let base = exceeds_absolute(x * unit, y * unit, v * unit);
+                    let shifted = exceeds_absolute(x * unit + offset, y * unit + offset, v * unit);
+                    assert_eq!(shifted, base, "offset {offset:e}");
+                }
+            }
+        }
+    }
 }

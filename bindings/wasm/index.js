@@ -80,8 +80,9 @@ export async function createQualificationRuntime(options = {}) {
       }
       case 'snv': {
         // Methods SNV (row mean, population SD) with per-row rounding bounds.
-        const output = methods.preflightSnv(matrix(request.matrix));
-        result = { matrix: nested(output.matrix.data, output.matrix.cols), row_error_bounds: Array.from(output.rowErrorBounds), backend_version };
+        const groups = request.group_ids ? request.group_ids.reduce((a, b) => Math.max(a, b), -1) + 1 : undefined;
+        const output = methods.preflightSnv(matrix(request.matrix), request.group_ids ?? undefined, groups);
+        result = { matrix: nested(output.matrix.data, output.matrix.cols), error_bounds: Array.from(output.errorBounds), backend_version };
         break;
       }
       case 'noise_proxy': {

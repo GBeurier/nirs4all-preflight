@@ -992,14 +992,19 @@ pub struct AdjustedRandDiagnostics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnvRequest {
     pub matrix: Vec<Vec<f64>>,
+    /// Dense group codes 0..g-1 (every group non-empty): the result holds the
+    /// equal-weight mean of the SNV rows of each group. None keeps the rows.
+    #[serde(default)]
+    pub group_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnvDiagnostics {
+    /// SNV rows, or group means when group IDs were given.
     pub matrix: Vec<Vec<f64>>,
     /// Methods first-order bound on the absolute rounding error of every
-    /// entry of each row (0 for constant rows).
-    pub row_error_bounds: Vec<f64>,
+    /// entry of each output row (0 for constant rows).
+    pub error_bounds: Vec<f64>,
     pub backend_version: String,
 }
 
