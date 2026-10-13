@@ -3,6 +3,7 @@
 pub use nirs4all_preflight_core::*;
 mod association;
 mod clustering;
+mod confounding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 use serde_json::json;
@@ -26,7 +27,6 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
     out.extend(provider.capabilities());
     for id in [
         "validation_probe",
-        "confounding",
         "domain_shift",
         "repeatability_uncertainty",
     ] {
@@ -78,6 +78,16 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
             "quasi_duplicates",
             provided(&["methods.tolerance_pairs"]),
             "TOLERANCE_PAIRS_PROVIDER_NOT_CONFIGURED",
+        ),
+        (
+            "confounding",
+            provided(&[
+                "methods.pca",
+                "methods.permanova",
+                "methods.permdisp",
+                "methods.holm_adjust",
+            ]),
+            "PERMANOVA_PROVIDER_NOT_CONFIGURED",
         ),
     ];
     for (id, available, missing) in protocols {
@@ -571,6 +581,12 @@ fn analyze_source(
             Availability::InsufficientData,
             "FEWER_THAN_THREE_COMPLETE_SAMPLES",
         );
+        confounding::unavailable(
+            report,
+            &source.source_id,
+            Availability::InsufficientData,
+            "FEWER_THAN_THREE_COMPLETE_SAMPLES",
+        );
     } else {
         let k = 10.min(matrix.len() - 2).min(p);
         let req = PcaRequest {
@@ -660,8 +676,15 @@ fn analyze_source(
                         scores: &result.scores,
                     };
                     clustering::analyze(source, input, samples, &geometry, provider, report);
+                    confounding::analyze(source, input, samples, &geometry, provider, report);
                 } else {
                     clustering::unavailable(
+                        report,
+                        &source.source_id,
+                        Availability::Undefined,
+                        "ZERO_NUMERICAL_RANK",
+                    );
+                    confounding::unavailable(
                         report,
                         &source.source_id,
                         Availability::Undefined,
@@ -727,19 +750,26 @@ fn analyze_source(
                     Availability::Error,
                     "INVALID_PROVIDER_RESULT",
                 );
+                confounding::unavailable(
+                    report,
+                    &source.source_id,
+                    Availability::Error,
+                    "INVALID_PROVIDER_RESULT",
+                );
                 let canonical = Err((Availability::Error, "CANONICAL_PCA_UNAVAILABLE"));
                 analyze_snv(source, &group_rows, k, canonical, input, provider, report);
             }
             Err(e) => {
                 report.metrics.push(Metric::unavailable(
                     "structure.pca",
-                    Availability::Unsupported,
-                    &e.0,
+                    e.availability(),
+                    &e.reason,
                     Some(&source.source_id),
                     None,
                 ));
-                clustering::unavailable(report, &source.source_id, Availability::Unsupported, &e.0);
-                let canonical = Err((Availability::Unsupported, "CANONICAL_PCA_UNAVAILABLE"));
+                clustering::unavailable(report, &source.source_id, e.availability(), &e.reason);
+                confounding::unavailable(report, &source.source_id, e.availability(), &e.reason);
+                let canonical = Err((e.availability(), "CANONICAL_PCA_UNAVAILABLE"));
                 analyze_snv(source, &group_rows, k, canonical, input, provider, report);
             }
         }
@@ -906,8 +936,8 @@ fn analyze_local(
         Err(e) => {
             report.metrics.push(Metric::unavailable(
                 "local.global_contrast",
-                Availability::Unsupported,
-                &e.0,
+                e.availability(),
+                &e.reason,
                 Some(&source.source_id),
                 Some(&target.target_id),
             ));
@@ -994,8 +1024,8 @@ fn analyze_local(
         Err(e) => {
             report.metrics.push(Metric::unavailable(
                 "local.global_contrast",
-                Availability::Unsupported,
-                &e.0,
+                e.availability(),
+                &e.reason,
                 Some(&source.source_id),
                 Some(&target.target_id),
             ));
@@ -1257,8 +1287,8 @@ fn analyze_repeats(
             )),
             Err(e) => report.metrics.push(Metric::unavailable(
                 "measurement.repeatability_sd",
-                Availability::Unsupported,
-                &e.0,
+                e.availability(),
+                &e.reason,
                 Some(&source.source_id),
                 None,
             )),
@@ -1342,7 +1372,7 @@ fn analyze_snv(
             return;
         }
         Err(e) => {
-            push_unavailable(report, Availability::Unsupported, &e.0);
+            push_unavailable(report, e.availability(), &e.reason);
             return;
         }
     };
@@ -1371,7 +1401,7 @@ fn analyze_snv(
             return;
         }
         Err(e) => {
-            push_unavailable(report, Availability::Unsupported, &e.0);
+            push_unavailable(report, e.availability(), &e.reason);
             return;
         }
     };
@@ -1552,7 +1582,7 @@ fn analyze_noise_proxy(
                 continue;
             }
             Err(e) => {
-                unavailable(report, Availability::Unsupported, &e.0);
+                unavailable(report, e.availability(), &e.reason);
                 continue;
             }
         };
@@ -1721,7 +1751,7 @@ fn analyze_quasi_duplicates(
             }
             Err(e) => {
                 for id in [WITHIN, CROSS] {
-                    push(report, id, Availability::Unsupported, &e.0);
+                    push(report, id, e.availability(), &e.reason);
                 }
                 return;
             }
@@ -1832,7 +1862,7 @@ fn analyze_quasi_duplicates(
                 Ok(_) => {
                     failures[slot] = Some((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
                 }
-                Err(e) => failures[slot] = Some((Availability::Unsupported, e.0)),
+                Err(e) => failures[slot] = Some((e.availability(), e.reason)),
             }
         }
     }
@@ -2143,8 +2173,8 @@ fn analyze_target(
                     )),
                     Err(e) => report.metrics.push(Metric::unavailable(
                         "target.continuous_distribution",
-                        Availability::Unsupported,
-                        &e.0,
+                        e.availability(),
+                        &e.reason,
                         None,
                         Some(&target.target_id),
                     )),

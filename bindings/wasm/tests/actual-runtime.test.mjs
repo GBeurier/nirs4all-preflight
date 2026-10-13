@@ -104,6 +104,32 @@ test('WASM refuses leakage through a prediction bridge',async()=>{
   assert.ok(result.issues.some(i=>i.code==='REFERENCE_LEAKAGE'));
   assert.equal(runtime.analyze(input).status,'failed');
 });
+// Same NumPy 2.2.6 goldens as the native engine test on examples/confounding.json.
+test('WASM confounding matches the native engine goldens',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/confounding.json',import.meta.url),'utf8'));
+  const report=runtime.analyze(fixture);
+  const find=(id,factor)=>report.metrics.find(m=>m.metric_id===id&&(factor===undefined||m.parameters.factor===factor));
+  const partition=find('confounding.variance_partition').value;
+  assert.ok(Math.abs(partition.factors[1].r2_unique_given_other_factors-0.07913593861176811)<1e-10);
+  assert.equal(partition.shares_are_not_additive,true);
+  const conditional=find('confounding.permanova_conditional_test','campaign');
+  assert.equal(conditional.value.n_at_least_observed,121);
+  assert.equal(conditional.parameters.permutation_plan.restrictions,'within_blocks');
+  assert.equal(conditional.parameters.permutation_plan.seed,'744331944044608949');
+  assert.equal(find('confounding.permanova_marginal_test','campaign').value.n_at_least_observed,35);
+  assert.equal(find('confounding.permdisp_test','campaign').value.n_at_least_observed,456);
+  assert.equal(find('confounding.design').value.factors[0].df_identifiable_given_other_factors,1);
+  assert.ok(runtime.capabilities().some(c=>c.capability_id==='confounding'&&c.available&&!c.qualified));
+});
+// A Methods numerical failure keeps its kind and reason across hosts (the
+// native test native_numerical_failure_is_reported_as_error).
+test('WASM reports Methods numerical failures as errors with the native reason',()=>{
+  const huge=structuredClone(input);
+  huge.sources[0].x=huge.sources[0].x.map((row,i)=>row.map((_,j)=>(i+j)%2?-1.7e308:1.7e308));
+  const pca=runtime.analyze(huge).metrics.find(m=>m.metric_id==='structure.pca');
+  assert.equal(pca.status,'error');
+  assert.equal(pca.reason_code,'METHODS_NUMERICAL_FAILURE');
+});
 test('WASM rejects identity leakage before diagnostics',()=>{
  const bad=structuredClone(input);
  bad.samples.at(-1).physical_sample_id=bad.samples[0].physical_sample_id;

@@ -1,0 +1,434 @@
+{
+ "schema_version": 1,
+ "data_origin": "synthetic",
+ "sources": [
+  {
+   "source_id": "probe_a",
+   "observation_ids": [
+    "o00",
+    "o01",
+    "o02",
+    "o03",
+    "o04",
+    "o05",
+    "o06",
+    "o07",
+    "o08",
+    "o09",
+    "o10",
+    "o11",
+    "o12",
+    "o13",
+    "o14",
+    "o15",
+    "o16",
+    "o17",
+    "o18",
+    "o19",
+    "o20"
+   ],
+   "sample_ids": [
+    "s00",
+    "s01",
+    "s02",
+    "s03",
+    "s04",
+    "s05",
+    "s06",
+    "s07",
+    "s08",
+    "s09",
+    "s10",
+    "s11",
+    "s12",
+    "s13",
+    "s14",
+    "s15",
+    "s16",
+    "s17",
+    "s18",
+    "s19",
+    "t00"
+   ],
+   "x": [
+    [
+     0.304,
+     0.3022,
+     0.2983
+    ],
+    [
+     0.3158,
+     0.3175,
+     0.3213
+    ],
+    [
+     0.2989,
+     0.2973,
+     0.2935
+    ],
+    [
+     0.2775,
+     0.2789,
+     0.2827
+    ],
+    [
+     0.3738,
+     0.3486,
+     0.3208
+    ],
+    [
+     0.3721,
+     0.3492,
+     0.3288
+    ],
+    [
+     0.3499,
+     0.3249,
+     0.2973
+    ],
+    [
+     0.3438,
+     0.3206,
+     0.3002
+    ],
+    [
+     0.331,
+     0.3303,
+     0.3268
+    ],
+    [
+     0.3142,
+     0.3147,
+     0.3182
+    ],
+    [
+     0.2944,
+     0.2941,
+     0.2907
+    ],
+    [
+     0.3034,
+     0.3036,
+     0.3069
+    ],
+    [
+     0.3935,
+     0.3695,
+     0.3423
+    ],
+    [
+     0.3644,
+     0.3402,
+     0.3194
+    ],
+    [
+     0.3539,
+     0.3302,
+     0.3032
+    ],
+    [
+     0.3739,
+     0.3495,
+     0.3284
+    ],
+    [
+     0.4007,
+     0.3774,
+     0.3505
+    ],
+    [
+     0.3652,
+     0.3405,
+     0.3192
+    ],
+    [
+     0.3684,
+     0.3453,
+     0.3187
+    ],
+    [
+     0.3927,
+     0.3676,
+     0.3461
+    ],
+    [
+     0.31,
+     0.31,
+     0.31
+    ]
+   ],
+   "axis": [
+    1100.0,
+    1200.0,
+    1300.0
+   ],
+   "axis_unit": "nm",
+   "signal_unit": "absorbance",
+   "signal_type": "absorbance"
+  }
+ ],
+ "samples": [
+  {
+   "sample_id": "s00",
+   "physical_sample_id": "p00",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s01",
+   "physical_sample_id": "p01",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s02",
+   "physical_sample_id": "p02",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s03",
+   "physical_sample_id": "p03",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s04",
+   "physical_sample_id": "p04",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s05",
+   "physical_sample_id": "p05",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s06",
+   "physical_sample_id": "p06",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s07",
+   "physical_sample_id": "p07",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2024"
+  },
+  {
+   "sample_id": "s08",
+   "physical_sample_id": "p08",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s09",
+   "physical_sample_id": "p09",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s10",
+   "physical_sample_id": "p10",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s11",
+   "physical_sample_id": "p11",
+   "partition": "development",
+   "instrument": "a",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s12",
+   "physical_sample_id": "p12",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s13",
+   "physical_sample_id": "p13",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s14",
+   "physical_sample_id": "p14",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s15",
+   "physical_sample_id": "p15",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2025"
+  },
+  {
+   "sample_id": "s16",
+   "physical_sample_id": "p16",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2026"
+  },
+  {
+   "sample_id": "s17",
+   "physical_sample_id": "p17",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2026"
+  },
+  {
+   "sample_id": "s18",
+   "physical_sample_id": "p18",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2026"
+  },
+  {
+   "sample_id": "s19",
+   "physical_sample_id": "p19",
+   "partition": "development",
+   "instrument": "b",
+   "campaign": "2026"
+  },
+  {
+   "sample_id": "t00",
+   "physical_sample_id": "pt00",
+   "partition": "retained_test",
+   "instrument": "a",
+   "campaign": "2025"
+  }
+ ],
+ "targets": [
+  {
+   "target_id": "moisture",
+   "kind": "continuous",
+   "unit": "%",
+   "values": [
+    {
+     "sample_id": "s00",
+     "value": 12.0,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s01",
+     "value": 13.175,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s02",
+     "value": 13.461,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s03",
+     "value": 12.641,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s04",
+     "value": 11.336,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s05",
+     "value": 10.534,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s06",
+     "value": 10.841,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s07",
+     "value": 12.025,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s08",
+     "value": 13.191,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s09",
+     "value": 13.455,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s10",
+     "value": 12.618,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s11",
+     "value": 11.314,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s12",
+     "value": 10.529,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s13",
+     "value": 10.857,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s14",
+     "value": 12.05,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s15",
+     "value": 13.206,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s16",
+     "value": 14.248,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s17",
+     "value": 13.395,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s18",
+     "value": 12.091,
+     "status": "exact"
+    },
+    {
+     "sample_id": "s19",
+     "value": 11.324,
+     "status": "exact"
+    }
+   ]
+  }
+ ],
+ "options": {
+  "independence_unit": "sample",
+  "exchangeable_units": true,
+  "seed": 20261013,
+  "snv_sensitivity": false
+ }
+}

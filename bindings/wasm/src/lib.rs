@@ -1,7 +1,7 @@
 //! Synchronous Methods callback in the same worker. All protocols stay Rust.
 use js_sys::Function;
 use nirs4all_preflight::*;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 struct CallbackProvider<'a>(&'a Function);
@@ -12,7 +12,7 @@ impl CallbackProvider<'_> {
         request: &impl Serialize,
     ) -> Result<T, ProviderError> {
         let request = serde_json::to_string(request)
-            .map_err(|_| ProviderError("METHODS_REQUEST_SERIALIZATION_FAILED".into()))?;
+            .map_err(|_| ProviderError::internal("METHODS_REQUEST_SERIALIZATION_FAILED"))?;
         let result = self
             .0
             .call2(
@@ -20,13 +20,33 @@ impl CallbackProvider<'_> {
                 &JsValue::from_str(operation),
                 &JsValue::from_str(&request),
             )
-            .map_err(|_| ProviderError("METHODS_CALLBACK_FAILED".into()))?;
+            .map_err(|_| ProviderError::internal("METHODS_CALLBACK_FAILED"))?;
         let text = result
             .as_string()
-            .ok_or_else(|| ProviderError("METHODS_CALLBACK_MUST_RETURN_JSON_STRING".into()))?;
-        serde_json::from_str(&text)
-            .map_err(|_| ProviderError("METHODS_CALLBACK_INVALID_RESPONSE".into()))
+            .ok_or_else(|| ProviderError::internal("METHODS_CALLBACK_MUST_RETURN_JSON_STRING"))?;
+        match serde_json::from_str(&text) {
+            Ok(Reply::Ok(value)) => Ok(value),
+            Ok(Reply::ProviderError(WireError::Methods { methods_status })) => {
+                Err(ProviderError::from_methods_status(methods_status))
+            }
+            Ok(Reply::ProviderError(WireError::Adapter(error))) => Err(error),
+            Err(_) => Err(ProviderError::internal("METHODS_CALLBACK_INVALID_RESPONSE")),
+        }
     }
+}
+/// Callback reply: a result, or a structured provider error. Methods
+/// exceptions carry their n4m status, mapped exactly as the native adapter.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum Reply<T> {
+    Ok(T),
+    ProviderError(WireError),
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireError {
+    Methods { methods_status: i32 },
+    Adapter(ProviderError),
 }
 impl MethodsProvider for CallbackProvider<'_> {
     fn capabilities(&self) -> Vec<Capability> {
@@ -36,7 +56,7 @@ impl MethodsProvider for CallbackProvider<'_> {
                     capability_id: "methods".into(),
                     available: false,
                     qualified: false,
-                    reason: Some(e.0),
+                    reason: Some(e.reason),
                 }]
             })
     }
@@ -108,6 +128,12 @@ impl MethodsProvider for CallbackProvider<'_> {
         r: &CorrelationExactRequest,
     ) -> Result<ExactPermutationDiagnostics, ProviderError> {
         self.invoke("correlation_exact", r)
+    }
+    fn permanova(&self, r: &PermanovaRequest) -> Result<PermanovaDiagnostics, ProviderError> {
+        self.invoke("permanova", r)
+    }
+    fn permdisp(&self, r: &PermdispRequest) -> Result<PermdispDiagnostics, ProviderError> {
+        self.invoke("permdisp", r)
     }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
