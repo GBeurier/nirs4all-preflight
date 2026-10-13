@@ -1735,6 +1735,9 @@ pub struct PermanovaRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermanovaDiagnostics {
+    /// Sums of squares are `ss_* x 2^ss_binary_exponent` (0 when they are
+    /// normal doubles); a positive sum is never published as 0.
+    pub ss_binary_exponent: i32,
     pub ss_total: f64,
     pub ss_strata: f64,
     /// SS(strata + term) - SS(strata).
@@ -1772,6 +1775,8 @@ pub struct FreedmanLaneRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FreedmanLaneDiagnostics {
+    /// Sums of squares are `ss_* x 2^ss_binary_exponent` (0 when normal).
+    pub ss_binary_exponent: i32,
     pub ss_total: f64,
     /// Model SS of the reduced design (intercept and condition main effects).
     pub ss_reduced: f64,
@@ -1806,6 +1811,8 @@ pub struct PermdispRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermdispDiagnostics {
+    /// Distances are `value x 2^distance_binary_exponent` (0 when normal).
+    pub distance_binary_exponent: i32,
     /// Euclidean distance of each row to its group centroid.
     pub distances: Vec<f64>,
     /// Mean distance per group, in ascending group-code order.

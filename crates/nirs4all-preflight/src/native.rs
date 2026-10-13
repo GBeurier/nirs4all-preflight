@@ -108,6 +108,7 @@ type Permanova = unsafe extern "C" fn(
     u64,
     *mut f64,
     *mut i64,
+    *mut i32,
 ) -> i32;
 type Permdisp = unsafe extern "C" fn(
     *mut c_void,
@@ -119,6 +120,7 @@ type Permdisp = unsafe extern "C" fn(
     *mut f64,
     *mut f64,
     *mut i64,
+    *mut i32,
 ) -> i32;
 type FreedmanLane = unsafe extern "C" fn(
     *mut c_void,
@@ -130,6 +132,7 @@ type FreedmanLane = unsafe extern "C" fn(
     u64,
     *mut f64,
     *mut i64,
+    *mut i32,
 ) -> i32;
 type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
 type SnvDestroy = unsafe extern "C" fn(*mut c_void);
@@ -1024,6 +1027,7 @@ impl MethodsProvider for NativeMethodsProvider {
         let xv = MatrixView::new(&mut x, n, p);
         let mut out = [f64::NAN; 13];
         let mut counts = [0i64; 2];
+        let mut exponent = 0i32;
         // SAFETY: the view owns n x p values; code arrays hold n elements;
         // outputs are owned fixed arrays of the documented sizes.
         self.check(unsafe {
@@ -1038,10 +1042,12 @@ impl MethodsProvider for NativeMethodsProvider {
                 r.seed,
                 out.as_mut_ptr(),
                 counts.as_mut_ptr(),
+                &mut exponent,
             )
         })?;
         let finite = |v: f64| v.is_finite().then_some(v);
         Ok(PermanovaDiagnostics {
+            ss_binary_exponent: exponent,
             ss_total: out[0],
             ss_strata: out[1],
             ss_term: out[2],
@@ -1070,6 +1076,7 @@ impl MethodsProvider for NativeMethodsProvider {
         let mut means = vec![f64::NAN; n];
         let mut out = [f64::NAN; 6];
         let mut counts = [0i64; 2];
+        let mut exponent = 0i32;
         // SAFETY: the view owns n x p values; per-row outputs hold n values.
         self.check(unsafe {
             (self.permdisp_fn)(
@@ -1082,11 +1089,13 @@ impl MethodsProvider for NativeMethodsProvider {
                 means.as_mut_ptr(),
                 out.as_mut_ptr(),
                 counts.as_mut_ptr(),
+                &mut exponent,
             )
         })?;
         let groups = (out[3] as usize).min(n);
         means.truncate(groups);
         Ok(PermdispDiagnostics {
+            distance_binary_exponent: exponent,
             distances,
             group_mean_distances: means,
             f: out[0].is_finite().then_some(out[0]),
@@ -1120,6 +1129,7 @@ impl MethodsProvider for NativeMethodsProvider {
         let xv = MatrixView::new(&mut x, n, p);
         let mut out = [f64::NAN; 12];
         let mut counts = [0i64; 2];
+        let mut exponent = 0i32;
         // SAFETY: the view owns n x p values; term codes hold n and the
         // row-major condition codes n x c elements; outputs are fixed arrays.
         self.check(unsafe {
@@ -1137,10 +1147,12 @@ impl MethodsProvider for NativeMethodsProvider {
                 r.seed,
                 out.as_mut_ptr(),
                 counts.as_mut_ptr(),
+                &mut exponent,
             )
         })?;
         let finite = |v: f64| v.is_finite().then_some(v);
         Ok(FreedmanLaneDiagnostics {
+            ss_binary_exponent: exponent,
             ss_total: out[0],
             ss_reduced: out[1],
             ss_term: out[2],

@@ -17,7 +17,7 @@ const FAMILY_ALPHA: f64 = 0.05;
 const TIE_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 const VIEW: &str = "canonical:centered";
 /// Domain of validity of the Methods kernels, published with each metric.
-const NUMERICAL_DOMAIN: &str = "columns centred before a power-of-two scale chosen from centred variation (constant columns and offsets have no effect); residual sums of squares from explicit residuals; sums of squares or distances not representable as doubles give status error METHODS_NUMERICAL_FAILURE";
+const NUMERICAL_DOMAIN: &str = "columns centred before a power-of-two scale chosen from centred variation (constant columns and offsets have no effect); residual sums of squares from explicit residuals; F and ratios formed in the scaled unit; sums of squares and distances published as value x 2^binary_exponent (exponent 0 when every positive value is a normal double, never a positive value rounded to 0 or infinity); status error METHODS_NUMERICAL_FAILURE only for a value below 2^-1074 of the largest";
 
 /// Categorical metadata factors in report order: `instrument`, `campaign`,
 /// then the declared categorical columns of the typed metadata map
@@ -716,22 +716,28 @@ pub(crate) fn analyze(
             // Aliasing is relative to the cells of the other factors
             // (interactions included); the additive model can still separate
             // the factor (for example A = B xor C).
-            let additive = freedman_lane
-                .get(factor)
-                .and_then(|(_, r)| r.as_ref().ok())
-                .map(|fl| fl.df_term > 0);
+            // Three states: identifiable, not identifiable, or unknown when
+            // the additive (Freedman-Lane) computation is unavailable.
+            let (additive, additive_reason) = match freedman_lane.get(factor) {
+                Some((_, Ok(fl))) => (Some(fl.df_term > 0), None),
+                Some((_, Err((_, reason)))) => (None, Some(reason.clone())),
+                None => (None, None),
+            };
             fields.insert(
                 "aliased_with_other_factor_cells".into(),
                 json!(d.df_term == 0),
             );
             fields.insert("identifiable_under_additive_model".into(), json!(additive));
+            if let Some(reason) = &additive_reason {
+                fields.insert("additive_identifiability_reason_code".into(), json!(reason));
+            }
             fields.insert(
                 "partially_confounded".into(),
                 json!(d.df_term > 0 && d.df_term < level_sets[factor].len() - 1),
             );
             fields.insert("determined_by".into(), json!(determined_by));
             if d.df_term == 0 {
-                aliased.push((factor, others.join(", "), additive));
+                aliased.push((factor, others.join(", "), additive, additive_reason));
             }
         } else if let Some((_, Err((_, reason)))) = conditional.get(factor) {
             fields.insert("df_nominal".into(), json!(level_sets[factor].len() - 1));
@@ -793,7 +799,7 @@ pub(crate) fn analyze(
     // Variance partition: shares overlap and are never summed.
     let ss_total = marginal
         .values()
-        .find_map(|(_, r)| r.as_ref().ok().map(|d| d.ss_total));
+        .find_map(|(_, r)| r.as_ref().ok().map(|d| (d.ss_total, d.ss_binary_exponent)));
     let mut partition_factors = Vec::new();
     for &factor in &effective {
         let m = marginal[factor].1.as_ref().ok();
@@ -841,18 +847,19 @@ pub(crate) fn analyze(
                 None,
             )
         }
-        Some(total) if total <= 0.0 => unavailable_metric(
+        Some((total, _)) if total <= 0.0 => unavailable_metric(
             "confounding.variance_partition",
             Availability::Undefined,
             "ZERO_TOTAL_VARIANCE",
             source_id,
             None,
         ),
-        Some(total) => {
+        Some((total, exponent)) => {
             let mut metric = Metric::computed(
                 "confounding.variance_partition",
                 json!({
                     "ss_total": total,
+                    "ss_binary_exponent": exponent,
                     "factors": partition_factors,
                     "joint": joint_value,
                     "shares_are_not_additive": true,
@@ -906,6 +913,7 @@ pub(crate) fn analyze(
                     "confounding.dispersion",
                     json!({
                         "levels": levels,
+                        "distance_binary_exponent": d.distance_binary_exponent,
                         "anova_f": d.f,
                         "df1": d.df1,
                         "df2": d.df2,
@@ -1311,7 +1319,7 @@ fn finish_family<'a>(
 
 fn findings(
     source_id: &str,
-    aliased: &[(&str, String, Option<bool>)],
+    aliased: &[(&str, String, Option<bool>, Option<String>)],
     rejected: &[(TestKind, &str, f64, f64)],
     dispersion: &[(TestKind, &str, f64, f64)],
     report: &mut QualificationReport,
@@ -1325,13 +1333,27 @@ fn findings(
             evidence.push("association.metadata_target".into());
         }
     };
-    for (factor, others, additive) in aliased {
+    for (factor, others, additive, additive_reason) in aliased {
         let mut evidence = vec![
             "confounding.design".to_string(),
             "confounding.permanova_freedman_lane_test".into(),
         ];
         association_evidence(&mut evidence);
-        let finding = if *additive == Some(true) {
+        let finding = if additive.is_none() {
+            let why = additive_reason.as_deref().unwrap_or("NOT_COMPUTED");
+            Finding {
+                rule_id: "confounding.aliased_with_other_cells.v1".into(),
+                severity: "warning".into(),
+                confidence: "unknown".into(),
+                evidence,
+                message: format!(
+                    "In {source_id}, {factor} is aliased with the cells of {others} (interactions included): every level combination of {others} holds a single {factor} level. Whether the additive main-effects model separates it is unknown, because that computation is unavailable ({why})"
+                ),
+                action: format!(
+                    "Do not attribute structure to {factor} or {others} alone until the additive identifiability is computed or the crossings within the cells of {others} are completed"
+                ),
+            }
+        } else if *additive == Some(true) {
             Finding {
                 rule_id: "confounding.aliased_with_other_cells.v1".into(),
                 severity: "info".into(),

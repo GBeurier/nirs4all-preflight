@@ -91,6 +91,7 @@ impl MethodsProvider for Scripted {
         let b = 9;
         let executed = if df_term > 0 { r.n_permutations } else { 0 };
         Ok(PermanovaDiagnostics {
+            ss_binary_exponent: 0,
             ss_total: 10.0,
             ss_strata: 1.0,
             ss_term: if aliased { 0.0 } else { 4.0 },
@@ -114,6 +115,7 @@ impl MethodsProvider for Scripted {
         let g = r.group_codes.iter().collect::<BTreeSet<_>>().len();
         let executed = r.n_permutations;
         Ok(PermdispDiagnostics {
+            distance_binary_exponent: 0,
             distances: vec![1.0; n],
             group_mean_distances: vec![1.0; g],
             f: Some(0.5),
@@ -153,6 +155,7 @@ impl MethodsProvider for Scripted {
         };
         let executed = if df_term > 0 { r.n_permutations } else { 0 };
         Ok(FreedmanLaneDiagnostics {
+            ss_binary_exponent: 0,
             ss_total: 10.0,
             ss_reduced: 1.0,
             ss_term: if aliased { 0.0 } else { 4.0 },
@@ -1414,4 +1417,146 @@ fn native_engine_partition_is_scale_invariant_or_fails_explicitly() {
             other => panic!("k={k}: unexpected status {other:?}"),
         }
     }
+}
+
+/// Scripted provider whose Freedman-Lane call is unavailable.
+struct NoFreedmanLane;
+impl MethodsProvider for NoFreedmanLane {
+    fn capabilities(&self) -> Vec<Capability> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .capabilities()
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .pca(r)
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
+    }
+    fn permanova(&self, r: &PermanovaRequest) -> Result<PermanovaDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .permanova(r)
+    }
+    fn permdisp(&self, r: &PermdispRequest) -> Result<PermdispDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .permdisp(r)
+    }
+    fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .holm_adjust(r)
+    }
+    fn permanova_freedman_lane(
+        &self,
+        _: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "FREEDMAN_LANE_WORK_BUDGET_EXCEEDED",
+        ))
+    }
+}
+
+#[test]
+fn unknown_additive_identifiability_is_not_reported_as_non_identifiable() {
+    // Astra round 3 P0: with Freedman-Lane unavailable, an aliased factor is
+    // reported as aliased with the cells only, with the reason why the
+    // additive model was not assessed; never "separable by neither model".
+    let report = analyze(&crossed(6, true), &NoFreedmanLane);
+    let design = find(&report, "confounding.design", None);
+    let instrument = &design.value.as_ref().unwrap()["factors"][0];
+    assert_eq!(instrument["aliased_with_other_factor_cells"], true);
+    assert!(instrument["identifiable_under_additive_model"].is_null());
+    assert_eq!(
+        instrument["additive_identifiability_reason_code"],
+        "FREEDMAN_LANE_WORK_BUDGET_EXCEEDED"
+    );
+    assert!(!report
+        .findings
+        .iter()
+        .any(|f| f.rule_id == "confounding.aliased_factors.v1"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| {
+            f.rule_id == "confounding.aliased_with_other_cells.v1"
+                && f.message.contains("instrument")
+        })
+        .unwrap();
+    assert!(finding.message.contains("unknown"));
+    assert!(finding
+        .message
+        .contains("FREEDMAN_LANE_WORK_BUDGET_EXCEEDED"));
+    assert!(!finding.message.contains("neither"));
+    // The three states stay distinct: known non-identifiable remains a warning
+    // of aliased_factors.v1 (scripted provider, instrument = campaign).
+    let report = analyze(
+        &crossed(6, true),
+        &Scripted {
+            log10_distinct: 5.0,
+        },
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule_id == "confounding.aliased_factors.v1" && f.message.contains("neither")));
+}
+
+#[test]
+fn native_dyadic_sums_of_squares_keep_their_exponent() {
+    // Astra round 3 dyadic fixture through the native adapter: SS_A = SS_res
+    // = 2^-1116 (not a normal double) travel as value x 2^exponent.
+    let Some(provider) = native() else {
+        return;
+    };
+    let mut matrix = Vec::new();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for i in 0..16 {
+        let cell = i / 4;
+        let ai: i64 = if cell < 2 { -1 } else { 1 };
+        let bi: i64 = if cell % 2 == 0 { -1 } else { 1 };
+        let r = if i % 2 == 0 { 1.0 } else { -1.0 };
+        matrix.push(vec![
+            bi as f64 * 2f64.powi(-500),
+            (ai as f64 + r) * 2f64.powi(-560),
+        ]);
+        a.push(ai);
+        b.push(bi);
+    }
+    let fl = provider
+        .permanova_freedman_lane(&FreedmanLaneRequest {
+            matrix: matrix.clone(),
+            term_codes: a.clone(),
+            condition_codes: vec![b.clone()],
+            n_permutations: 0,
+            seed: 1,
+        })
+        .unwrap();
+    let log2 = |v: f64, e: i32| v.log2() + e as f64;
+    assert_ne!(fl.ss_binary_exponent, 0);
+    assert!((log2(fl.ss_term, fl.ss_binary_exponent) + 1116.0).abs() < 1e-12);
+    assert!((log2(fl.ss_residual, fl.ss_binary_exponent) + 1116.0).abs() < 1e-12);
+    assert!((fl.pseudo_f.unwrap() - 13.0).abs() < 1e-11);
+    let cells = provider
+        .permanova(&PermanovaRequest {
+            matrix,
+            term_codes: a,
+            strata_codes: Some(b),
+            n_permutations: 0,
+            seed: 1,
+        })
+        .unwrap();
+    assert!((log2(cells.ss_residual, cells.ss_binary_exponent) + 1116.0).abs() < 1e-12);
+    assert!((cells.partial_r2.unwrap() - 0.5).abs() < 1e-12);
 }
