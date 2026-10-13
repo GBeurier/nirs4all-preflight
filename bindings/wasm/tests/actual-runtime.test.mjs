@@ -58,6 +58,31 @@ test('WASM keeps u64 root seeds exact',async()=>{
   assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:9007199254740993}}),/SEED_NOT_SAFE_INTEGER/);
   assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:'18446744073709551616'}}));
 });
+// Retained-test Y stays opaque through the JSON facade (review P0).
+test('WASM report is invariant to reserved Y content',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const outputs=[9.9,'do-not-read',{nested:[1]},null,true].map(reserved=>{
+    const input=structuredClone(fixture);
+    const t00=input.targets[0].values.find(v=>v.sample_id==='t00');
+    t00.value=reserved; t00.category=reserved;
+    assert.equal(runtime.validate(input).valid,true);
+    return JSON.stringify(runtime.analyze(input));
+  });
+  assert.ok(outputs.every(o=>o===outputs[0]));
+});
+// A development row, a prediction bridge and a retained-test row linked by
+// a physical sample then a reference group form one component (review P0).
+test('WASM refuses leakage through a prediction bridge',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const input=structuredClone(fixture);
+  input.samples.push({sample_id:'bridge',physical_sample_id:'p00',partition:'prediction'});
+  input.targets[0].values.push({sample_id:'bridge',status:'censored',reference_group_id:'R'});
+  input.targets[0].values.find(v=>v.sample_id==='t00').reference_group_id='R';
+  const result=runtime.validate(input);
+  assert.equal(result.valid,false);
+  assert.ok(result.issues.some(i=>i.code==='REFERENCE_LEAKAGE'));
+  assert.equal(runtime.analyze(input).status,'failed');
+});
 test('WASM rejects identity leakage before diagnostics',()=>{
  const bad=structuredClone(input);
  bad.samples.at(-1).physical_sample_id=bad.samples[0].physical_sample_id;

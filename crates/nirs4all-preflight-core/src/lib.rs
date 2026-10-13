@@ -9,8 +9,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0-alpha.3";
 
+/// Deserialized through a raw wire form: partitions and identifiers
+/// are decoded first and target content stays opaque JSON until the
+/// partition of its sample is known. Retained-test references keep their
+/// identity fields; their value and category are dropped unread.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawQualificationInput")]
 pub struct QualificationInput {
     pub schema_version: u32,
     #[serde(default)]
@@ -24,6 +28,111 @@ pub struct QualificationInput {
     pub metadata: MetadataTable,
     #[serde(default)]
     pub options: Options,
+}
+
+/// Wire form of [`QualificationInput`]: identical fields, with target
+/// values and categories kept as opaque JSON.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawQualificationInput {
+    schema_version: u32,
+    #[serde(default)]
+    data_origin: DataOrigin,
+    sources: Vec<SpectralSource>,
+    samples: Vec<Sample>,
+    #[serde(default)]
+    targets: Vec<RawTarget>,
+    #[serde(default)]
+    metadata: MetadataTable,
+    #[serde(default)]
+    options: Options,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTarget {
+    target_id: String,
+    kind: TargetKind,
+    values: Vec<RawTargetValue>,
+    #[serde(default)]
+    unit: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTargetValue {
+    sample_id: String,
+    #[serde(default)]
+    value: Option<Value>,
+    #[serde(default)]
+    category: Option<Value>,
+    status: ReferenceStatus,
+    #[serde(default)]
+    reference_id: Option<String>,
+    #[serde(default)]
+    reference_group_id: Option<String>,
+}
+
+impl TryFrom<RawQualificationInput> for QualificationInput {
+    type Error = String;
+    fn try_from(raw: RawQualificationInput) -> Result<Self, String> {
+        let retained: BTreeSet<&str> = raw
+            .samples
+            .iter()
+            .filter(|s| s.partition == Partition::RetainedTest)
+            .map(|s| s.sample_id.as_str())
+            .collect();
+        let mut targets = Vec::with_capacity(raw.targets.len());
+        for (ti, target) in raw.targets.into_iter().enumerate() {
+            let mut values = Vec::with_capacity(target.values.len());
+            for (vi, v) in target.values.into_iter().enumerate() {
+                let (value, category) = if retained.contains(v.sample_id.as_str()) {
+                    (None, None)
+                } else {
+                    let path = format!("targets[{ti}].values[{vi}]");
+                    let value = match v.value {
+                        None | Some(Value::Null) => None,
+                        Some(Value::Number(n)) => Some(
+                            n.as_f64()
+                                .ok_or_else(|| format!("{path}.value: not representable as f64"))?,
+                        ),
+                        Some(_) => return Err(format!("{path}.value: expected a number or null")),
+                    };
+                    let category = match v.category {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(c)) => Some(c),
+                        Some(_) => {
+                            return Err(format!("{path}.category: expected a string or null"))
+                        }
+                    };
+                    (value, category)
+                };
+                values.push(TargetValue {
+                    sample_id: v.sample_id,
+                    value,
+                    category,
+                    status: v.status,
+                    reference_id: v.reference_id,
+                    reference_group_id: v.reference_group_id,
+                });
+            }
+            targets.push(Target {
+                target_id: target.target_id,
+                kind: target.kind,
+                values,
+                unit: target.unit,
+            });
+        }
+        Ok(Self {
+            schema_version: raw.schema_version,
+            data_origin: raw.data_origin,
+            sources: raw.sources,
+            samples: raw.samples,
+            targets,
+            metadata: raw.metadata,
+            options: raw.options,
+        })
+    }
 }
 
 /// Declared metadata columns and their per-sample values. Values are keyed by
@@ -715,99 +824,61 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
         }
     }
     validate_metadata(input, &by_id, &mut out);
-    // Build transitive identity components on the *original* partitions before aggregation.
-    // An augmentation parent names a sample ID; that ID is joined to its physical alias here.
-    let mut parent: HashMap<String, String> = HashMap::new();
-    fn find(parent: &mut HashMap<String, String>, key: &str) -> String {
-        let mut root = key.to_owned();
-        let mut path = Vec::new();
-        loop {
-            let next = parent
-                .entry(root.clone())
-                .or_insert_with(|| root.clone())
-                .clone();
-            if next == root {
-                break;
+    // Partitions are checked on whole linked components, built on the original
+    // rows before any aggregation or exclusion. Prediction rows take no role
+    // but stay in the union as identity bridges. Declared independence groups
+    // are dependencies whatever the analysis unit, so they always link here.
+    let role = |s: &Sample| match s.partition {
+        Partition::Development => Some("fit"),
+        Partition::RetainedTest => Some("eval"),
+        Partition::Prediction => None,
+    };
+    let crossing = |component: &[usize]| {
+        let mut roles = BTreeMap::<usize, BTreeSet<&'static str>>::new();
+        for (i, sample) in input.samples.iter().enumerate() {
+            let entry = roles.entry(component[i]).or_default();
+            if let Some(r) = role(sample) {
+                entry.insert(r);
             }
-            path.push(root);
-            root = next;
         }
-        for node in path {
-            parent.insert(node, root.clone());
-        }
-        root
+        roles
+            .into_iter()
+            .filter(|(_, r)| r.len() > 1)
+            .map(|(root, _)| root)
+            .collect::<BTreeSet<usize>>()
+    };
+    let identity = identity_components(input, &[], true);
+    let identity_crossing = crossing(&identity);
+    for &root in &identity_crossing {
+        out.add(
+            "IDENTITY_LEAKAGE",
+            "samples",
+            format!(
+                "Linked identity component of sample {} spans development and retained test",
+                input.samples[root].sample_id
+            ),
+            true,
+        );
     }
-    fn union(parent: &mut HashMap<String, String>, a: &str, b: &str) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent.insert(ra, rb);
-        }
-    }
-    for sample in &input.samples {
-        let own = format!("sample:{}", sample.sample_id);
-        if let Some(v) = &sample.physical_sample_id {
-            union(&mut parent, &own, &format!("physical:{v}"));
-        }
-        if let Some(v) = &sample.individual_id {
-            union(&mut parent, &own, &format!("individual:{v}"));
-        }
-        if let Some(v) = &sample.augmentation_parent_id {
-            union(&mut parent, &own, &format!("sample:{v}"));
-        }
-    }
-    let mut components: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
-    for sample in &input.samples {
-        if sample.partition == Partition::Prediction {
+    let targets: Vec<&Target> = input.targets.iter().collect();
+    let full = identity_components(input, &targets, true);
+    for root in crossing(&full) {
+        let members: Vec<usize> = (0..full.len()).filter(|&i| full[i] == root).collect();
+        if members
+            .iter()
+            .any(|&i| identity_crossing.contains(&identity[i]))
+        {
             continue;
         }
-        let role = if sample.partition == Partition::RetainedTest {
-            "eval"
-        } else {
-            "fit"
-        };
-        let root = find(&mut parent, &format!("sample:{}", sample.sample_id));
-        components.entry(root).or_default().insert(role);
-    }
-    for (key, roles) in components {
-        if roles.len() > 1 {
-            out.add(
-                "IDENTITY_LEAKAGE",
-                "samples",
-                format!("Linked identity component {key} spans development and retained test"),
-                true,
-            );
-        }
-    }
-    for target in &input.targets {
-        let mut groups: BTreeMap<&str, BTreeSet<&'static str>> = BTreeMap::new();
-        for value in &target.values {
-            if let (Some(group), Some(sample)) = (
-                &value.reference_group_id,
-                by_id.get(value.sample_id.as_str()),
-            ) {
-                if sample.partition == Partition::Prediction {
-                    continue;
-                }
-                groups.entry(group).or_default().insert(
-                    if sample.partition == Partition::RetainedTest {
-                        "eval"
-                    } else {
-                        "fit"
-                    },
-                );
-            }
-        }
-        for (group, roles) in groups {
-            if roles.len() > 1 {
-                out.add(
-                    "REFERENCE_LEAKAGE",
-                    format!("targets.{}", target.target_id),
-                    format!("Reference group {group} spans development and retained test"),
-                    true,
-                );
-            }
-        }
+        out.add(
+            "REFERENCE_LEAKAGE",
+            "targets",
+            format!(
+                "Reference groups link the component of sample {} across development and retained test",
+                input.samples[root].sample_id
+            ),
+            true,
+        );
     }
     out
 }
@@ -819,6 +890,19 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
 /// and statuses; identity fields only, never Y content). Returns, for each
 /// sample index, the smallest sample index of its component.
 pub fn independence_components(input: &QualificationInput, targets: &[&Target]) -> Vec<usize> {
+    identity_components(
+        input,
+        targets,
+        input.options.independence_unit == IndependenceUnit::Group,
+    )
+}
+
+/// Union-find over all samples; `groups` adds `independence_group` links.
+fn identity_components(
+    input: &QualificationInput,
+    targets: &[&Target],
+    groups: bool,
+) -> Vec<usize> {
     fn root(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
             parent[i] = parent[parent[i]];
@@ -853,7 +937,7 @@ pub fn independence_components(input: &QualificationInput, targets: &[&Target]) 
         if let Some(v) = &sample.augmentation_parent_id {
             link(format!("sample:{v}"), i, &mut parent);
         }
-        if input.options.independence_unit == IndependenceUnit::Group {
+        if groups {
             if let Some(v) = &sample.independence_group {
                 link(format!("group:{v}"), i, &mut parent);
             }

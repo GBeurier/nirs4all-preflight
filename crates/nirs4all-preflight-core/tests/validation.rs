@@ -301,3 +301,99 @@ fn retained_test_y_content_is_never_inspected() {
         .iter()
         .any(|(c, _, _)| c == "INVALID_EXACT_TARGET"));
 }
+
+fn sample(id: &str, partition: Partition) -> Sample {
+    Sample {
+        sample_id: id.into(),
+        physical_sample_id: None,
+        partition,
+        independence_group: None,
+        instrument: None,
+        campaign: None,
+        individual_id: None,
+        augmentation_parent_id: None,
+    }
+}
+
+fn reference(sample_id: &str, group: &str) -> TargetValue {
+    TargetValue {
+        sample_id: sample_id.into(),
+        value: None,
+        category: None,
+        status: ReferenceStatus::Censored,
+        reference_id: None,
+        reference_group_id: Some(group.into()),
+    }
+}
+
+#[test]
+fn leakage_is_checked_on_whole_components_through_prediction_bridges() {
+    // Review P0: A (development) shares a physical sample with B
+    // (prediction); B shares a reference group with C (retained test).
+    let mut x = fixture();
+    x.samples = vec![
+        sample("a", Partition::Development),
+        sample("b", Partition::Prediction),
+        sample("c", Partition::RetainedTest),
+    ];
+    x.sources[0].sample_ids = vec!["a".into(), "c".into()];
+    x.samples[0].physical_sample_id = Some("P".into());
+    x.samples[1].physical_sample_id = Some("P".into());
+    assert!(validate_input(&x).valid);
+    x.targets.push(Target {
+        target_id: "y".into(),
+        kind: TargetKind::Continuous,
+        values: vec![reference("b", "R"), reference("c", "R")],
+        unit: None,
+    });
+    let result = validate_input(&x);
+    assert!(!result.valid);
+    assert!(result.issues.iter().any(|i| i.code == "REFERENCE_LEAKAGE"));
+    // Identity-only bridge: A -physical- B -individual- C.
+    x.targets.clear();
+    x.samples[1].individual_id = Some("I".into());
+    x.samples[2].individual_id = Some("I".into());
+    let result = validate_input(&x);
+    assert!(!result.valid);
+    assert_eq!(
+        result
+            .issues
+            .iter()
+            .filter(|i| i.code.ends_with("_LEAKAGE"))
+            .count(),
+        1
+    );
+    assert!(result.issues.iter().any(|i| i.code == "IDENTITY_LEAKAGE"));
+}
+
+#[test]
+fn declared_independence_group_cannot_cross_partitions() {
+    // Groups are dependencies whatever the analysis unit.
+    let mut x = fixture();
+    assert_eq!(x.options.independence_unit, IndependenceUnit::Unknown);
+    x.samples[0].independence_group = Some("G".into());
+    x.samples[1].independence_group = Some("G".into());
+    let result = validate_input(&x);
+    assert!(!result.valid);
+    assert!(result.issues.iter().any(|i| i.code == "IDENTITY_LEAKAGE"));
+}
+
+#[test]
+fn reserved_y_content_stays_opaque_at_parse_time() {
+    // Review P0: a reserved value of any JSON type is never decoded.
+    let mut value = serde_json::to_value(fixture()).unwrap();
+    value["targets"] = serde_json::json!([{
+    "target_id": "y", "kind": "continuous",
+    "values": [
+        {"sample_id": "a", "value": 1.5, "status": "exact"},
+        {"sample_id": "b", "value": "do-not-read", "category": {"x": 1}, "status": "exact"}
+    ]}]);
+    let input: QualificationInput = serde_json::from_value(value.clone()).unwrap();
+    assert!(validate_input(&input).valid);
+    let reserved = &input.targets[0].values[1];
+    assert!(reserved.value.is_none() && reserved.category.is_none());
+    assert_eq!(input.targets[0].values[0].value, Some(1.5));
+    value["targets"][0]["values"][0]["value"] = serde_json::json!("1.5");
+    let error = serde_json::from_value::<QualificationInput>(value).unwrap_err();
+    assert!(error.to_string().contains("targets[0].values[0].value"));
+}
