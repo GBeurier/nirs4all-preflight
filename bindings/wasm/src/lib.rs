@@ -143,6 +143,15 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
         self.invoke("permanova_freedman_lane", r)
     }
+    fn energy_distance(
+        &self,
+        r: &EnergyDistanceRequest,
+    ) -> Result<EnergyDistanceDiagnostics, ProviderError> {
+        self.invoke("energy_distance", r)
+    }
+    fn pca_monitor(&self, r: &PcaMonitorRequest) -> Result<PcaMonitorDiagnostics, ProviderError> {
+        self.invoke("pca_monitor", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {
