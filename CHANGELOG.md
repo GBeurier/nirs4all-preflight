@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0-alpha.3 — 2026-10-13
+## 0.1.0 — unreleased
 
-Engine, crates, Python and npm binding move together to 0.1.0-alpha.3 and require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.
+Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.
 
 - Clustering capability (PF-05, exploratory, unqualified). Methods ABI 2.19
   `n4m_cluster_hdbscan` runs on the same eligible samples and canonical

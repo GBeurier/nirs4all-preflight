@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0-alpha.3";
+pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
