@@ -154,6 +154,14 @@ pub struct Options {
     pub max_cells: usize,
     #[serde(default = "default_max_samples")]
     pub max_samples: usize,
+    #[serde(default)]
+    pub noise_proxy: NoiseProxyOptions,
+    /// Labelled unsupervised SNV sensitivity of the canonical PCA structure.
+    #[serde(default = "default_true")]
+    pub snv_sensitivity: bool,
+    /// Quasi-identity runs only with a declared tolerance; none is invented.
+    #[serde(default)]
+    pub quasi_duplicates: Option<QuasiDuplicateOptions>,
 }
 
 impl Default for Options {
@@ -164,8 +172,68 @@ impl Default for Options {
             seed: 0,
             max_cells: default_max_cells(),
             max_samples: default_max_samples(),
+            noise_proxy: NoiseProxyOptions::default(),
+            snv_sensitivity: true,
+            quasi_duplicates: None,
         }
     }
+}
+fn default_true() -> bool {
+    true
+}
+
+/// Savitzky-Golay smoothing-residual noise proxy profile (window in bands).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoiseProxyOptions {
+    #[serde(default = "default_noise_window")]
+    pub window_bands: usize,
+    #[serde(default = "default_noise_polyorder")]
+    pub polyorder: usize,
+}
+
+impl Default for NoiseProxyOptions {
+    fn default() -> Self {
+        Self {
+            window_bands: default_noise_window(),
+            polyorder: default_noise_polyorder(),
+        }
+    }
+}
+fn default_noise_window() -> usize {
+    11
+}
+fn default_noise_polyorder() -> usize {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuasiDuplicateOptions {
+    /// Maximum root-mean-square band difference, in the units of the view.
+    pub tolerance: f64,
+    #[serde(default)]
+    pub view: QuasiDuplicateView,
+    #[serde(default)]
+    pub context: ComparisonContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QuasiDuplicateView {
+    #[default]
+    Native,
+    Snv,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonContext {
+    /// Compare observations only within one instrument and campaign.
+    #[default]
+    InstrumentCampaign,
+    /// Compare every observation of a source.
+    Source,
 }
 fn default_max_cells() -> usize {
     10_000_000
@@ -290,6 +358,32 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
                 true,
             );
         }
+    }
+    let noise = input.options.noise_proxy;
+    if noise.window_bands < 3
+        || noise.window_bands.is_multiple_of(2)
+        || noise.window_bands > 1001
+        || noise.polyorder + 2 > noise.window_bands
+    {
+        out.add(
+            "INVALID_NOISE_PROXY_PARAMETERS",
+            "options.noise_proxy",
+            "Noise proxy window must be odd, between 3 and 1001 bands, with polyorder <= window - 2",
+            true,
+        );
+    }
+    if input
+        .options
+        .quasi_duplicates
+        .as_ref()
+        .is_some_and(|q| !(q.tolerance.is_finite() && q.tolerance > 0.0))
+    {
+        out.add(
+            "INVALID_QUASI_DUPLICATE_TOLERANCE",
+            "options.quasi_duplicates.tolerance",
+            "Quasi-duplicate tolerance must be finite and positive",
+            true,
+        );
     }
     let mut source_ids = BTreeSet::new();
     let mut total_cells = 0usize;
@@ -764,6 +858,58 @@ pub struct LocalContrastDiagnostics {
     pub backend_version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnvRequest {
+    pub matrix: Vec<Vec<f64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnvDiagnostics {
+    pub matrix: Vec<Vec<f64>>,
+    pub backend_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoiseProxyRequest {
+    pub matrix: Vec<Vec<f64>>,
+    pub valid_mask: Vec<Vec<bool>>,
+    pub window_length: usize,
+    pub polyorder: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoiseProxyDiagnostics {
+    /// RMS smoothing residual over rows divided by the white-noise residual gain.
+    pub band_noise: Vec<Option<f64>>,
+    pub band_counts: Vec<usize>,
+    pub pooled: Option<f64>,
+    pub residual_gain: f64,
+    pub backend_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TolerancePairsRequest {
+    pub query: Vec<Vec<f64>>,
+    /// None compares query rows with each other (i < h).
+    pub reference: Option<Vec<Vec<f64>>>,
+    pub query_group_ids: Vec<i64>,
+    pub reference_group_ids: Vec<i64>,
+    pub tolerance: f64,
+    pub max_pairs: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TolerancePairsDiagnostics {
+    /// Listed [query, reference] pairs in ascending order, at most max_pairs.
+    pub pairs: Vec<[usize; 2]>,
+    pub distances: Vec<f64>,
+    pub query_flags: Vec<bool>,
+    pub reference_flags: Vec<bool>,
+    pub total_pairs: usize,
+    pub candidate_pairs: usize,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -788,43 +934,49 @@ pub trait MethodsProvider {
             "LOCAL_CONTRAST_PROVIDER_NOT_CONFIGURED".into(),
         ))
     }
+    fn snv(&self, _request: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
+        Err(ProviderError("SNV_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn noise_proxy(
+        &self,
+        _request: &NoiseProxyRequest,
+    ) -> Result<NoiseProxyDiagnostics, ProviderError> {
+        Err(ProviderError("NOISE_PROXY_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn tolerance_pairs(
+        &self,
+        _request: &TolerancePairsRequest,
+    ) -> Result<TolerancePairsDiagnostics, ProviderError> {
+        Err(ProviderError(
+            "TOLERANCE_PAIRS_PROVIDER_NOT_CONFIGURED".into(),
+        ))
+    }
 }
+
+/// Methods operations a complete provider exposes, in report order.
+pub const METHODS_CAPABILITY_IDS: [&str; 8] = [
+    "methods.pca",
+    "methods.repeatability",
+    "methods.summary",
+    "methods.nearest_neighbors",
+    "methods.local_contrast",
+    "methods.snv",
+    "methods.noise_proxy",
+    "methods.tolerance_pairs",
+];
 
 pub struct UnavailableMethodsProvider;
 impl MethodsProvider for UnavailableMethodsProvider {
     fn capabilities(&self) -> Vec<Capability> {
-        vec![
-            Capability {
-                capability_id: "methods.pca".into(),
+        METHODS_CAPABILITY_IDS
+            .iter()
+            .map(|id| Capability {
+                capability_id: (*id).into(),
                 available: false,
                 qualified: false,
                 reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
-            },
-            Capability {
-                capability_id: "methods.repeatability".into(),
-                available: false,
-                qualified: false,
-                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
-            },
-            Capability {
-                capability_id: "methods.summary".into(),
-                available: false,
-                qualified: false,
-                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
-            },
-            Capability {
-                capability_id: "methods.nearest_neighbors".into(),
-                available: false,
-                qualified: false,
-                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
-            },
-            Capability {
-                capability_id: "methods.local_contrast".into(),
-                available: false,
-                qualified: false,
-                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
-            },
-        ]
+            })
+            .collect()
     }
     fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
         Err(ProviderError("METHODS_PROVIDER_NOT_CONFIGURED".into()))

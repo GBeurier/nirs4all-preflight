@@ -38,3 +38,296 @@ fn actual_public_methods_abi_matches_analytic_covariance_and_repeatability() {
         .unwrap();
     assert!((contrast.contrast.unwrap() - (1. - 3. / 202.)).abs() < 1e-10);
 }
+
+fn native() -> Option<NativeMethodsProvider> {
+    let path = std::env::var("N4M_LIBRARY_PATH").ok()?;
+    Some(NativeMethodsProvider::load(path).expect("compatible Methods ABI"))
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-9
+}
+
+#[test]
+fn native_snv_noise_proxy_and_pairs_match_hand_values() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Population SD (ddof 0): both rows become (-sqrt(3/2), 0, sqrt(3/2)).
+    let snv = provider
+        .snv(&SnvRequest {
+            matrix: vec![vec![1., 2., 3.], vec![2., 4., 6.]],
+        })
+        .unwrap();
+    for row in &snv.matrix {
+        assert!(near(row[0], -1.5f64.sqrt()) && near(row[1], 0.) && near(row[2], 1.5f64.sqrt()));
+    }
+    // Window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.
+    // Row 0 is quadratic; row 1 is linear plus a 35 impulse at band 5.
+    let quadratic: Vec<f64> = (0..11).map(|j| (j * j) as f64).collect();
+    let impulse: Vec<f64> = (0..11)
+        .map(|j| 1. + 2. * j as f64 + if j == 5 { 35. } else { 0. })
+        .collect();
+    let mut mask = vec![vec![true; 11]; 2];
+    mask[1][9] = false;
+    let noise = provider
+        .noise_proxy(&NoiseProxyRequest {
+            matrix: vec![quadratic, impulse],
+            valid_mask: mask,
+            window_length: 5,
+            polyorder: 2,
+        })
+        .unwrap();
+    assert!(near(noise.residual_gain, (18f64 / 35.).sqrt()));
+    assert!(near(noise.band_noise[5].unwrap(), 315f64.sqrt()));
+    assert!(near(noise.band_noise[3].unwrap(), 8.75f64.sqrt()));
+    assert_eq!(noise.band_counts, vec![0, 0, 2, 2, 2, 2, 2, 1, 1, 0, 0]);
+    assert!(noise.band_noise[0].is_none() && noise.band_noise[10].is_none());
+    // Masked band 9 drops row 1 from bands 7 and 8: pooled 621 over 12 cells.
+    assert!(near(
+        noise.pooled.unwrap(),
+        (621f64 / 12.).sqrt() / (18f64 / 35.).sqrt()
+    ));
+    // RMS distance sqrt(0.01/2) for (0,1) and (1,4); (0,4) shares a group.
+    let points = vec![
+        vec![0., 0.],
+        vec![0.1, 0.],
+        vec![0., 0.3],
+        vec![5., 5.],
+        vec![0., 0.],
+    ];
+    let pairs = provider
+        .tolerance_pairs(&TolerancePairsRequest {
+            query: points,
+            reference: None,
+            query_group_ids: vec![1, 2, 3, 4, 1],
+            reference_group_ids: vec![],
+            tolerance: 0.1,
+            max_pairs: 10,
+        })
+        .unwrap();
+    assert_eq!((pairs.total_pairs, pairs.candidate_pairs), (2, 9));
+    assert_eq!(pairs.pairs, vec![[0, 1], [1, 4]]);
+    assert!(near(pairs.distances[0], 0.005f64.sqrt()));
+    assert_eq!(pairs.query_flags, vec![true, true, false, false, true]);
+    let cross = provider
+        .tolerance_pairs(&TolerancePairsRequest {
+            query: vec![vec![0., 0.]],
+            reference: Some(vec![vec![0., 0.1], vec![1., 1.]]),
+            query_group_ids: vec![0],
+            reference_group_ids: vec![1, 2],
+            tolerance: 0.1,
+            max_pairs: 0,
+        })
+        .unwrap();
+    assert_eq!((cross.total_pairs, cross.candidate_pairs), (1, 2));
+    assert!(cross.pairs.is_empty());
+    assert_eq!(cross.reference_flags, vec![true, false]);
+}
+
+fn sample(id: &str, partition: Partition) -> Sample {
+    Sample {
+        sample_id: id.into(),
+        physical_sample_id: Some(format!("p-{id}")),
+        partition,
+        independence_group: None,
+        instrument: Some("a".into()),
+        campaign: Some("c".into()),
+        individual_id: None,
+        augmentation_parent_id: None,
+    }
+}
+
+fn input_with(rows: Vec<(&str, Partition, Vec<f64>)>, axis: Vec<f64>) -> QualificationInput {
+    QualificationInput {
+        schema_version: 1,
+        data_origin: DataOrigin::Synthetic,
+        sources: vec![SpectralSource {
+            source_id: "nir".into(),
+            observation_ids: rows.iter().map(|r| format!("o-{}", r.0)).collect(),
+            sample_ids: rows.iter().map(|r| r.0.to_string()).collect(),
+            x: rows
+                .iter()
+                .map(|r| r.2.iter().copied().map(Some).collect())
+                .collect(),
+            valid_mask: None,
+            axis,
+            axis_unit: "nm".into(),
+            signal_unit: "absorbance".into(),
+            signal_type: "absorbance".into(),
+            repetition_types: None,
+        }],
+        samples: rows.iter().map(|r| sample(r.0, r.1)).collect(),
+        targets: vec![],
+        options: Options::default(),
+    }
+}
+
+fn metric<'a>(report: &'a QualificationReport, id: &str) -> &'a Metric {
+    report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == id)
+        .unwrap_or_else(|| panic!("missing {id}"))
+}
+
+#[test]
+fn native_engine_reports_noise_proxy_and_declared_quasi_duplicates() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let quadratic: Vec<f64> = (0..11).map(|j| (j * j) as f64).collect();
+    let impulse: Vec<f64> = (0..11)
+        .map(|j| 1. + 2. * j as f64 + if j == 5 { 35. } else { 0. })
+        .collect();
+    let linear: Vec<f64> = (0..11).map(|j| 100. + j as f64).collect();
+    let mut input = input_with(
+        vec![
+            ("s0", Partition::Development, quadratic.clone()),
+            ("s1", Partition::Development, impulse),
+            (
+                "s2",
+                Partition::Development,
+                quadratic.iter().map(|v| v + 0.01).collect(),
+            ),
+            ("s3", Partition::Development, linear.clone()),
+            (
+                "t0",
+                Partition::RetainedTest,
+                linear.iter().map(|v| v + 0.02).collect(),
+            ),
+        ],
+        (0..11).map(|j| 1000. + 10. * j as f64).collect(),
+    );
+    input.options.noise_proxy = NoiseProxyOptions {
+        window_bands: 5,
+        polyorder: 2,
+    };
+    input.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.05,
+        view: QuasiDuplicateView::Native,
+        context: ComparisonContext::InstrumentCampaign,
+    });
+    let report = analyze(&input, &provider);
+    // Development rows only: residual energy 630 over 4 rows x 7 interior bands.
+    let noise = metric(&report, "measurement.noise_proxy");
+    let bands = noise.value.as_ref().unwrap().as_array().unwrap();
+    assert!(near(bands[5].as_f64().unwrap(), 157.5f64.sqrt()));
+    assert!(bands[0].is_null() && bands[10].is_null());
+    assert_eq!(noise.parameters["physical_window_width"], 40.0);
+    let pooled = metric(&report, "measurement.noise_proxy_pooled");
+    assert!(near(
+        pooled.value.as_ref().unwrap().as_f64().unwrap(),
+        43.75f64.sqrt()
+    ));
+    let within = metric(&report, "integrity.quasi_duplicate_pairs");
+    let v = within.value.as_ref().unwrap();
+    assert_eq!(v["suspect_pairs"], 1);
+    assert_eq!(v["candidate_pairs"], 6);
+    assert!(near(v["suspect_pair_rate"].as_f64().unwrap(), 1. / 6.));
+    assert!(near(
+        v["affected_development_fraction"].as_f64().unwrap(),
+        0.5
+    ));
+    assert_eq!(v["listed_pairs"][0]["observation_b"], "o-s2");
+    assert!(near(
+        v["listed_pairs"][0]["rms_difference"].as_f64().unwrap(),
+        0.01
+    ));
+    let cross = metric(&report, "integrity.cross_partition_quasi_duplicate_pairs");
+    let v = cross.value.as_ref().unwrap();
+    assert_eq!(
+        (v["suspect_pairs"].as_u64(), v["candidate_pairs"].as_u64()),
+        (Some(1), Some(4))
+    );
+    assert!(near(
+        v["affected_retained_test_fraction"].as_f64().unwrap(),
+        1.
+    ));
+    assert!(report.findings.iter().any(|f| f.rule_id
+        == "identity.possible_cross_partition_quasi_duplicate.v1"
+        && f.confidence == "unknown"));
+    assert_eq!(
+        metric(&report, "structure.snv_sensitivity").status_wire(),
+        "computed"
+    );
+}
+
+#[test]
+fn native_snv_sensitivity_is_identity_on_standardized_rows_and_removes_pure_scatter() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Rows with zero mean and unit population SD (+-1, four each) are fixed
+    // points of SNV, so both views must give identical structure.
+    let standardized = input_with(
+        [
+            [1., 1., -1., -1., 1., -1., 1., -1.],
+            [1., -1., 1., 1., -1., -1., 1., -1.],
+            [-1., 1., 1., -1., 1., 1., -1., -1.],
+            [1., 1., 1., -1., -1., -1., -1., 1.],
+            [-1., -1., 1., 1., 1., -1., 1., -1.],
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            (
+                ["a", "b", "c", "d", "e"][i],
+                Partition::Development,
+                row.to_vec(),
+            )
+        })
+        .collect(),
+        (1..=8).map(f64::from).collect(),
+    );
+    let report = analyze(&standardized, &provider);
+    let v = metric(&report, "structure.snv_sensitivity")
+        .value
+        .clone()
+        .unwrap();
+    for key in [
+        "delta_first_component_share",
+        "delta_retained_share",
+        "delta_effective_dimension",
+    ] {
+        assert!(v[key].as_f64().unwrap().abs() < 1e-12, "{key}");
+    }
+    // x_i = a_i f + b_i with mean(f)=0, sd(f)=1 and power-of-two a_i: canonical
+    // structure exists, while SNV maps every row exactly to f.
+    let f = [-1., 1., -1., 1.];
+    let scatter = input_with(
+        [(1., 0.), (2., 1.), (0.5, -3.), (4., 2.)]
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (
+                    ["a", "b", "c", "d"][i],
+                    Partition::Development,
+                    f.iter().map(|v| a * v + b).collect(),
+                )
+            })
+            .collect(),
+        vec![1., 2., 3., 4.],
+    );
+    let report = analyze(&scatter, &provider);
+    assert_eq!(
+        metric(&report, "structure.effective_dimension").status_wire(),
+        "computed"
+    );
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert_eq!(m.status_wire(), "undefined");
+    assert_eq!(m.reason_code.as_deref(), Some("ZERO_SNV_TOTAL_VARIANCE"));
+}
+
+trait Wire {
+    fn status_wire(&self) -> String;
+}
+impl Wire for Metric {
+    fn status_wire(&self) -> String {
+        serde_json::to_value(&self.status)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+}

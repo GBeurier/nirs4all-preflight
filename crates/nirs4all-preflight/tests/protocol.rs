@@ -564,3 +564,173 @@ fn zero_rank_does_not_claim_pca_geometry_or_local_contrast() {
             && m.value.is_none()));
     }
 }
+
+#[derive(Default)]
+struct Recorder {
+    pairs: RefCell<Vec<TolerancePairsRequest>>,
+    noise: Cell<usize>,
+}
+impl MethodsProvider for Recorder {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![]
+    }
+    fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+    fn noise_proxy(&self, _: &NoiseProxyRequest) -> Result<NoiseProxyDiagnostics, ProviderError> {
+        self.noise.set(self.noise.get() + 1);
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+    fn tolerance_pairs(
+        &self,
+        r: &TolerancePairsRequest,
+    ) -> Result<TolerancePairsDiagnostics, ProviderError> {
+        self.pairs.borrow_mut().push(r.clone());
+        let n_reference = r.reference.as_ref().map_or(0, Vec::len);
+        Ok(TolerancePairsDiagnostics {
+            pairs: vec![],
+            distances: vec![],
+            query_flags: vec![false; r.query.len()],
+            reference_flags: vec![false; n_reference],
+            total_pairs: 0,
+            candidate_pairs: 1,
+            backend_version: "recorder".into(),
+        })
+    }
+}
+
+fn metric<'a>(report: &'a QualificationReport, id: &str) -> &'a Metric {
+    report.metrics.iter().find(|m| m.metric_id == id).unwrap()
+}
+
+#[test]
+fn quasi_duplicates_require_a_declared_tolerance() {
+    let mut x = input();
+    x.options.snv_sensitivity = false;
+    let report = analyze(&x, &Recorder::default());
+    for id in [
+        "integrity.quasi_duplicate_pairs",
+        "integrity.cross_partition_quasi_duplicate_pairs",
+    ] {
+        let m = metric(&report, id);
+        assert!(matches!(m.status, Availability::NotApplicable) && m.value.is_none());
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED")
+        );
+    }
+    let capability = |id: &str| {
+        report
+            .capabilities
+            .iter()
+            .find(|c| c.capability_id == id)
+            .unwrap()
+    };
+    assert_eq!(
+        capability("quasi_duplicates").reason.as_deref(),
+        Some("QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED")
+    );
+    assert_eq!(
+        capability("snv_sensitivity").reason.as_deref(),
+        Some("SNV_SENSITIVITY_DISABLED")
+    );
+    assert!(!report
+        .capabilities
+        .iter()
+        .any(|c| c.reason.as_deref() == Some("PROTOCOL_NOT_IMPLEMENTED")
+            && ["noise_proxy", "snv_sensitivity", "quasi_duplicates"]
+                .contains(&c.capability_id.as_str())));
+    let mut bad = input();
+    bad.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.0,
+        view: QuasiDuplicateView::Native,
+        context: ComparisonContext::Source,
+    });
+    bad.options.noise_proxy.window_bands = 4;
+    let codes: Vec<_> = validate_input(&bad)
+        .issues
+        .into_iter()
+        .map(|i| i.code)
+        .collect();
+    assert!(codes.contains(&"INVALID_QUASI_DUPLICATE_TOLERANCE".to_string()));
+    assert!(codes.contains(&"INVALID_NOISE_PROXY_PARAMETERS".to_string()));
+}
+
+#[test]
+fn quasi_duplicate_requests_respect_physical_identity_context_and_partitions() {
+    let mut x = input();
+    // s0 and s1 share one physical sample; s2 is on another instrument; s3 is retained test.
+    x.samples[1].physical_sample_id = Some("s0".into());
+    x.samples[2].instrument = Some("other".into());
+    x.samples[3].partition = Partition::RetainedTest;
+    x.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.5,
+        view: QuasiDuplicateView::Native,
+        context: ComparisonContext::InstrumentCampaign,
+    });
+    let recorder = Recorder::default();
+    let report = analyze(&x, &recorder);
+    let requests = recorder.pairs.borrow();
+    // Context (no instrument): s0,s1 within, then s0,s1 against retained s3.
+    // Context "other": a single development row and no test row => no call.
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].query.len(), 2);
+    assert!(requests[0].reference.is_none());
+    assert_eq!(
+        requests[0].query_group_ids[0],
+        requests[0].query_group_ids[1]
+    );
+    let cross = &requests[1];
+    assert_eq!(cross.reference.as_ref().unwrap(), &vec![vec![3.0, 6.0]]);
+    assert_ne!(cross.query_group_ids[0], cross.reference_group_ids[0]);
+    assert!(requests.iter().all(|r| r.tolerance == 0.5));
+    let cross_metric = metric(&report, "integrity.cross_partition_quasi_duplicate_pairs");
+    assert_eq!(
+        cross_metric.population_id,
+        "development_real_vs_retained_test_real"
+    );
+    assert_eq!(
+        cross_metric.parameters["test_access"],
+        "X_only_integrity_no_fit_no_Y"
+    );
+    assert_eq!(
+        metric(&report, "integrity.quasi_duplicate_pairs")
+            .value
+            .as_ref()
+            .unwrap()["suspect_pairs"],
+        0
+    );
+}
+
+#[test]
+fn noise_proxy_declares_axis_and_window_limits_before_calling_methods() {
+    let mut x = input();
+    x.options.noise_proxy.window_bands = 3;
+    x.options.noise_proxy.polyorder = 1;
+    x.sources[0].axis = vec![1.0, 2.0, 4.0];
+    for row in &mut x.sources[0].x {
+        row.push(Some(0.0));
+    }
+    let recorder = Recorder::default();
+    let report = analyze(&x, &recorder);
+    assert_eq!(
+        metric(&report, "measurement.noise_proxy")
+            .reason_code
+            .as_deref(),
+        Some("NON_UNIFORM_AXIS")
+    );
+    let report = analyze(&input(), &recorder);
+    assert_eq!(
+        metric(&report, "measurement.noise_proxy")
+            .reason_code
+            .as_deref(),
+        Some("FEWER_BANDS_THAN_WINDOW")
+    );
+    assert_eq!(recorder.noise.get(), 0);
+}
