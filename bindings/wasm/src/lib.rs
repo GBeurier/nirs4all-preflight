@@ -153,16 +153,27 @@ pub fn validate_json(input: &str) -> Result<String, JsValue> {
     let input: QualificationInput = parse(input)?;
     serde_json::to_string(&validate_input(&input)).map_err(|e| JsValue::from_str(&e.to_string()))
 }
+/// The DAG-ML nested grouped selection has no wasm-bindgen export and no
+/// browser Methods controller bridge reachable from this module yet.
+const BROWSER_VALIDATION: UnavailableValidationProvider =
+    UnavailableValidationProvider("DAG_ML_WASM_NESTED_SELECTION_UNAVAILABLE");
 #[wasm_bindgen]
 pub fn analyze_json(input: &str, methods_callback: &Function) -> Result<String, JsValue> {
     let input: QualificationInput = parse(input)?;
-    serde_json::to_string(&analyze(&input, &CallbackProvider(methods_callback)))
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    serde_json::to_string(&analyze_with_validation(
+        &input,
+        &CallbackProvider(methods_callback),
+        &BROWSER_VALIDATION,
+    ))
+    .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 #[wasm_bindgen]
 pub fn capabilities_json(methods_callback: &Function) -> Result<String, JsValue> {
-    serde_json::to_string(&capabilities(&CallbackProvider(methods_callback)))
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    serde_json::to_string(&capabilities_with_validation(
+        &CallbackProvider(methods_callback),
+        &BROWSER_VALIDATION,
+    ))
+    .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 #[wasm_bindgen]
 pub fn report_html_json(input: &str) -> Result<String, JsValue> {

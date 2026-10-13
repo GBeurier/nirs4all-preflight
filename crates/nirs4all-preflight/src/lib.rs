@@ -6,10 +6,19 @@ mod clustering;
 mod confounding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
+mod probe;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
+    capabilities_with_validation(provider, &UnavailableValidationProvider::default())
+}
+
+/// Capabilities of a Methods provider and a validation (DAG-ML) provider.
+pub fn capabilities_with_validation(
+    provider: &impl MethodsProvider,
+    validation: &impl ValidationProvider,
+) -> Vec<Capability> {
     let mut out = vec![
         Capability {
             capability_id: "integrity".into(),
@@ -25,11 +34,32 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
         },
     ];
     out.extend(provider.capabilities());
-    for id in [
-        "validation_probe",
-        "domain_shift",
-        "repeatability_uncertainty",
-    ] {
+    let validation_capabilities = validation.capabilities();
+    let nested = validation_capabilities
+        .iter()
+        .find(|c| c.capability_id == VALIDATION_CAPABILITY_ID);
+    let probe_available = nested.is_some_and(|c| c.available);
+    let probe_reason = if probe_available {
+        "ALPHA_PROTOCOL_UNQUALIFIED".to_string()
+    } else {
+        nested
+            .and_then(|c| c.reason.clone())
+            .unwrap_or_else(|| "VALIDATION_PROVIDER_NOT_CONFIGURED".into())
+    };
+    out.extend(validation_capabilities);
+    out.push(Capability {
+        capability_id: "validation_probe".into(),
+        available: probe_available,
+        qualified: false,
+        reason: Some(probe_reason),
+    });
+    out.push(Capability {
+        capability_id: "validation_probe.classification".into(),
+        available: false,
+        qualified: false,
+        reason: Some("CLASSIFICATION_PROBE_NOT_QUALIFIED".into()),
+    });
+    for id in ["domain_shift", "repeatability_uncertainty"] {
         out.push(Capability {
             capability_id: id.into(),
             available: false,
@@ -151,6 +181,16 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
 }
 
 pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> QualificationReport {
+    analyze_with_validation(input, provider, &UnavailableValidationProvider::default())
+}
+
+/// Analysis with a validation provider for the grouped probe. Every probe
+/// loop runs inside the provider; no FIT happens before input validation.
+pub fn analyze_with_validation(
+    input: &QualificationInput,
+    provider: &impl MethodsProvider,
+    validation_provider: &impl ValidationProvider,
+) -> QualificationReport {
     let validation = validate_input(input);
     let mut report = QualificationReport {
         schema_version: SCHEMA_VERSION,
@@ -165,12 +205,13 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
         }
         .into(),
         validation,
-        capabilities: capabilities(provider),
+        capabilities: capabilities_with_validation(provider, validation_provider),
         metrics: Vec::new(),
         findings: Vec::new(),
         limitations: vec![
             "Alpha protocols have not passed cross-language scientific qualification".into(),
-            "No validation probe or calibrated thresholds are available".into(),
+            "No calibrated thresholds are available; the grouped validation probe is exploratory"
+                .into(),
         ],
     };
     for capability in &mut report.capabilities {
@@ -179,6 +220,9 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
                 "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED"
             }
             "snv_sensitivity" if !input.options.snv_sensitivity => "SNV_SENSITIVITY_DISABLED",
+            "validation_probe" if !input.options.validation_probe.enabled => {
+                "VALIDATION_PROBE_DISABLED"
+            }
             _ => continue,
         };
         capability.available = false;
@@ -243,6 +287,7 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
         analyze_target(target, &samples, input, provider, &mut report);
     }
     association::analyze_metadata_associations(input, &samples, provider, &mut report);
+    probe::analyze(input, &samples, validation_provider, &mut report);
     report
 }
 

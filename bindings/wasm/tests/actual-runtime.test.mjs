@@ -158,6 +158,10 @@ test('WASM clustering uses Methods HDBSCAN on canonical PCA scores',()=>{
  assert.equal(metrics['clustering.condensed_tree'].value[0].birth_distance,null);
  assert.ok(report.capabilities.some(c=>c.capability_id==='clustering'&&c.available&&!c.qualified));
  assert.ok(report.findings.some(f=>f.rule_id==='structure.clustering.uncertain_partition.v1'));
+ // No browser DAG-ML nested selection: the probe is unavailable, never emulated.
+ const probe=report.capabilities.find(c=>c.capability_id==='validation_probe');
+ assert.equal(probe.available,false);
+ assert.equal(probe.reason,'DAG_ML_WASM_NESTED_SELECTION_UNAVAILABLE');
 });
 test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  // SG window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.

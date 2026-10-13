@@ -400,6 +400,9 @@ pub struct Options {
     /// Quasi-identity runs only with a declared tolerance; none is invented.
     #[serde(default)]
     pub quasi_duplicates: Option<QuasiDuplicateOptions>,
+    /// Grouped PLS/PCR predictability probe executed by the validation provider.
+    #[serde(default)]
+    pub validation_probe: ValidationProbeOptions,
 }
 
 impl Default for Options {
@@ -414,8 +417,38 @@ impl Default for Options {
             noise_proxy: NoiseProxyOptions::default(),
             snv_sensitivity: true,
             quasi_duplicates: None,
+            validation_probe: ValidationProbeOptions::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationProbeOptions {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Fixed recipes; each one is a separate probe.
+    #[serde(default = "default_probe_estimators")]
+    pub estimators: Vec<ProbeEstimator>,
+    /// Upper bound on estimator fits per probe (outer × (grid × inner + 1)).
+    #[serde(default = "default_probe_max_fits")]
+    pub max_fits: usize,
+}
+
+impl Default for ValidationProbeOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            estimators: default_probe_estimators(),
+            max_fits: default_probe_max_fits(),
+        }
+    }
+}
+fn default_probe_estimators() -> Vec<ProbeEstimator> {
+    vec![ProbeEstimator::Pls, ProbeEstimator::Pcr]
+}
+fn default_probe_max_fits() -> usize {
+    500
 }
 fn default_true() -> bool {
     true
@@ -621,6 +654,18 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             "INVALID_QUASI_DUPLICATE_TOLERANCE",
             "options.quasi_duplicates.tolerance",
             "Quasi-duplicate tolerance must be finite and positive",
+            true,
+        );
+    }
+    let probe = &input.options.validation_probe;
+    if probe.estimators.is_empty()
+        || probe.estimators.iter().collect::<BTreeSet<_>>().len() != probe.estimators.len()
+        || probe.max_fits == 0
+    {
+        out.add(
+            "INVALID_VALIDATION_PROBE_OPTIONS",
+            "options.validation_probe",
+            "Probe estimators must be nonempty and unique, with a positive fit budget",
             true,
         );
     }
@@ -1918,6 +1963,138 @@ pub trait MethodsProvider {
         Err(ProviderError::unsupported(
             "FREEDMAN_LANE_PROVIDER_NOT_CONFIGURED",
         ))
+    }
+}
+
+/// Fixed estimator recipe of the validation probe, declared before Y is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeEstimator {
+    /// Methods `models.pls.pls_regression`, NIPALS, X and Y centered, no scaling.
+    Pls,
+    /// Methods `models.pls.pcr`, X and Y centered, no scaling.
+    Pcr,
+}
+
+impl ProbeEstimator {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Pls => "pls",
+            Self::Pcr => "pcr",
+        }
+    }
+}
+
+/// A complete grouped probe: the provider owns the outer and inner grouped
+/// loops, the component selection from inner OOF only, and the fold-train
+/// mean baseline. Rows are aggregated samples; `group_ids` are indivisible
+/// identity components that never cross a fold boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeRequest {
+    pub probe_id: String,
+    pub estimator: ProbeEstimator,
+    /// Candidate numbers of components, ascending; ties select the smallest.
+    pub components: Vec<usize>,
+    pub sample_ids: Vec<String>,
+    pub group_ids: Vec<String>,
+    pub matrix: Vec<Vec<f64>>,
+    pub targets: Vec<f64>,
+    pub outer_splits: usize,
+    pub inner_splits: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeFoldAssignment {
+    pub fold_id: String,
+    pub train_sample_ids: Vec<String>,
+    pub validation_sample_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeCandidateScore {
+    pub n_components: usize,
+    /// Pooled inner-OOF RMSE on the outer training pool.
+    pub inner_rmse: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeOuterFold {
+    pub fold: ProbeFoldAssignment,
+    pub inner_folds: Vec<ProbeFoldAssignment>,
+    pub candidates: Vec<ProbeCandidateScore>,
+    pub selected_components: usize,
+    pub train_mean: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeOofRow {
+    pub sample_id: String,
+    pub fold_id: String,
+    pub y_true: f64,
+    pub prediction: f64,
+    pub train_mean_prediction: f64,
+}
+
+/// Regression scores computed by the validation provider on identical rows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ProbeScores {
+    pub mse: f64,
+    pub rmse: f64,
+    pub mae: f64,
+    /// `1 - SSE / sum((y - mean_eval(y))^2)`; meaningless when the denominator is zero.
+    pub r2: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeResult {
+    pub outer_folds: Vec<ProbeOuterFold>,
+    /// One row per requested sample.
+    pub oof: Vec<ProbeOofRow>,
+    pub model: ProbeScores,
+    pub train_mean: ProbeScores,
+    pub n_fits: usize,
+    pub backend_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeScoreRequest {
+    pub y_true: Vec<f64>,
+    pub predictions: Vec<f64>,
+}
+
+/// Grouped validation executed by DAG-ML. Preflight never runs its own CV loop.
+pub trait ValidationProvider {
+    fn capabilities(&self) -> Vec<Capability>;
+    fn probe(&self, request: &ProbeRequest) -> Result<ProbeResult, ProviderError>;
+    /// Provider scores of a subset of OOF rows, used for domain variability.
+    fn score(&self, request: &ProbeScoreRequest) -> Result<ProbeScores, ProviderError>;
+}
+
+pub const VALIDATION_CAPABILITY_ID: &str = "validation.nested_grouped_probe";
+
+/// Explicitly unavailable validation, with the host-specific reason.
+pub struct UnavailableValidationProvider(pub &'static str);
+impl Default for UnavailableValidationProvider {
+    fn default() -> Self {
+        Self("VALIDATION_PROVIDER_NOT_CONFIGURED")
+    }
+}
+impl ValidationProvider for UnavailableValidationProvider {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![Capability {
+            capability_id: VALIDATION_CAPABILITY_ID.into(),
+            available: false,
+            qualified: false,
+            reason: Some(self.0.into()),
+        }]
+    }
+    fn probe(&self, _: &ProbeRequest) -> Result<ProbeResult, ProviderError> {
+        Err(ProviderError(self.0.into()))
+    }
+    fn score(&self, _: &ProbeScoreRequest) -> Result<ProbeScores, ProviderError> {
+        Err(ProviderError(self.0.into()))
     }
 }
 
