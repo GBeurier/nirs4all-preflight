@@ -23,9 +23,9 @@ export async function createQualificationRuntime(options = {}) {
   await init(options.wasmModule ? { module_or_path: options.wasmModule } : undefined);
   await methods.loadModule();
   const abi = methods.abiVersion();
-  if (abi[0] !== 2 || abi[1] < 18) throw new Error('METHODS_ABI_2_18_REQUIRED');
+  if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -60,6 +60,22 @@ export async function createQualificationRuntime(options = {}) {
       case 'local_contrast': {
         const output = methods.preflightLocalContrast(Float64Array.from(request.targets), request.neighbor_indices.flat(), request.neighbor_indices[0]?.length ?? 0, request.categorical, request.group_ids);
         result = { contrast: nullable(output.contrast), fraction_rows_with_neighbors: output.fractionRowsWithNeighbors, observed_same_class_fraction: nullable(output.observedSameClassFraction), expected_same_class_fraction: nullable(output.expectedSameClassFraction), backend_version };
+        break;
+      }
+      case 'hdbscan': {
+        const x = matrix(request.matrix);
+        if (x.rows * x.rows * x.cols > 2.5e9) throw new RangeError('HDBSCAN_WORK_BUDGET');
+        const output = methods.preflightHdbscan(x, { minClusterSize: request.min_cluster_size, minSamples: request.min_samples, selection: request.selection, allowSingleCluster: request.allow_single_cluster });
+        const tree = output.tree.map(node => ({
+          parent: node.parent < 0 ? null : node.parent, size: node.size, label: node.label < 0 ? null : node.label,
+          birth_distance: node.parent < 0 ? null : 1 / node.lambdaBirth, death_distance: 1 / node.lambdaDeath, stability: nullable(node.stability),
+        }));
+        result = { labels: output.labels, membership: Array.from(output.membership), outlier_scores: Array.from(output.outlierScores, nullable), persistence: Array.from(output.persistence), tree, backend_version };
+        break;
+      }
+      case 'adjusted_rand_index': {
+        if (request.labels_a.length > 10_000_000) throw new RangeError('ARI_WORK_BUDGET');
+        result = { ari: nullable(methods.preflightAdjustedRandIndex(request.labels_a, request.labels_b)), backend_version };
         break;
       }
       default: throw new Error(`METHODS_OPERATION_UNSUPPORTED: ${operation}`);

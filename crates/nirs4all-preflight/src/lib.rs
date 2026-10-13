@@ -1,6 +1,7 @@
 //! Safe Rust facade for the preflight qualification protocols.
 
 pub use nirs4all_preflight_core::*;
+mod clustering;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 use serde_json::json;
@@ -24,7 +25,6 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
     out.extend(provider.capabilities());
     for id in [
         "validation_probe",
-        "clustering",
         "confounding",
         "domain_shift",
         "noise_proxy",
@@ -40,6 +40,27 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
             reason: Some("PROTOCOL_NOT_IMPLEMENTED".into()),
         });
     }
+    let clustering_available = [
+        "methods.pca",
+        "methods.hdbscan",
+        "methods.adjusted_rand_index",
+        "methods.summary",
+    ]
+    .iter()
+    .all(|id| out.iter().any(|c| c.capability_id == *id && c.available));
+    out.push(Capability {
+        capability_id: "clustering".into(),
+        available: clustering_available,
+        qualified: false,
+        reason: Some(
+            if clustering_available {
+                "ALPHA_PROTOCOL_UNQUALIFIED"
+            } else {
+                "HDBSCAN_PROVIDER_NOT_CONFIGURED"
+            }
+            .into(),
+        ),
+    });
     let knn_available = [
         "methods.pca",
         "methods.nearest_neighbors",
@@ -462,6 +483,12 @@ fn analyze_source(
             Some(&source.source_id),
             None,
         ));
+        clustering::unavailable(
+            report,
+            &source.source_id,
+            Availability::InsufficientData,
+            "FEWER_THAN_THREE_COMPLETE_SAMPLES",
+        );
     } else {
         let k = 10.min(matrix.len() - 2).min(p);
         let req = PcaRequest {
@@ -561,7 +588,20 @@ fn analyze_source(
                             report,
                         );
                     }
+                    let geometry = clustering::Geometry {
+                        matrix: &req.matrix,
+                        sample_ids: &representative_sample_ids,
+                        aggregation_keys: &ids,
+                        scores: &result.scores,
+                    };
+                    clustering::analyze(source, input, samples, &geometry, provider, report);
                 } else {
+                    clustering::unavailable(
+                        report,
+                        &source.source_id,
+                        Availability::Undefined,
+                        "ZERO_NUMERICAL_RANK",
+                    );
                     report.metrics.push(Metric::unavailable(
                         "structure.pca_scores",
                         Availability::Undefined,
@@ -607,20 +647,31 @@ fn analyze_source(
                 );
                 report.metrics.push(dm);
             }
-            Ok(_) => report.metrics.push(Metric::unavailable(
-                "structure.pca",
-                Availability::Error,
-                "INVALID_PROVIDER_RESULT",
-                Some(&source.source_id),
-                None,
-            )),
-            Err(e) => report.metrics.push(Metric::unavailable(
-                "structure.pca",
-                Availability::Unsupported,
-                &e.0,
-                Some(&source.source_id),
-                None,
-            )),
+            Ok(_) => {
+                report.metrics.push(Metric::unavailable(
+                    "structure.pca",
+                    Availability::Error,
+                    "INVALID_PROVIDER_RESULT",
+                    Some(&source.source_id),
+                    None,
+                ));
+                clustering::unavailable(
+                    report,
+                    &source.source_id,
+                    Availability::Error,
+                    "INVALID_PROVIDER_RESULT",
+                );
+            }
+            Err(e) => {
+                report.metrics.push(Metric::unavailable(
+                    "structure.pca",
+                    Availability::Unsupported,
+                    &e.0,
+                    Some(&source.source_id),
+                    None,
+                ));
+                clustering::unavailable(report, &source.source_id, Availability::Unsupported, &e.0);
+            }
         }
     }
     analyze_repeats(source, samples, &dev_rows, provider, report);

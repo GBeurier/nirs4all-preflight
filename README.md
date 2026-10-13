@@ -12,7 +12,7 @@ n4pf validate dataset.json
 n4pf analyze dataset.json --methods-library /path/to/libn4m.so.2 --html report.html
 ```
 
-The input is a canonical JSON dataset already assembled by its host. See [first_run.json](examples/first_run.json). Vendor decoding and dataset assembly remain in Formats and IO; this package adds neither parsers nor implicit joins. Without a Methods provider, the report explicitly marks dependent diagnostics unavailable. Native Methods ABI 2.18 or later is required.
+The input is a canonical JSON dataset already assembled by its host. See [first_run.json](examples/first_run.json). Vendor decoding and dataset assembly remain in Formats and IO; this package adds neither parsers nor implicit joins. Without a Methods provider, the report explicitly marks dependent diagnostics unavailable. Native Methods ABI 2.19 or later is required.
 
 ```js
 import { createQualificationRuntime } from '@nirs4all/preflight';
@@ -24,7 +24,7 @@ Run the browser runtime in a worker to support cancellation by worker terminatio
 
 Python's thin C ABI facade and a Linux x86_64 wheel are provided under [bindings/python](bindings/python); use `analyze`, `validate` and `report_html`. The release wheel is tested from an isolated Python installation. The [C header](include/nirs4all_preflight.h) describes buffer ownership and versioning.
 
-The alpha has **not** completed the V1 roadmap. Nested validation probes, calibrated inferential/permutation tests, clustering, domain shift, noise proxies, partial cancellation snapshots, R and MATLAB qualification, and full multi-platform scientific validation remain unavailable. The report lists these limits and retains `profile_status: exploratory`.
+The alpha has **not** completed the V1 roadmap. Clustering is available but unqualified: an exploratory HDBSCAN partition on the canonical PCA scores with 50-subsample stability; it never states a firm number of clusters and has no null model or cluster matching yet. Nested validation probes, calibrated inferential/permutation tests, domain shift, noise proxies, partial cancellation snapshots, R and MATLAB qualification, and full multi-platform scientific validation remain unavailable. The report lists these limits and retains `profile_status: exploratory`.
 
 Development: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. Set `N4M_LIBRARY_PATH` for the analytic test against the real Methods ABI. Browser binding: `npm ci --prefix bindings/wasm`, `npm run build:native --prefix bindings/wasm`, `npm test --prefix bindings/wasm`. Demo: `npm ci --prefix demo`, `npm test --prefix demo`, `npm run build --prefix demo`.
 

@@ -72,6 +72,27 @@ type Knn = unsafe extern "C" fn(
     *mut i64,
     *mut f64,
 ) -> i32;
+type Hdbscan = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    i64,
+    i64,
+    i32,
+    i32,
+    *mut i64,
+    *mut f64,
+    *mut f64,
+    *mut i64,
+    *mut f64,
+    *mut i64,
+    *mut i64,
+    *mut i64,
+    *mut i64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+) -> i32;
+type Ari = unsafe extern "C" fn(*mut c_void, *const i64, *const i64, i64, *mut f64) -> i32;
 
 /// Each provider owns one context, and stays on its creating thread.
 pub struct NativeMethodsProvider {
@@ -84,6 +105,8 @@ pub struct NativeMethodsProvider {
     summary_fn: Summary,
     knn_fn: Knn,
     local_fn: LocalContrast,
+    hdbscan_fn: Hdbscan,
+    ari_fn: Ari,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -98,8 +121,8 @@ impl NativeMethodsProvider {
             let compat = *library
                 .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
                 .map_err(err)?;
-            if compat(2, 18) != 0 {
-                return Err(ProviderError("METHODS_ABI_2_18_REQUIRED".into()));
+            if compat(2, 19) != 0 {
+                return Err(ProviderError("METHODS_ABI_2_19_REQUIRED".into()));
             }
             let create = *library
                 .get::<Create>(b"n4m_context_create\0")
@@ -125,6 +148,12 @@ impl NativeMethodsProvider {
             let local_fn = *library
                 .get::<LocalContrast>(b"n4m_preflight_local_contrast\0")
                 .map_err(err)?;
+            let hdbscan_fn = *library
+                .get::<Hdbscan>(b"n4m_preflight_hdbscan\0")
+                .map_err(err)?;
+            let ari_fn = *library
+                .get::<Ari>(b"n4m_preflight_adjusted_rand_index\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -148,6 +177,8 @@ impl NativeMethodsProvider {
                 summary_fn,
                 knn_fn,
                 local_fn,
+                hdbscan_fn,
+                ari_fn,
                 version,
                 _thread_bound: PhantomData,
             })
@@ -203,13 +234,15 @@ impl MethodsProvider for NativeMethodsProvider {
             "methods.summary",
             "methods.nearest_neighbors",
             "methods.local_contrast",
+            "methods.hdbscan",
+            "methods.adjusted_rand_index",
         ]
         .iter()
         .map(|id| Capability {
             capability_id: (*id).into(),
             available: true,
             qualified: false,
-            reason: Some(format!("Methods {} ABI 2.18; alpha protocol", self.version)),
+            reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
         })
         .collect()
     }
@@ -398,6 +431,92 @@ impl MethodsProvider for NativeMethodsProvider {
             fraction_rows_with_neighbors: out[1],
             observed_same_class_fraction: out[2].is_finite().then_some(out[2]),
             expected_same_class_fraction: out[3].is_finite().then_some(out[3]),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn hdbscan(&self, r: &HdbscanRequest) -> Result<HdbscanDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        if n < 2
+            || r.min_cluster_size < 2
+            || r.min_samples == 0
+            || r.min_samples > n
+            || (n as f64) * (n as f64) * (p as f64) > 2.5e9
+        {
+            return Err(ProviderError("HDBSCAN_SHAPE_OR_WORK_BUDGET".into()));
+        }
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut labels = vec![0i64; n];
+        let mut membership = vec![f64::NAN; n];
+        let mut outlier = vec![f64::NAN; n];
+        let mut persistence = vec![f64::NAN; n];
+        let (mut parent, mut size, mut label) = (vec![0i64; n], vec![0i64; n], vec![0i64; n]);
+        let (mut birth, mut death, mut stability) = (vec![0.; n], vec![0.; n], vec![0.; n]);
+        let (mut n_clusters, mut n_nodes) = (0i64, 0i64);
+        // SAFETY: every output holds n = X.rows elements, the documented capacity.
+        self.check(unsafe {
+            (self.hdbscan_fn)(
+                self.context,
+                &xv,
+                r.min_cluster_size as i64,
+                r.min_samples as i64,
+                i32::from(r.selection == ClusterSelection::Leaf),
+                i32::from(r.allow_single_cluster),
+                labels.as_mut_ptr(),
+                membership.as_mut_ptr(),
+                outlier.as_mut_ptr(),
+                &mut n_clusters,
+                persistence.as_mut_ptr(),
+                &mut n_nodes,
+                parent.as_mut_ptr(),
+                size.as_mut_ptr(),
+                label.as_mut_ptr(),
+                birth.as_mut_ptr(),
+                death.as_mut_ptr(),
+                stability.as_mut_ptr(),
+            )
+        })?;
+        let (k, c) = (n_nodes as usize, n_clusters as usize);
+        let tree = (0..k)
+            .map(|j| HdbscanTreeNode {
+                parent: usize::try_from(parent[j]).ok(),
+                size: size[j].max(0) as usize,
+                label: usize::try_from(label[j]).ok(),
+                birth_distance: (parent[j] >= 0).then(|| 1.0 / birth[j]),
+                death_distance: 1.0 / death[j],
+                stability: stability[j].is_finite().then_some(stability[j]),
+            })
+            .collect();
+        Ok(HdbscanDiagnostics {
+            labels,
+            membership,
+            outlier_scores: outlier
+                .iter()
+                .map(|v| v.is_finite().then_some(*v))
+                .collect(),
+            persistence: persistence[..c].to_vec(),
+            tree,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn adjusted_rand_index(
+        &self,
+        r: &AdjustedRandRequest,
+    ) -> Result<AdjustedRandDiagnostics, ProviderError> {
+        if r.labels_a.len() != r.labels_b.len() || r.labels_a.len() > 10_000_000 {
+            return Err(ProviderError("ARI_SHAPE_OR_WORK_BUDGET".into()));
+        }
+        let mut ari = f64::NAN;
+        self.check(unsafe {
+            (self.ari_fn)(
+                self.context,
+                r.labels_a.as_ptr(),
+                r.labels_b.as_ptr(),
+                r.labels_a.len() as i64,
+                &mut ari,
+            )
+        })?;
+        Ok(AdjustedRandDiagnostics {
+            ari: ari.is_finite().then_some(ari),
             backend_version: self.version.clone(),
         })
     }

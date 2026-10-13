@@ -64,6 +64,15 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<LocalContrastDiagnostics, ProviderError> {
         self.invoke("local_contrast", r)
     }
+    fn hdbscan(&self, r: &HdbscanRequest) -> Result<HdbscanDiagnostics, ProviderError> {
+        self.invoke("hdbscan", r)
+    }
+    fn adjusted_rand_index(
+        &self,
+        r: &AdjustedRandRequest,
+    ) -> Result<AdjustedRandDiagnostics, ProviderError> {
+        self.invoke("adjusted_rand_index", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {

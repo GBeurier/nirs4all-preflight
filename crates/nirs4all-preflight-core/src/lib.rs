@@ -764,6 +764,66 @@ pub struct LocalContrastDiagnostics {
     pub backend_version: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterSelection {
+    Eom,
+    Leaf,
+}
+
+/// Euclidean HDBSCAN* with scikit-learn 1.9.1 semantics (Methods ABI 2.19).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HdbscanRequest {
+    pub matrix: Vec<Vec<f64>>,
+    pub min_cluster_size: usize,
+    /// Neighbors defining the core distance, the row itself included.
+    pub min_samples: usize,
+    pub selection: ClusterSelection,
+    pub allow_single_cluster: bool,
+}
+
+/// One condensed-tree cluster node; node 0 is the root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HdbscanTreeNode {
+    pub parent: Option<usize>,
+    /// Points when the node is born.
+    pub size: usize,
+    pub label: Option<usize>,
+    /// Mutual-reachability distance at birth; None for the root.
+    pub birth_distance: Option<f64>,
+    /// Smallest distance at which a point or child leaves the node.
+    pub death_distance: f64,
+    /// Excess of mass before selection; None when infinite (zero distances).
+    pub stability: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HdbscanDiagnostics {
+    /// -1 is noise; clusters are 0..n_clusters-1.
+    pub labels: Vec<i64>,
+    /// Relative membership strength in [0, 1]; not a probability.
+    pub membership: Vec<f64>,
+    /// GLOSH scores; None where undefined.
+    pub outlier_scores: Vec<Option<f64>>,
+    /// One value per cluster label.
+    pub persistence: Vec<f64>,
+    pub tree: Vec<HdbscanTreeNode>,
+    pub backend_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdjustedRandRequest {
+    pub labels_a: Vec<i64>,
+    pub labels_b: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdjustedRandDiagnostics {
+    /// None for fewer than two rows or identical trivial partitions.
+    pub ari: Option<f64>,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -787,6 +847,15 @@ pub trait MethodsProvider {
         Err(ProviderError(
             "LOCAL_CONTRAST_PROVIDER_NOT_CONFIGURED".into(),
         ))
+    }
+    fn hdbscan(&self, _request: &HdbscanRequest) -> Result<HdbscanDiagnostics, ProviderError> {
+        Err(ProviderError("HDBSCAN_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn adjusted_rand_index(
+        &self,
+        _request: &AdjustedRandRequest,
+    ) -> Result<AdjustedRandDiagnostics, ProviderError> {
+        Err(ProviderError("ARI_PROVIDER_NOT_CONFIGURED".into()))
     }
 }
 
@@ -820,6 +889,18 @@ impl MethodsProvider for UnavailableMethodsProvider {
             },
             Capability {
                 capability_id: "methods.local_contrast".into(),
+                available: false,
+                qualified: false,
+                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
+            },
+            Capability {
+                capability_id: "methods.hdbscan".into(),
+                available: false,
+                qualified: false,
+                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
+            },
+            Capability {
+                capability_id: "methods.adjusted_rand_index".into(),
                 available: false,
                 qualified: false,
                 reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
