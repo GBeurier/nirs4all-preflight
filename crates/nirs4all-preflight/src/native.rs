@@ -132,6 +132,23 @@ type Hdbscan = unsafe extern "C" fn(
     *mut f64,
 ) -> i32;
 type Ari = unsafe extern "C" fn(*mut c_void, *const i64, *const i64, i64, *mut f64) -> i32;
+type Jaccard = unsafe extern "C" fn(
+    *mut c_void,
+    *const i64,
+    *const i64,
+    i64,
+    i64,
+    i64,
+    *mut f64,
+    *mut i64,
+    *mut i64,
+    *mut i64,
+) -> i32;
+type Assignment =
+    unsafe extern "C" fn(*mut c_void, *const MatrixView, i32, *mut i64, *mut i64, *mut i64) -> i32;
+type Permutations = unsafe extern "C" fn(*mut c_void, u64, i64, i64, *mut i64) -> i32;
+type Normal =
+    unsafe extern "C" fn(*mut c_void, u64, *const f64, *const MatrixView, i64, *mut f64) -> i32;
 
 /// Each provider owns one context, and stays on its creating thread.
 pub struct NativeMethodsProvider {
@@ -146,6 +163,10 @@ pub struct NativeMethodsProvider {
     local_fn: LocalContrast,
     hdbscan_fn: Hdbscan,
     ari_fn: Ari,
+    jaccard_fn: Jaccard,
+    assignment_fn: Assignment,
+    permutations_fn: Permutations,
+    normal_fn: Normal,
     snv_create: SnvCreate,
     snv_destroy: SnvDestroy,
     snv_transform: SnvTransform,
@@ -167,8 +188,8 @@ impl NativeMethodsProvider {
             let compat = *library
                 .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
                 .map_err(err)?;
-            if compat(2, 19) != 0 {
-                return Err(ProviderError("METHODS_ABI_2_19_REQUIRED".into()));
+            if compat(2, 20) != 0 {
+                return Err(ProviderError("METHODS_ABI_2_20_REQUIRED".into()));
             }
             let create = *library
                 .get::<Create>(b"n4m_context_create\0")
@@ -199,6 +220,18 @@ impl NativeMethodsProvider {
                 .map_err(err)?;
             let ari_fn = *library
                 .get::<Ari>(b"n4m_preflight_adjusted_rand_index\0")
+                .map_err(err)?;
+            let jaccard_fn = *library
+                .get::<Jaccard>(b"n4m_cluster_jaccard_matrix\0")
+                .map_err(err)?;
+            let assignment_fn = *library
+                .get::<Assignment>(b"n4m_linear_sum_assignment\0")
+                .map_err(err)?;
+            let permutations_fn = *library
+                .get::<Permutations>(b"n4m_random_permutations\0")
+                .map_err(err)?;
+            let normal_fn = *library
+                .get::<Normal>(b"n4m_random_multivariate_normal\0")
                 .map_err(err)?;
             let snv_create = *library
                 .get::<SnvCreate>(b"n4m_transform_snv_create\0")
@@ -253,6 +286,10 @@ impl NativeMethodsProvider {
                 pairs_fn,
                 hdbscan_fn,
                 ari_fn,
+                jaccard_fn,
+                assignment_fn,
+                permutations_fn,
+                normal_fn,
                 version,
                 _thread_bound: PhantomData,
             })
@@ -308,7 +345,7 @@ impl MethodsProvider for NativeMethodsProvider {
                 capability_id: (*id).into(),
                 available: true,
                 qualified: false,
-                reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
+                reason: Some(format!("Methods {} ABI 2.20; alpha protocol", self.version)),
             })
             .collect()
     }
@@ -583,6 +620,144 @@ impl MethodsProvider for NativeMethodsProvider {
         })?;
         Ok(AdjustedRandDiagnostics {
             ari: ari.is_finite().then_some(ari),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn cluster_jaccard(
+        &self,
+        r: &ClusterJaccardRequest,
+    ) -> Result<ClusterJaccardDiagnostics, ProviderError> {
+        let (ka, kb) = (r.n_clusters_a, r.n_clusters_b);
+        if r.labels_a.len() != r.labels_b.len()
+            || r.labels_a.len() > 10_000_000
+            || ka.checked_mul(kb).is_none_or(|cells| cells > 10_000_000)
+        {
+            return Err(ProviderError("JACCARD_SHAPE_OR_WORK_BUDGET".into()));
+        }
+        let mut jaccard = vec![f64::NAN; ka * kb];
+        let mut inter = vec![0i64; ka * kb];
+        let (mut sa, mut sb) = (vec![0i64; ka], vec![0i64; kb]);
+        // SAFETY: outputs hold ka*kb, ka and kb elements as documented.
+        self.check(unsafe {
+            (self.jaccard_fn)(
+                self.context,
+                r.labels_a.as_ptr(),
+                r.labels_b.as_ptr(),
+                r.labels_a.len() as i64,
+                ka as i64,
+                kb as i64,
+                jaccard.as_mut_ptr(),
+                inter.as_mut_ptr(),
+                sa.as_mut_ptr(),
+                sb.as_mut_ptr(),
+            )
+        })?;
+        let count = |v: &[i64]| v.iter().map(|&c| c.max(0) as usize).collect::<Vec<_>>();
+        Ok(ClusterJaccardDiagnostics {
+            jaccard: (0..ka)
+                .map(|i| {
+                    jaccard[i * kb..(i + 1) * kb]
+                        .iter()
+                        .map(|v| v.is_finite().then_some(*v))
+                        .collect()
+                })
+                .collect(),
+            intersections: (0..ka)
+                .map(|i| count(&inter[i * kb..(i + 1) * kb]))
+                .collect(),
+            sizes_a: count(&sa),
+            sizes_b: count(&sb),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn linear_sum_assignment(
+        &self,
+        r: &LinearAssignmentRequest,
+    ) -> Result<LinearAssignmentDiagnostics, ProviderError> {
+        let rows = r.cost.len();
+        let cols = r.cost.first().map_or(0, Vec::len);
+        if rows == 0
+            || cols == 0
+            || r.cost.iter().any(|row| row.len() != cols)
+            || (rows as f64) * (cols as f64) * (rows.min(cols) as f64) > 2.5e9
+        {
+            return Err(ProviderError("ASSIGNMENT_SHAPE_OR_WORK_BUDGET".into()));
+        }
+        let mut cost: Vec<f64> = r.cost.iter().flatten().copied().collect();
+        let view = MatrixView::new(&mut cost, rows, cols);
+        let k = rows.min(cols);
+        let (mut ri, mut ci, mut n) = (vec![0i64; k], vec![0i64; k], 0i64);
+        // SAFETY: the view owns rows*cols cells; outputs hold min(rows, cols).
+        self.check(unsafe {
+            (self.assignment_fn)(
+                self.context,
+                &view,
+                i32::from(r.maximize),
+                ri.as_mut_ptr(),
+                ci.as_mut_ptr(),
+                &mut n,
+            )
+        })?;
+        Ok(LinearAssignmentDiagnostics {
+            row_indices: ri.iter().map(|&v| v as usize).collect(),
+            column_indices: ci.iter().map(|&v| v as usize).collect(),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn random_permutations(
+        &self,
+        r: &RandomPermutationsRequest,
+    ) -> Result<RandomPermutationsDiagnostics, ProviderError> {
+        if r.n
+            .checked_mul(r.n_permutations)
+            .is_none_or(|v| v > 10_000_000)
+        {
+            return Err(ProviderError("PERMUTATION_WORK_BUDGET".into()));
+        }
+        let mut out = vec![0i64; r.n * r.n_permutations];
+        // SAFETY: out holds n * n_permutations elements.
+        self.check(unsafe {
+            (self.permutations_fn)(
+                self.context,
+                r.seed,
+                r.n as i64,
+                r.n_permutations as i64,
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(RandomPermutationsDiagnostics {
+            permutations: out
+                .chunks(r.n.max(1))
+                .take(r.n_permutations)
+                .map(|p| p.iter().map(|&v| v as usize).collect())
+                .collect(),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn multivariate_normal(
+        &self,
+        r: &MultivariateNormalRequest,
+    ) -> Result<MultivariateNormalDiagnostics, ProviderError> {
+        let d = r.mean.len();
+        let (mut cov, rows, cols) = flatten(&r.covariance)?;
+        if rows != d || cols != d || r.n_samples.checked_mul(d).is_none_or(|v| v > 10_000_000) {
+            return Err(ProviderError("MULTIVARIATE_NORMAL_SHAPE_OR_BUDGET".into()));
+        }
+        let view = MatrixView::new(&mut cov, d, d);
+        let mut out = vec![0.; r.n_samples * d];
+        // SAFETY: mean holds d values, the view d*d, out n_samples*d.
+        self.check(unsafe {
+            (self.normal_fn)(
+                self.context,
+                r.seed,
+                r.mean.as_ptr(),
+                &view,
+                r.n_samples as i64,
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(MultivariateNormalDiagnostics {
+            samples: out.chunks(d).map(<[f64]>::to_vec).collect(),
             backend_version: self.version.clone(),
         })
     }

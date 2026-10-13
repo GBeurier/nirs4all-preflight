@@ -23,9 +23,9 @@ export async function createQualificationRuntime(options = {}) {
   await init(options.wasmModule ? { module_or_path: options.wasmModule } : undefined);
   await methods.loadModule();
   const abi = methods.abiVersion();
-  if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
+  if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'cluster_jaccard', 'linear_sum_assignment', 'random_permutations', 'multivariate_normal', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -76,6 +76,33 @@ export async function createQualificationRuntime(options = {}) {
       case 'adjusted_rand_index': {
         if (request.labels_a.length > 10_000_000) throw new RangeError('ARI_WORK_BUDGET');
         result = { ari: nullable(methods.preflightAdjustedRandIndex(request.labels_a, request.labels_b)), backend_version };
+        break;
+      }
+      case 'cluster_jaccard': {
+        const ka = request.n_clusters_a, kb = request.n_clusters_b;
+        if (request.labels_a.length > 10_000_000 || ka * kb > 10_000_000) throw new RangeError('JACCARD_WORK_BUDGET');
+        const output = methods.clusterJaccardMatrix(request.labels_a, request.labels_b, ka, kb);
+        const rows = values => kb ? nested(values, kb) : Array.from({ length: ka }, () => []);
+        result = { jaccard: rows(Array.from(output.jaccard.data, nullable)), intersections: rows(output.intersections), sizes_a: output.sizesA, sizes_b: output.sizesB, backend_version };
+        break;
+      }
+      case 'linear_sum_assignment': {
+        const cost = { data: Float64Array.from(request.cost.flat()), rows: request.cost.length, cols: request.cost[0]?.length ?? 0 };
+        if (!cost.rows || !cost.cols || cost.rows * cost.cols * Math.min(cost.rows, cost.cols) > 2.5e9) throw new RangeError('ASSIGNMENT_WORK_BUDGET');
+        const output = methods.linearSumAssignment(cost, request.maximize);
+        result = { row_indices: output.rowInd, column_indices: output.colInd, backend_version };
+        break;
+      }
+      case 'random_permutations': {
+        if (request.n * request.n_permutations > 10_000_000) throw new RangeError('PERMUTATION_WORK_BUDGET');
+        result = { permutations: methods.randomPermutations(BigInt(request.seed), request.n, request.n_permutations), backend_version };
+        break;
+      }
+      case 'multivariate_normal': {
+        const d = request.mean.length;
+        if (request.n_samples * d > 10_000_000) throw new RangeError('MULTIVARIATE_NORMAL_BUDGET');
+        const output = methods.randomMultivariateNormal(Float64Array.from(request.mean), matrix(request.covariance), request.n_samples, BigInt(request.seed));
+        result = { samples: nested(output.data, d), backend_version };
         break;
       }
       case 'snv': {

@@ -18,7 +18,7 @@ uint32_t n4pf_abi_version(void);
 const char* n4pf_version(void);
 int32_t n4pf_validate_json(const uint8_t* input,size_t len,n4pf_buffer_t* out);
 /* methods_library is optional NUL-terminated UTF-8 path to public libn4m ABI
- * >=2.19. With NULL only diagnostics not requiring Methods are computed. */
+ * >=2.20. With NULL only diagnostics not requiring Methods are computed. */
 int32_t n4pf_analyze_json(const uint8_t* input,size_t len,const char* methods_library,n4pf_buffer_t* out);
 int32_t n4pf_report_html_json(const uint8_t* input,size_t len,n4pf_buffer_t* out);
 void n4pf_buffer_free(n4pf_buffer_t* buffer);

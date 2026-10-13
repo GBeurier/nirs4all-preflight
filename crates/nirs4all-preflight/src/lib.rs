@@ -656,6 +656,7 @@ fn analyze_source(
                         sample_ids: &representative_sample_ids,
                         aggregation_keys: &ids,
                         scores: &result.scores,
+                        eigenvalues: &result.eigenvalues,
                     };
                     clustering::analyze(source, input, samples, &geometry, provider, report);
                 } else {
@@ -1982,6 +1983,20 @@ pub(crate) struct ExactReferences<'a> {
     pub excluded_retained_prediction_or_augmented: usize,
     pub inconsistent: usize,
     pub referenced_development: BTreeSet<&'a str>,
+}
+
+/// Provider seed for one derivation domain: the SplitMix64 finalizer of
+/// `root XOR fnv1a64(domain)` (FNV-1a 64 over the UTF-8 bytes of the domain).
+pub(crate) fn derive_domain_seed(root: u64, domain: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in domain.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut z = root ^ hash;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 pub(crate) fn exact_development_references<'a>(

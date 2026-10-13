@@ -162,7 +162,7 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
     let value = stability.value.as_ref().unwrap();
     assert_eq!(value["ari_assigned_in_both"]["max"], 1.0);
     assert_eq!(value["assigned_noise_agreement"]["median"], 1.0);
-    assert_eq!(value["compared_fraction"]["min"], 0.8);
+    assert_eq!(value["intersection_fraction_of_eligible"]["min"], 0.8);
     assert!(value["cluster_count"]["min"].as_f64().unwrap() >= 2.0);
     assert!(report
         .capabilities

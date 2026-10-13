@@ -25,15 +25,7 @@ const METADATA: [(&str, MetadataAccessor); 2] = [
 /// Stable per-test seed: SplitMix64 finalizer of the root seed XOR the
 /// FNV-1a 64 hash of a provider-specific derivation domain.
 pub(crate) fn derive_seed(root: u64, target_id: &str, metadata: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in seed_domain(target_id, metadata).bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    let mut z = root ^ hash;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
+    derive_domain_seed(root, &seed_domain(target_id, metadata))
 }
 
 fn seed_domain(target_id: &str, metadata: &str) -> String {
