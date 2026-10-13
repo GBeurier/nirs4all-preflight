@@ -166,6 +166,11 @@ pub struct Options {
     /// Quasi-identity runs only with a declared tolerance; none is invented.
     #[serde(default)]
     pub quasi_duplicates: Option<QuasiDuplicateOptions>,
+    /// Declared per-target tolerance above which the references of two
+    /// spectrally (quasi-)identical samples are incompatible. Keyed by
+    /// target ID; an absent target is not compared and none is invented.
+    #[serde(default)]
+    pub reference_contradiction_tolerances: BTreeMap<String, ReferenceContradictionTolerance>,
 }
 
 impl Default for Options {
@@ -180,6 +185,7 @@ impl Default for Options {
             noise_proxy: NoiseProxyOptions::default(),
             snv_sensitivity: true,
             quasi_duplicates: None,
+            reference_contradiction_tolerances: BTreeMap::new(),
         }
     }
 }
@@ -237,9 +243,23 @@ pub enum ComparisonContext {
     /// Compare observations only within one instrument and campaign.
     #[default]
     InstrumentCampaign,
+    /// Compare observations of one instrument across its campaigns.
+    Instrument,
     /// Compare every observation of a source.
     Source,
 }
+/// Incompatibility rule between two exact references of one target.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReferenceContradictionTolerance {
+    /// Continuous: incompatible when |y_a - y_b| > value, in target units.
+    Absolute { value: f64 },
+    /// Continuous: incompatible when |y_a - y_b| > value * max(|y_a|, |y_b|).
+    Relative { value: f64 },
+    /// Categorical: incompatible when the classes differ.
+    DifferentClass,
+}
+
 fn default_max_cells() -> usize {
     10_000_000
 }
@@ -389,6 +409,43 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             "Quasi-duplicate tolerance must be finite and positive",
             true,
         );
+    }
+    for (target_id, tolerance) in &input.options.reference_contradiction_tolerances {
+        let path = format!("options.reference_contradiction_tolerances.{target_id}");
+        let Some(target) = input.targets.iter().find(|t| &t.target_id == target_id) else {
+            out.add(
+                "UNKNOWN_CONTRADICTION_TARGET",
+                path,
+                "Contradiction tolerance must name a declared target",
+                true,
+            );
+            continue;
+        };
+        let value = match (target.kind, tolerance) {
+            (
+                TargetKind::Continuous,
+                ReferenceContradictionTolerance::Absolute { value }
+                | ReferenceContradictionTolerance::Relative { value },
+            ) => *value,
+            (TargetKind::Categorical, ReferenceContradictionTolerance::DifferentClass) => 1.0,
+            _ => {
+                out.add(
+                    "CONTRADICTION_TOLERANCE_KIND_MISMATCH",
+                    path,
+                    "Continuous targets take an absolute or relative tolerance; categorical targets take different_class",
+                    true,
+                );
+                continue;
+            }
+        };
+        if !(value.is_finite() && value > 0.0) {
+            out.add(
+                "INVALID_CONTRADICTION_TOLERANCE",
+                path,
+                "Contradiction tolerance must be finite and positive",
+                true,
+            );
+        }
     }
     let mut source_ids = BTreeSet::new();
     let mut total_cells = 0usize;

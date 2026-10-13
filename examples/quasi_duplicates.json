@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "data_origin": "synthetic",
+  "sources": [
+    {
+      "source_id": "probe",
+      "observation_ids": ["o-s0", "o-s1", "o-s2", "o-s3", "o-s4", "o-s5", "o-s6", "o-t0"],
+      "sample_ids": ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "t0"],
+      "x": [[1.0, 1.0], [1.0, 1.0], [1.05, 1.0], [5.0, 5.0], [5.0, 5.02], [5.0, 5.0], [6.0, 6.0], [1.0, 1.0]],
+      "axis": [1100.0, 1200.0],
+      "axis_unit": "nm",
+      "signal_unit": "absorbance",
+      "signal_type": "absorbance"
+    }
+  ],
+  "samples": [
+    {"sample_id": "s0", "physical_sample_id": "p0", "partition": "development", "instrument": "A", "campaign": "c1"},
+    {"sample_id": "s1", "physical_sample_id": "p1", "partition": "development", "instrument": "A", "campaign": "c2"},
+    {"sample_id": "s2", "physical_sample_id": "p2", "partition": "development", "instrument": "A", "campaign": "c1"},
+    {"sample_id": "s3", "physical_sample_id": "p3", "partition": "development", "instrument": "B", "campaign": "c1"},
+    {"sample_id": "s4", "physical_sample_id": "p4", "partition": "development", "instrument": "B", "campaign": "c1"},
+    {"sample_id": "s5", "physical_sample_id": "p3", "partition": "development", "instrument": "B", "campaign": "c1"},
+    {"sample_id": "s6", "physical_sample_id": "p6", "partition": "development", "instrument": "B", "campaign": "c1"},
+    {"sample_id": "t0", "physical_sample_id": "pt", "partition": "retained_test", "instrument": "A", "campaign": "c1"}
+  ],
+  "targets": [
+    {
+      "target_id": "moisture",
+      "kind": "continuous",
+      "unit": "%",
+      "values": [
+        {"sample_id": "s0", "value": 10.0, "status": "exact", "reference_id": "r0"},
+        {"sample_id": "s1", "value": 12.0, "status": "exact", "reference_id": "r1"},
+        {"sample_id": "s2", "value": 10.1, "status": "exact", "reference_id": "r0"},
+        {"sample_id": "s3", "value": 0.5, "status": "censored"},
+        {"sample_id": "s4", "value": 20.0, "status": "exact", "reference_id": "r4"},
+        {"sample_id": "s6", "value": 30.0, "status": "exact", "reference_id": "r6"},
+        {"sample_id": "t0", "value": 987.654, "status": "exact", "reference_id": "rt"}
+      ]
+    },
+    {
+      "target_id": "grade",
+      "kind": "categorical",
+      "values": [
+        {"sample_id": "s0", "category": "a", "status": "exact"},
+        {"sample_id": "s1", "category": "a", "status": "exact"},
+        {"sample_id": "s2", "category": "b", "status": "exact"},
+        {"sample_id": "s4", "category": "c", "status": "exact"},
+        {"sample_id": "t0", "category": "zz-test-only", "status": "exact"}
+      ]
+    },
+    {
+      "target_id": "protein",
+      "kind": "continuous",
+      "unit": "%",
+      "values": [
+        {"sample_id": "s0", "value": 1.0, "status": "exact"},
+        {"sample_id": "s1", "value": 9.0, "status": "exact"}
+      ]
+    }
+  ],
+  "options": {
+    "independence_unit": "sample",
+    "snv_sensitivity": false,
+    "quasi_duplicates": {"tolerance": 0.1, "view": "native", "context": "instrument"},
+    "reference_contradiction_tolerances": {
+      "moisture": {"kind": "absolute", "value": 0.5},
+      "grade": {"kind": "different_class"}
+    }
+  }
+}

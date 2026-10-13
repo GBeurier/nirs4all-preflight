@@ -82,3 +82,24 @@ test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  assert.equal(metrics['structure.snv_sensitivity'].status,'computed');
  assert.ok(report.capabilities.some(c=>c.capability_id==='quasi_duplicates'&&c.available));
 });
+test('WASM duplicate reference conflicts match the hand-counted fixture',async()=>{
+ const fixture=JSON.parse(await readFile(new URL('../../../examples/quasi_duplicates.json',import.meta.url),'utf8'));
+ assert.equal(runtime.validate(fixture).valid,true);
+ const report=runtime.analyze(fixture);
+ const find=(id,target)=>report.metrics.find(m=>m.metric_id===id&&(target===undefined||m.target_id===target));
+ const within=find('integrity.quasi_duplicate_pairs').value;
+ assert.equal(within.suspect_pairs,5);
+ assert.equal(within.candidate_pairs,8);
+ assert.ok(Math.abs(within.listed_pairs[1].rms_difference-0.05/Math.SQRT2)<1e-9);
+ assert.equal(within.listed_pairs[0].concordant_indices.campaign,false);
+ assert.equal(find('integrity.quasi_duplicate_pairs').parameters.context,'same_instrument_any_campaign');
+ const quasi=find('reference.quasi_duplicate_conflicts','moisture').value;
+ assert.equal(quasi.compared_sample_pairs,3);
+ assert.equal(quasi.incompatible_sample_pairs,2);
+ assert.equal(find('reference.quasi_duplicate_conflicts','grade').value.incompatible_sample_pairs,2);
+ assert.equal(find('reference.exact_duplicate_conflicts','moisture').value.incompatible_sample_pairs,1);
+ assert.equal(find('reference.quasi_duplicate_conflicts','protein').reason_code,'REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED');
+ assert.equal(report.findings.filter(f=>f.rule_id==='reference.verify_reference_or_pairing.v1'&&f.confidence==='unknown').length,3);
+ const json=JSON.stringify(report);
+ assert.ok(!json.includes('987.654')&&!json.includes('zz-test-only'));
+});

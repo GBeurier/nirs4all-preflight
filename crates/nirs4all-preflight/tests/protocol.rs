@@ -734,3 +734,449 @@ fn noise_proxy_declares_axis_and_window_limits_before_calling_methods() {
     );
     assert_eq!(recorder.noise.get(), 0);
 }
+
+/// Test-only brute-force reference for pairs within an RMS tolerance:
+/// every pair under different groups is a candidate, listed in ascending order.
+struct PairOracle {
+    calls: Cell<usize>,
+    inflate: Option<usize>,
+}
+impl MethodsProvider for PairOracle {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![]
+    }
+    fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+    fn tolerance_pairs(
+        &self,
+        r: &TolerancePairsRequest,
+    ) -> Result<TolerancePairsDiagnostics, ProviderError> {
+        self.calls.set(self.calls.get() + 1);
+        let reference = r.reference.as_ref().unwrap_or(&r.query);
+        let groups = if r.reference.is_some() {
+            &r.reference_group_ids
+        } else {
+            &r.query_group_ids
+        };
+        let mut all = Vec::new();
+        let mut candidates = 0;
+        for (i, a) in r.query.iter().enumerate() {
+            let start = if r.reference.is_some() { 0 } else { i + 1 };
+            for (j, b) in reference.iter().enumerate().skip(start) {
+                if r.query_group_ids[i] == groups[j] {
+                    continue;
+                }
+                candidates += 1;
+                let rms = (a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f64>()
+                    / a.len() as f64)
+                    .sqrt();
+                if rms <= r.tolerance {
+                    all.push(([i, j], rms));
+                }
+            }
+        }
+        let mut query_flags = vec![false; r.query.len()];
+        let mut reference_flags = vec![false; r.reference.as_ref().map_or(0, Vec::len)];
+        for ([i, j], _) in &all {
+            query_flags[*i] = true;
+            if r.reference.is_some() {
+                reference_flags[*j] = true;
+            } else {
+                query_flags[*j] = true;
+            }
+        }
+        let total = self.inflate.unwrap_or(all.len());
+        let listed = total.min(r.max_pairs);
+        let filler = all.first().copied().unwrap_or(([0, 1], 0.0));
+        let listed: Vec<_> = (0..listed)
+            .map(|k| all.get(k).copied().unwrap_or(filler))
+            .collect();
+        Ok(TolerancePairsDiagnostics {
+            pairs: listed.iter().map(|(p, _)| *p).collect(),
+            distances: listed.iter().map(|(_, d)| *d).collect(),
+            query_flags,
+            reference_flags,
+            total_pairs: total,
+            candidate_pairs: self.inflate.unwrap_or(candidates),
+            backend_version: "oracle".into(),
+        })
+    }
+}
+
+fn oracle() -> PairOracle {
+    PairOracle {
+        calls: Cell::new(0),
+        inflate: None,
+    }
+}
+
+fn duplicate_fixture() -> QualificationInput {
+    serde_json::from_str(include_str!("../../../examples/quasi_duplicates.json")).unwrap()
+}
+
+fn target_metric<'a>(report: &'a QualificationReport, id: &str, target: &str) -> &'a Metric {
+    report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == id && m.target_id.as_deref() == Some(target))
+        .unwrap_or_else(|| panic!("missing {id} for {target}"))
+}
+
+fn close(a: &serde_json::Value, b: f64) -> bool {
+    (a.as_f64().unwrap() - b).abs() < 1e-12
+}
+
+#[test]
+fn spectral_duplicates_with_incompatible_references_ask_to_verify_pairing() {
+    let x = duplicate_fixture();
+    assert!(validate_input(&x).valid);
+    let report = analyze(&x, &oracle());
+    // Instrument context: A = {s0, s1, s2} across campaigns, B = {s3, s4, s5, s6};
+    // s3 and s5 share physical p3. Hand count: 3 + 2 suspect pairs of 3 + 5 candidates.
+    let within = metric(&report, "integrity.quasi_duplicate_pairs");
+    let v = within.value.as_ref().unwrap();
+    assert_eq!(
+        (v["suspect_pairs"].as_u64(), v["candidate_pairs"].as_u64()),
+        (Some(5), Some(8))
+    );
+    assert!(close(&v["affected_development_fraction"], 6. / 7.));
+    assert_eq!(within.parameters["context"], "same_instrument_any_campaign");
+    // Concordant indices of the listed pair (s0, s1) and (s0, s2).
+    let first = &v["listed_pairs"][0];
+    assert_eq!(
+        (
+            first["observation_a"].as_str(),
+            first["observation_b"].as_str()
+        ),
+        (Some("o-s0"), Some("o-s1"))
+    );
+    let c = &first["concordant_indices"];
+    assert_eq!(
+        (c["instrument"].as_bool(), c["campaign"].as_bool()),
+        (Some(true), Some(false))
+    );
+    assert!(c["individual_id"].is_null() && c["independence_group"].is_null());
+    assert_eq!(c["references"]["moisture"]["identical_exact_value"], false);
+    assert_eq!(c["references"]["moisture"]["shared_reference_id"], false);
+    assert_eq!(c["references"]["grade"]["identical_exact_value"], true);
+    assert!(c["references"]["grade"]["shared_reference_id"].is_null());
+    let second = &v["listed_pairs"][1]["concordant_indices"];
+    assert_eq!(second["campaign"], true);
+    assert_eq!(
+        second["references"]["moisture"]["shared_reference_id"],
+        true
+    );
+    // Development x retained test: X only, no reference comparison.
+    let cross = metric(&report, "integrity.cross_partition_quasi_duplicate_pairs");
+    let v = cross.value.as_ref().unwrap();
+    assert_eq!(v["suspect_pairs"], 3);
+    assert!(v["listed_pairs"][0]["concordant_indices"]
+        .get("references")
+        .is_none());
+    assert_eq!(
+        cross.parameters["reference_comparison"],
+        "not_performed_retained_test_Y_never_read"
+    );
+
+    // moisture, absolute 0.5: sample pairs (s0,s1) |10-12| = 2 and (s1,s2) 1.9
+    // conflict; (s0,s2) 0.1 agrees; s3 is censored and s5 has no reference.
+    let quasi = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture");
+    let v = quasi.value.as_ref().unwrap();
+    assert_eq!(
+        [
+            &v["suspect_sample_pairs"],
+            &v["compared_sample_pairs"],
+            &v["incompatible_sample_pairs"],
+            &v["affected_samples"],
+            &v["affected_development_observations"]
+        ]
+        .map(|x| x.as_u64().unwrap()),
+        [5, 3, 2, 3, 3]
+    );
+    assert!(close(&v["incompatible_pair_rate"], 2. / 3.));
+    assert!(close(&v["affected_sample_fraction"], 3. / 5.));
+    assert!(close(&v["affected_development_fraction"], 3. / 7.));
+    assert_eq!(
+        quasi.denominators["n_sample_pairs_without_two_exact_references"],
+        2
+    );
+    assert_eq!(quasi.denominators["n_suspect_observation_pairs"], 5);
+    let listed = &v["listed_pairs"][0];
+    assert_eq!(
+        (listed["sample_a"].as_str(), listed["sample_b"].as_str()),
+        (Some("s0"), Some("s1"))
+    );
+    assert!(close(&listed["absolute_difference"], 2.0));
+    assert!(close(&listed["min_rms_difference"], 0.0));
+    assert_eq!(
+        quasi.parameters["contradiction_rule"],
+        "absolute_difference_greater_than_tolerance"
+    );
+    assert_eq!(quasi.parameters["contradiction_tolerance"], 0.5);
+    assert_eq!(quasi.unit.as_deref(), Some("%"));
+    assert_eq!(quasi.parameters["spectral_tolerance"], 0.1);
+    assert!(!quasi.parameters.contains_key("tolerance"));
+    // grade, different class: (s0,s2) and (s1,s2) differ; (s0,s1) agree.
+    let v = target_metric(&report, "reference.quasi_duplicate_conflicts", "grade")
+        .value
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (
+            v["compared_sample_pairs"].as_u64(),
+            v["incompatible_sample_pairs"].as_u64()
+        ),
+        (Some(3), Some(2))
+    );
+    assert!(close(&v["affected_sample_fraction"], 3. / 4.));
+    // Exact pass, whole source: only (s0, s1); s3/s5 share a physical sample.
+    let exact = target_metric(&report, "reference.exact_duplicate_conflicts", "moisture");
+    let v = exact.value.as_ref().unwrap();
+    assert_eq!(
+        (
+            v["suspect_sample_pairs"].as_u64(),
+            v["incompatible_sample_pairs"].as_u64()
+        ),
+        (Some(1), Some(1))
+    );
+    assert!(close(&v["affected_sample_fraction"], 2. / 5.));
+    assert!(v["listed_pairs"][0]["min_rms_difference"].is_null());
+    let v = target_metric(&report, "reference.exact_duplicate_conflicts", "grade")
+        .value
+        .clone()
+        .unwrap();
+    assert_eq!(v["incompatible_sample_pairs"], 0);
+    assert!(close(&v["incompatible_pair_rate"], 0.0));
+    for id in [
+        "reference.exact_duplicate_conflicts",
+        "reference.quasi_duplicate_conflicts",
+    ] {
+        let m = target_metric(&report, id, "protein");
+        assert!(matches!(m.status, Availability::NotApplicable) && m.value.is_none());
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED")
+        );
+    }
+    let findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule_id == "reference.verify_reference_or_pairing.v1")
+        .collect();
+    assert_eq!(findings.len(), 3);
+    assert!(findings
+        .iter()
+        .all(|f| f.confidence == "unknown" && f.severity == "warning"));
+    // Retained-test references are never read into the report.
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(!json.contains("987.654") && !json.contains("zz-test-only"));
+}
+
+#[test]
+fn relative_contradiction_tolerance_uses_the_larger_absolute_reference() {
+    let mut x = duplicate_fixture();
+    // bound = 0.16 * max(|a|, |b|): (s0,s1) 2 > 1.92 conflicts, (s1,s2) 1.9 <= 1.92 does not.
+    // A mean or min denominator would also flag (s1,s2).
+    x.options.reference_contradiction_tolerances.insert(
+        "moisture".into(),
+        ReferenceContradictionTolerance::Relative { value: 0.16 },
+    );
+    let report = analyze(&x, &oracle());
+    let m = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture");
+    assert_eq!(m.value.as_ref().unwrap()["incompatible_sample_pairs"], 1);
+    assert_eq!(
+        m.parameters["contradiction_tolerance_unit"],
+        "fraction_of_max_absolute_reference"
+    );
+}
+
+#[test]
+fn instrument_campaign_context_separates_campaigns_and_pair_budget_is_explicit() {
+    let mut x = duplicate_fixture();
+    x.options.quasi_duplicates.as_mut().unwrap().context = ComparisonContext::InstrumentCampaign;
+    let report = analyze(&x, &oracle());
+    // (s0,s2) in A/c1 and (s3,s4), (s4,s5) in B/c1; s1 alone in A/c2.
+    let v = metric(&report, "integrity.quasi_duplicate_pairs")
+        .value
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (v["suspect_pairs"].as_u64(), v["candidate_pairs"].as_u64()),
+        (Some(3), Some(6))
+    );
+    let v = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture")
+        .value
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (
+            v["compared_sample_pairs"].as_u64(),
+            v["incompatible_sample_pairs"].as_u64()
+        ),
+        (Some(1), Some(0))
+    );
+
+    // More suspect pairs than the retained-pair budget: X counts stay, Y comparison is unsupported.
+    let inflated = PairOracle {
+        calls: Cell::new(0),
+        inflate: Some(2_000_000),
+    };
+    let report = analyze(&duplicate_fixture(), &inflated);
+    let m = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture");
+    assert!(matches!(m.status, Availability::Unsupported) && m.value.is_none());
+    assert_eq!(
+        m.reason_code.as_deref(),
+        Some("SUSPECT_PAIR_BUDGET_EXCEEDED")
+    );
+    assert_eq!(
+        metric(&report, "integrity.quasi_duplicate_pairs")
+            .value
+            .as_ref()
+            .unwrap()["suspect_pairs"],
+        4_000_000
+    );
+
+    // Without quasi options, quasi conflicts inherit the undeclared spectral tolerance.
+    let mut x = duplicate_fixture();
+    x.options.quasi_duplicates = None;
+    let report = analyze(&x, &oracle());
+    let m = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture");
+    assert_eq!(
+        m.reason_code.as_deref(),
+        Some("QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED")
+    );
+    assert_eq!(
+        target_metric(&report, "reference.exact_duplicate_conflicts", "moisture")
+            .value
+            .as_ref()
+            .unwrap()["incompatible_sample_pairs"],
+        1
+    );
+}
+
+#[test]
+fn listing_beyond_the_limit_refetches_all_development_pairs_once() {
+    let mut x = duplicate_fixture();
+    // 1,200 identical development spectra under distinct physical samples in one context.
+    let source = &mut x.sources[0];
+    for i in 0..1200 {
+        let id = format!("bulk{i}");
+        source.observation_ids.push(format!("o-{id}"));
+        source.sample_ids.push(id.clone());
+        source.x.push(vec![Some(9.0), Some(9.0)]);
+        x.samples.push(Sample {
+            sample_id: id.clone(),
+            physical_sample_id: None,
+            partition: Partition::Development,
+            independence_group: None,
+            instrument: Some("C".into()),
+            campaign: None,
+            individual_id: None,
+            augmentation_parent_id: None,
+        });
+        x.targets[0].values.push(TargetValue {
+            sample_id: id,
+            value: Some(if i == 0 { 50.0 } else { 40.0 }),
+            category: None,
+            status: ReferenceStatus::Exact,
+            reference_id: None,
+            reference_group_id: None,
+        });
+    }
+    let provider = oracle();
+    let report = analyze(&x, &provider);
+    let v = metric(&report, "integrity.quasi_duplicate_pairs")
+        .value
+        .clone()
+        .unwrap();
+    // One call per context and partition, plus one full refetch for context C
+    // whose 719,400 pairs exceed the listing room.
+    assert_eq!(provider.calls.get(), 5);
+    let bulk_pairs = 1200 * 1199 / 2;
+    assert_eq!(v["suspect_pairs"], 5 + bulk_pairs);
+    assert_eq!(v["listed_pairs"].as_array().unwrap().len(), 1000);
+    assert_eq!(v["listing_truncated"], true);
+    // bulk0 conflicts with each of the 1,199 others; listing capped at 1,000.
+    for id in [
+        "reference.quasi_duplicate_conflicts",
+        "reference.exact_duplicate_conflicts",
+    ] {
+        let v = target_metric(&report, id, "moisture")
+            .value
+            .clone()
+            .unwrap();
+        let expected = if id.contains("quasi") {
+            2 + 1199
+        } else {
+            1 + 1199
+        };
+        assert_eq!(v["incompatible_sample_pairs"], expected, "{id}");
+        assert_eq!(v["listed_pairs"].as_array().unwrap().len(), 1000);
+        assert_eq!(v["listing_truncated"], true);
+    }
+}
+
+#[test]
+fn contradiction_tolerances_are_validated_against_declared_targets() {
+    let mut x = duplicate_fixture();
+    let tolerances = &mut x.options.reference_contradiction_tolerances;
+    tolerances.insert(
+        "unknown".into(),
+        ReferenceContradictionTolerance::DifferentClass,
+    );
+    tolerances.insert(
+        "grade".into(),
+        ReferenceContradictionTolerance::Absolute { value: 1.0 },
+    );
+    tolerances.insert(
+        "moisture".into(),
+        ReferenceContradictionTolerance::DifferentClass,
+    );
+    tolerances.insert(
+        "protein".into(),
+        ReferenceContradictionTolerance::Relative { value: 0.0 },
+    );
+    let codes: Vec<_> = validate_input(&x)
+        .issues
+        .into_iter()
+        .map(|i| (i.code, i.blocking))
+        .collect();
+    for code in [
+        "UNKNOWN_CONTRADICTION_TARGET",
+        "CONTRADICTION_TOLERANCE_KIND_MISMATCH",
+        "INVALID_CONTRADICTION_TOLERANCE",
+    ] {
+        assert!(codes.contains(&(code.to_string(), true)), "{code}");
+    }
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|(c, _)| c == "CONTRADICTION_TOLERANCE_KIND_MISMATCH")
+            .count(),
+        2
+    );
+    let parsed: Result<Options, _> = serde_json::from_str(
+        r#"{"reference_contradiction_tolerances":{"y":{"kind":"absolute","value":1,"extra":2}}}"#,
+    );
+    assert!(parsed.is_err());
+    let mut x = duplicate_fixture();
+    x.options.reference_contradiction_tolerances.clear();
+    let report = analyze(&x, &oracle());
+    let capability = report
+        .capabilities
+        .iter()
+        .find(|c| c.capability_id == "duplicate_reference_conflicts")
+        .unwrap();
+    assert!(!capability.available);
+    assert_eq!(
+        capability.reason.as_deref(),
+        Some("REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED")
+    );
+}

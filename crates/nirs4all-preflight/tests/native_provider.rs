@@ -462,3 +462,58 @@ impl Wire for Metric {
             .to_owned()
     }
 }
+
+#[test]
+fn native_quasi_duplicates_flag_incompatible_references_on_development_pairs() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let input: QualificationInput =
+        serde_json::from_str(include_str!("../../../examples/quasi_duplicates.json")).unwrap();
+    let report = analyze(&input, &provider);
+    let within = metric(&report, "integrity.quasi_duplicate_pairs");
+    let v = within.value.as_ref().unwrap();
+    assert_eq!(
+        (v["suspect_pairs"].as_u64(), v["candidate_pairs"].as_u64()),
+        (Some(5), Some(8))
+    );
+    // (s0, s2): RMS of (0.05, 0) = 0.05 / sqrt(2).
+    assert!(near(
+        v["listed_pairs"][1]["rms_difference"].as_f64().unwrap(),
+        0.05 / 2f64.sqrt()
+    ));
+    let by_target = |id: &str, target: &str| {
+        report
+            .metrics
+            .iter()
+            .find(|m| m.metric_id == id && m.target_id.as_deref() == Some(target))
+            .unwrap()
+            .value
+            .clone()
+            .unwrap()
+    };
+    let quasi = by_target("reference.quasi_duplicate_conflicts", "moisture");
+    assert_eq!(
+        (
+            quasi["compared_sample_pairs"].as_u64(),
+            quasi["incompatible_sample_pairs"].as_u64()
+        ),
+        (Some(3), Some(2))
+    );
+    assert!(near(
+        quasi["listed_pairs"][1]["min_rms_difference"]
+            .as_f64()
+            .unwrap(),
+        0.05 / 2f64.sqrt()
+    ));
+    assert_eq!(
+        by_target("reference.quasi_duplicate_conflicts", "grade")["incompatible_sample_pairs"],
+        2
+    );
+    assert_eq!(
+        by_target("reference.exact_duplicate_conflicts", "moisture")["incompatible_sample_pairs"],
+        1
+    );
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(!json.contains("987.654") && !json.contains("zz-test-only"));
+}

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Spectral duplicates with incompatible references (spec §5.5, exploratory, unqualified). The new capability `duplicate_reference_conflicts` and the new optional input `options.reference_contradiction_tolerances` map a target ID to `absolute`/`relative` (continuous) or `different_class` (categorical). There is no default. New metrics `reference.exact_duplicate_conflicts` and `reference.quasi_duplicate_conflicts` (per source × target) compare exact, consistent development references of spectrally identical or quasi-identical sample pairs. Each comparison counts once per sample pair. They report counts, rates, affected samples and observations and a bounded listing. Retained-test Y is never read. New finding `reference.verify_reference_or_pairing.v1` (confidence unknown). New reason codes: `REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED` and `SUSPECT_PAIR_BUDGET_EXCEEDED`. New blocking validation codes: `UNKNOWN_CONTRADICTION_TARGET`, `CONTRADICTION_TOLERANCE_KIND_MISMATCH` and `INVALID_CONTRADICTION_TOLERANCE`.
+- `options.quasi_duplicates.context` accepts `instrument`, which pairs observations of one instrument across campaigns. Listed quasi-duplicate pairs carry descriptive `concordant_indices`: instrument, campaign, individual, independence group and, for development pairs, per-target reference identity and shared reference IDs. The example `examples/quasi_duplicates.json` exercises both features. Methods requirements are unchanged (ABI 2.19).
+
 ## 0.1.0-alpha.3 — 2026-10-13
 
 Engine, crates, Python and npm binding move together to 0.1.0-alpha.3 and require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.
