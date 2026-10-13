@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createEngineHost, EngineError } from "./engine";
 import { buildEngineInput, defaultConfig, parseCanonicalInput, parseSeed } from "./input";
 import { syntheticInput } from "./synthetic";
+import { composition, developmentTargetPoints, developmentTargetValues, pcaPoints, sampleRows, spectraPreview } from "./views";
 
 // Field lists of the Rust structs (`#[serde(deny_unknown_fields)]` in nirs4all-preflight-core).
 const RUST_FIELDS = {
@@ -124,5 +125,53 @@ describe("engine host", () => {
     expect(await first).toMatchObject({ code: "CANCELLED" });
     expect(await second).toBe("fresh");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("display joins", () => {
+  it("draws real development rows only, incomplete ones with gaps", () => {
+    const input = syntheticInput("pitfalls");
+    const preview = spectraPreview(input, input.sources[0]!, 100);
+    expect(preview.counts.retained_test).toBe(6);
+    expect(preview.rows).toHaveLength(preview.counts.development);
+    expect(preview.rows.every((r) => !r.sampleId || Number(r.sampleId.slice(1)) <= 24)).toBe(true);
+    const gap = preview.rows.find((r) => !r.complete)!;
+    expect(gap.sampleId).toBe("s15");
+    expect(gap.values[7]).toBeNull();
+    expect(preview.incompleteDevelopment).toBe(1);
+    expect(spectraPreview(input, input.sources[0]!, 5).rows).toHaveLength(5);
+  });
+
+  it("counts the declared composition and hides test references in the sample table", () => {
+    const input = syntheticInput("pitfalls");
+    const c = composition(input, input.sources[0]);
+    expect(c.partitions.development).toBe(24);
+    expect(c.partitions.retained_test).toBe(6);
+    expect(c.campaigns).toEqual([{ label: "2026-A", count: 15 }, { label: "2026-B", count: 15 }]);
+    expect(c.repeats).toEqual({ one: 21, two: 1, more: 8, none: 0 });
+    const rows = sampleRows(input, input.sources[0]);
+    expect(rows.find((r) => r.sampleId === "s25")!.targets.concentration).toBe("hidden");
+    expect(rows.find((r) => r.sampleId === "s04")!.targets.concentration).toMatchObject({ status: "censored" });
+    expect(rows.find((r) => r.sampleId === "s15")!.incomplete).toBe(1);
+  });
+
+  it("never reads retained-test target values", () => {
+    const input = syntheticInput("pitfalls");
+    const values = developmentTargetValues(input, "concentration");
+    expect(values.has("s25")).toBe(false);
+    expect(values.has("s04")).toBe(false); // censored
+    const points = developmentTargetPoints(input, "concentration");
+    expect(points.find((p) => p.id === "s04")?.status).toBe("censored");
+    expect(points.some((p) => p.id === "s25")).toBe(false);
+  });
+
+  it("joins PCA units to metadata and target values", () => {
+    const input = syntheticInput("clean");
+    const pca = { sourceId: "synthetic_nir", viewId: "v", sampleIds: ["s01", "s02"], aggregationKeys: ["k1", "k2"], scores: [[1, 2], [3, 4]], eigenvalues: null, totalVariance: null, retainedFraction: null, effectiveDimension: null };
+    const byCampaign = pcaPoints(input, pca, 0, 1, "campaign", null);
+    expect(byCampaign.map((p) => [p.x, p.y, p.group])).toEqual([[1, 2, "2026-A"], [3, 4, "2026-B"]]);
+    const byTarget = pcaPoints(input, pca, 1, 0, "target", "concentration");
+    expect(byTarget[0]!.value).toBe(input.targets[0]!.values[0]!.value);
+    expect(byTarget[0]!.x).toBe(2);
   });
 });
