@@ -137,6 +137,12 @@ impl MethodsProvider for CallbackProvider<'_> {
     fn permdisp(&self, r: &PermdispRequest) -> Result<PermdispDiagnostics, ProviderError> {
         self.invoke("permdisp", r)
     }
+    fn permanova_freedman_lane(
+        &self,
+        r: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        self.invoke("permanova_freedman_lane", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {

@@ -52,7 +52,7 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -141,6 +141,12 @@ export async function createQualificationRuntime(options = {}) {
         const x = matrix(request.matrix);
         const output = methods.statsPermanova(x, request.term_codes, request.strata_codes ?? undefined, request.n_permutations, BigInt(request.seed));
         result = { ss_total: output.ssTotal, ss_strata: output.ssStrata, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, n_levels: output.nLevels, n_strata: output.nStrata, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'permanova_freedman_lane': {
+        const x = matrix(request.matrix);
+        const output = methods.statsPermanovaFreedmanLane(x, request.term_codes, request.condition_codes, request.n_permutations, BigInt(request.seed));
+        result = { ss_total: output.ssTotal, ss_reduced: output.ssReduced, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, rank_reduced: output.rankReduced, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
         break;
       }
       case 'permdisp': {

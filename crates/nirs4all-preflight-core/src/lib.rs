@@ -1756,6 +1756,43 @@ pub struct PermanovaDiagnostics {
     pub backend_version: String,
 }
 
+/// Partial PERMANOVA of a term given the additive main effects of condition
+/// factors, tested by Freedman-Lane permutation of the reduced-model
+/// residuals (Methods ABI 2.20 `n4m_stats_permanova_freedman_lane`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreedmanLaneRequest {
+    pub matrix: Vec<Vec<f64>>,
+    pub term_codes: Vec<i64>,
+    /// One code vector per condition factor (main effects, no interaction).
+    pub condition_codes: Vec<Vec<i64>>,
+    pub n_permutations: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreedmanLaneDiagnostics {
+    pub ss_total: f64,
+    /// Model SS of the reduced design (intercept and condition main effects).
+    pub ss_reduced: f64,
+    pub ss_term: f64,
+    pub ss_residual: f64,
+    pub r2: Option<f64>,
+    pub partial_r2: Option<f64>,
+    pub pseudo_f: Option<f64>,
+    /// rank(full) - rank(reduced); 0 when aliased with the conditions.
+    pub df_term: usize,
+    pub df_residual: usize,
+    /// Rank of the reduced design, intercept included.
+    pub rank_reduced: usize,
+    /// log10(n!), bound on distinct residual permutations.
+    pub log10_distinct_permutations: f64,
+    pub p_value: Option<f64>,
+    pub n_at_least_observed: usize,
+    pub n_permutations_executed: usize,
+    pub backend_version: String,
+}
+
 /// PERMDISP, vegan `betadisper(type = "centroid")` + `permutest`
 /// (Methods ABI 2.20 `n4m_stats_permdisp`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1892,10 +1929,18 @@ pub trait MethodsProvider {
             "PERMDISP_PROVIDER_NOT_CONFIGURED",
         ))
     }
+    fn permanova_freedman_lane(
+        &self,
+        _request: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "FREEDMAN_LANE_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 18] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 19] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -1914,6 +1959,7 @@ pub const METHODS_CAPABILITY_IDS: [&str; 18] = [
     "methods.correlation_exact",
     "methods.permanova",
     "methods.permdisp",
+    "methods.permanova_freedman_lane",
 ];
 
 pub struct UnavailableMethodsProvider;

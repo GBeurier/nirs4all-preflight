@@ -127,6 +127,9 @@ test('WASM confounding matches the native engine goldens',async()=>{
   assert.equal(conditional.parameters.permutation_plan.seed,'744331944044608949');
   assert.equal(find('confounding.permanova_marginal_test','campaign').value.n_at_least_observed,35);
   assert.equal(find('confounding.permdisp_test','campaign').value.n_at_least_observed,456);
+  const fl=find('confounding.permanova_freedman_lane_test','campaign');
+  assert.equal(fl.value.n_at_least_observed,101);
+  assert.ok(fl.parameters.permutation_plan.reduced_model.startsWith('intercept + main effects of instrument'));
   assert.equal(find('confounding.design').value.factors[0].df_identifiable_given_other_factors,1);
   assert.ok(runtime.capabilities().some(c=>c.capability_id==='confounding'&&c.available&&!c.qualified));
 });

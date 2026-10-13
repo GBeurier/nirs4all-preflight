@@ -120,6 +120,17 @@ type Permdisp = unsafe extern "C" fn(
     *mut f64,
     *mut i64,
 ) -> i32;
+type FreedmanLane = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    *const i64,
+    i32,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+) -> i32;
 type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
 type SnvDestroy = unsafe extern "C" fn(*mut c_void);
 type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
@@ -195,6 +206,7 @@ pub struct NativeMethodsProvider {
     correlation_exact_fn: CorrelationExact,
     permanova_fn: Permanova,
     permdisp_fn: Permdisp,
+    freedman_lane_fn: FreedmanLane,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -281,6 +293,9 @@ impl NativeMethodsProvider {
             let permdisp_fn = *library
                 .get::<Permdisp>(b"n4m_stats_permdisp\0")
                 .map_err(err)?;
+            let freedman_lane_fn = *library
+                .get::<FreedmanLane>(b"n4m_stats_permanova_freedman_lane\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -312,6 +327,7 @@ impl NativeMethodsProvider {
                 correlation_exact_fn,
                 permanova_fn,
                 permdisp_fn,
+                freedman_lane_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -1079,6 +1095,64 @@ impl MethodsProvider for NativeMethodsProvider {
             n_groups: groups,
             log10_distinct_permutations: out[4],
             p_value: out[5].is_finite().then_some(out[5]),
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn permanova_freedman_lane(
+        &self,
+        r: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        let c = r.condition_codes.len();
+        if n < 2
+            || r.term_codes.len() != n
+            || c > 64
+            || r.condition_codes.iter().any(|codes| codes.len() != n)
+            || r.n_permutations > 1_000_000
+        {
+            return Err(ProviderError::internal("INVALID_FREEDMAN_LANE_REQUEST"));
+        }
+        let conditions: Vec<i64> = (0..n)
+            .flat_map(|i| r.condition_codes.iter().map(move |codes| codes[i]))
+            .collect();
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut out = [f64::NAN; 12];
+        let mut counts = [0i64; 2];
+        // SAFETY: the view owns n x p values; term codes hold n and the
+        // row-major condition codes n x c elements; outputs are fixed arrays.
+        self.check(unsafe {
+            (self.freedman_lane_fn)(
+                self.context,
+                &xv,
+                r.term_codes.as_ptr(),
+                if c == 0 {
+                    std::ptr::null()
+                } else {
+                    conditions.as_ptr()
+                },
+                c as i32,
+                r.n_permutations as i32,
+                r.seed,
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        Ok(FreedmanLaneDiagnostics {
+            ss_total: out[0],
+            ss_reduced: out[1],
+            ss_term: out[2],
+            ss_residual: out[3],
+            r2: finite(out[4]),
+            partial_r2: finite(out[5]),
+            pseudo_f: finite(out[6]),
+            df_term: out[7] as usize,
+            df_residual: out[8] as usize,
+            rank_reduced: out[9] as usize,
+            log10_distinct_permutations: out[10],
+            p_value: finite(out[11]),
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
             backend_version: self.version.clone(),
