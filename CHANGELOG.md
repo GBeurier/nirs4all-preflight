@@ -29,6 +29,15 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
 - Reason codes: `FEWER_THAN_20_RESAMPLING_UNITS`, `BOOTSTRAP_WORK_BUDGET_EXCEEDED`, `BOOTSTRAP_REPLICATES_NOT_ESTIMABLE`, `NO_BAND_WITH_ESTIMABLE_REML`, `NO_BAND_WITH_WITHIN_GROUP_DF`, `NO_BALANCED_BAND`, `REPEAT_COUNTS_ALREADY_EQUAL`, `ZERO_BALANCED_TOTAL_VARIANCE` and `VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED`. `INDEPENDENCE_UNIT_UNKNOWN` and `MISSING_INDEPENDENCE_GROUP` are reused.
 - New structure metric `structure.balanced_repeat_sensitivity`: the canonical PCA structure versus a seeded subsample of every aggregated sample to r* = min r_i acquisitions. No sample is removed.
 - No new input option. The independence unit (`options.independence_unit`) and the root seed (`options.seed`) drive the new intervals. The example `examples/repeatability_uncertainty.json` exercises the protocol.
+- Review b9 fixes:
+  - REML keeps the global maximum of the restricted likelihood (multimodal witness).
+  - The Searle F interval needs one independence component per physical group in the band (`GROUPS_SHARE_INDEPENDENCE_UNIT`).
+  - A `reference_group` unit needs reference identities (`MISSING_REFERENCE_GROUP`).
+  - Units are counted per band after masks, with separate within-df counts for the SD.
+  - Variances use exponent-managed scaling (status 6, `VALUE_NOT_REPRESENTABLE`, instead of overflow).
+  - Non-convergence and numerical failures are `error` with per-band `band_reason`, never insufficient data or a missing capability.
+  - The measured bootstrap coverage is documented; the intervals stay exploratory.
+  - Bootstrap plans move to `bootstrap_plan.v2`.
 
 ## 0.1.0-alpha.3 — 2026-10-13
 
