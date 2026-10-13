@@ -135,3 +135,27 @@ test('WASM SNV keeps constant spectra flat and rounding residue unresolved',()=>
   assert.ok(rm[id].parameters.snv_rms_band_deviation*10<rm[id].parameters.numerical_resolution_threshold);
  }
 });
+test('WASM relative contradiction tolerance cannot overflow and aliases are compared',async()=>{
+ // Review b4 #2: same cases as the Rust protocol test (one physical sample per case).
+ const cases=[[1.7e308,-1.7e308],[4,3],[4,2.9999999999999996],[0,0],[0,-0],[0,1e-300],[-1e-310,1e-310]];
+ const tolerances={rel_quarter:{kind:'relative',value:0.25},rel_one_half:{kind:'relative',value:1.5},rel_two:{kind:'relative',value:2},abs_huge:{kind:'absolute',value:1e308}};
+ const ids=cases.flatMap((_,i)=>[`c${i}a`,`c${i}b`]);
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids.map(i=>`o-${i}`),sample_ids:ids,x:ids.map((_,k)=>[Math.floor(k/2),1]),axis:[1,2],axis_unit:'nm',signal_unit:'abs'}],
+  samples:ids.map((id,k)=>({sample_id:id,physical_sample_id:`case${Math.floor(k/2)}`,instrument:'A'})),
+  targets:Object.keys(tolerances).map(t=>({target_id:t,kind:'continuous',values:ids.map((id,k)=>({sample_id:id,value:cases[Math.floor(k/2)][k%2],status:'exact'}))})),
+  options:{reference_contradiction_tolerances:tolerances}});
+ const flagged=t=>report.metrics.find(m=>m.metric_id==='reference.within_physical_sample_conflicts'&&m.target_id===t).value.listed_pairs.map(p=>p.physical_sample);
+ assert.deepEqual(flagged('rel_quarter'),['case0','case2','case5','case6']);
+ assert.deepEqual(flagged('rel_one_half'),['case0','case6']);
+ assert.deepEqual(flagged('rel_two'),[]);
+ assert.deepEqual(flagged('abs_huge'),['case0']);
+ // Review b4 #1: an alias of s0 (same physical p0) with reference 20.
+ const fixture=JSON.parse(await readFile(new URL('../../../examples/quasi_duplicates.json',import.meta.url),'utf8'));
+ fixture.sources[0].observation_ids.push('o-s7');fixture.sources[0].sample_ids.push('s7');fixture.sources[0].x.push([1,1]);
+ fixture.samples.push({sample_id:'s7',physical_sample_id:'p0',instrument:'A',campaign:'c1'});
+ fixture.targets[0].values.push({sample_id:'s7',value:20,status:'exact'});
+ const alias=runtime.analyze(fixture).metrics.find(m=>m.metric_id==='reference.within_physical_sample_conflicts'&&m.target_id==='moisture').value;
+ assert.equal(alias.incompatible_sample_pairs,1);
+ assert.equal(alias.listed_pairs[0].physical_sample,'p0');
+});

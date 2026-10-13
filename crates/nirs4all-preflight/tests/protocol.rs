@@ -1290,3 +1290,269 @@ fn snv_ratios_require_numerically_resolved_residual_variance() {
         }
     }
 }
+
+fn dev_sample(id: &str, physical: &str) -> Sample {
+    Sample {
+        sample_id: id.into(),
+        physical_sample_id: Some(physical.into()),
+        partition: Partition::Development,
+        independence_group: None,
+        instrument: Some("A".into()),
+        campaign: None,
+        individual_id: None,
+        augmentation_parent_id: None,
+    }
+}
+
+fn exact(sample: &str, value: f64, reference_id: Option<&str>) -> TargetValue {
+    TargetValue {
+        sample_id: sample.into(),
+        value: Some(value),
+        category: None,
+        status: ReferenceStatus::Exact,
+        reference_id: reference_id.map(str::to_owned),
+        reference_group_id: None,
+    }
+}
+
+#[test]
+fn aliases_of_one_physical_sample_with_incompatible_references_are_flagged() {
+    // Review b4 #1: two sample IDs of one physical object, identical spectra,
+    // references 10 and 20, were hidden by the physical-identity exclusion.
+    let mut x = duplicate_fixture();
+    for (id, value) in [("s7", 20.0), ("s8", 10.2)] {
+        x.samples.push(dev_sample(id, "p0"));
+        x.sources[0].observation_ids.push(format!("o-{id}"));
+        x.sources[0].sample_ids.push(id.into());
+        x.sources[0].x.push(vec![Some(1.0), Some(1.0)]);
+        x.targets[0].values.push(exact(id, value, None));
+    }
+    assert!(validate_input(&x).valid);
+    let report = analyze(&x, &oracle());
+    // p0 = {s0: 10, s7: 20, s8: 10.2}: (s0,s7) and (s7,s8) conflict, (s0,s8) agree.
+    let m = target_metric(
+        &report,
+        "reference.within_physical_sample_conflicts",
+        "moisture",
+    );
+    assert!(m.source_id.is_none());
+    let v = m.value.as_ref().unwrap();
+    assert_eq!(
+        [
+            &v["physical_samples_with_aliases"],
+            &v["compared_sample_pairs"],
+            &v["incompatible_sample_pairs"],
+            &v["affected_physical_samples"],
+            &v["affected_samples"],
+        ]
+        .map(|x| x.as_u64().unwrap()),
+        [1, 3, 2, 1, 3]
+    );
+    let first = &v["listed_pairs"][0];
+    assert_eq!(first["physical_sample"], "p0");
+    assert_eq!(
+        (first["sample_a"].as_str(), first["sample_b"].as_str()),
+        (Some("s0"), Some("s7"))
+    );
+    assert!(close(&first["absolute_difference"], 10.0));
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule_id == "reference.verify_reference_or_pairing.v1"
+            && f.evidence == ["reference.within_physical_sample_conflicts"]));
+    // The between-object population still excludes pairs inside p0.
+    let exact_pairs = target_metric(&report, "reference.exact_duplicate_conflicts", "moisture");
+    let listed = exact_pairs.value.as_ref().unwrap()["listed_pairs"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(listed
+        .iter()
+        .all(|p| p["physical_sample_a"] != p["physical_sample_b"]));
+    // Undeclared target and categorical target without aliases.
+    assert_eq!(
+        target_metric(
+            &report,
+            "reference.within_physical_sample_conflicts",
+            "protein"
+        )
+        .reason_code
+        .as_deref(),
+        Some("REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED")
+    );
+    assert_eq!(
+        target_metric(
+            &report,
+            "reference.within_physical_sample_conflicts",
+            "grade"
+        )
+        .value
+        .as_ref()
+        .unwrap()["compared_sample_pairs"],
+        0
+    );
+}
+
+/// One physical sample per case with two aliases; one target per tolerance.
+fn relative_extremes_input() -> QualificationInput {
+    let cases: [(f64, f64); 7] = [
+        (1.7e308, -1.7e308),
+        (4.0, 3.0),
+        (4.0, 2.9999999999999996),
+        (0.0, 0.0),
+        (0.0, -0.0),
+        (0.0, 1e-300),
+        (-1e-310, 1e-310),
+    ];
+    let mut x = input();
+    x.samples.clear();
+    x.sources[0].observation_ids.clear();
+    x.sources[0].sample_ids.clear();
+    x.sources[0].x.clear();
+    let tolerances = [
+        (
+            "rel_quarter",
+            ReferenceContradictionTolerance::Relative { value: 0.25 },
+        ),
+        (
+            "rel_one_half",
+            ReferenceContradictionTolerance::Relative { value: 1.5 },
+        ),
+        (
+            "rel_two",
+            ReferenceContradictionTolerance::Relative { value: 2.0 },
+        ),
+        (
+            "abs_huge",
+            ReferenceContradictionTolerance::Absolute { value: 1e308 },
+        ),
+    ];
+    x.targets = tolerances
+        .iter()
+        .map(|(id, _)| Target {
+            target_id: (*id).into(),
+            kind: TargetKind::Continuous,
+            values: vec![],
+            unit: None,
+        })
+        .collect();
+    for (i, (a, b)) in cases.iter().enumerate() {
+        for (suffix, value) in [("a", a), ("b", b)] {
+            let id = format!("c{i}{suffix}");
+            x.samples.push(dev_sample(&id, &format!("case{i}")));
+            x.sources[0].observation_ids.push(format!("o-{id}"));
+            x.sources[0].sample_ids.push(id.clone());
+            x.sources[0].x.push(vec![Some(i as f64), Some(1.0)]);
+            for t in &mut x.targets {
+                t.values.push(exact(&id, *value, None));
+            }
+        }
+    }
+    x.options.reference_contradiction_tolerances = tolerances
+        .iter()
+        .map(|(id, t)| ((*id).to_string(), *t))
+        .collect();
+    x
+}
+
+#[test]
+fn relative_tolerance_is_normalised_and_cannot_overflow() {
+    // Review b4 #2: 1.7e308 vs -1.7e308 at relative 1.5 compared Inf > Inf.
+    let report = analyze(&relative_extremes_input(), &oracle());
+    let flagged = |target: &str| -> Vec<String> {
+        target_metric(
+            &report,
+            "reference.within_physical_sample_conflicts",
+            target,
+        )
+        .value
+        .as_ref()
+        .unwrap()["listed_pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["physical_sample"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // |x/m - y/m|: case0 2, case1 0.25 (equal, compatible), case2 just above
+    // 0.25, case3/4 zero (m = 0), case5 1, case6 2 (subnormal).
+    assert_eq!(flagged("rel_quarter"), ["case0", "case2", "case5", "case6"]);
+    assert_eq!(flagged("rel_one_half"), ["case0", "case6"]);
+    assert!(flagged("rel_two").is_empty());
+    // Absolute rule: an unrepresentable |x - y| exceeds any finite tolerance.
+    assert_eq!(flagged("abs_huge"), ["case0"]);
+    let listed = &target_metric(
+        &report,
+        "reference.within_physical_sample_conflicts",
+        "rel_one_half",
+    )
+    .value
+    .as_ref()
+    .unwrap()["listed_pairs"][0];
+    assert!(listed["absolute_difference"].is_null());
+    assert!(close(&listed["relative_difference"], 2.0));
+}
+
+#[test]
+fn shared_reference_ids_do_not_depend_on_measurement_order() {
+    // Review b4 #4: s0 has two exact measurements of 10 (r1, r2), s2 has r2.
+    for order in [["r1", "r2"], ["r2", "r1"]] {
+        let mut x = duplicate_fixture();
+        let values = &mut x.targets[0].values;
+        values.retain(|v| v.sample_id != "s0");
+        values.insert(0, exact("s0", 10.0, Some(order[0])));
+        values.push(exact("s0", 10.0, Some(order[1])));
+        for v in values.iter_mut().filter(|v| v.sample_id == "s2") {
+            v.reference_id = Some("r2".into());
+        }
+        let report = analyze(&x, &oracle());
+        let v = metric(&report, "integrity.quasi_duplicate_pairs")
+            .value
+            .clone()
+            .unwrap();
+        // Listed pair 1 is (s0, s2); pair 0 is (s0, s1) with r1 for s1.
+        let s0_s2 = &v["listed_pairs"][1]["concordant_indices"]["references"]["moisture"];
+        assert_eq!(s0_s2["shared_reference_id"], true, "{order:?}");
+        let s0_s1 = &v["listed_pairs"][0]["concordant_indices"]["references"]["moisture"];
+        assert_eq!(s0_s1["shared_reference_id"], true, "{order:?}");
+        let conflicts = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture");
+        assert_eq!(
+            conflicts.value.as_ref().unwrap()["listed_pairs"][0]["reference_ids_a"],
+            serde_json::json!(["r1", "r2"])
+        );
+    }
+}
+
+#[test]
+fn conflict_denominators_name_total_admissible_and_excluded_observations() {
+    // Review b4 #5: one incomplete development observation (s6) stays in the
+    // exact population but leaves the quasi (complete-case) population.
+    let mut x = duplicate_fixture();
+    x.sources[0].x[6][1] = None;
+    let report = analyze(&x, &oracle());
+    for (id, admissible) in [
+        ("reference.exact_duplicate_conflicts", 7),
+        ("reference.quasi_duplicate_conflicts", 6),
+    ] {
+        let m = target_metric(&report, id, "moisture");
+        assert_eq!(m.denominators["n_development_observations"], 7, "{id}");
+        assert_eq!(
+            m.denominators["n_admissible_development_observations"], admissible,
+            "{id}"
+        );
+        assert_eq!(
+            m.denominators["n_excluded_development_observations"],
+            7 - admissible,
+            "{id}"
+        );
+        assert_eq!(
+            m.parameters["fraction_denominators"]["affected_development_fraction"],
+            "n_admissible_development_observations"
+        );
+    }
+    let v = target_metric(&report, "reference.quasi_duplicate_conflicts", "moisture")
+        .value
+        .clone()
+        .unwrap();
+    assert!(close(&v["affected_development_fraction"], 3. / 6.));
+}

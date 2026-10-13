@@ -6,6 +6,11 @@
 - Fixes from the independent review of the noise-proxy, SNV-sensitivity and tolerance-pair block (requires the Methods fixes of `fix/preflight-numerics`, same ABI 2.19):
   - `options.noise_proxy` fields are u64 and validated without overflow. `polyorder` near the integer maximum used to panic on CPU and wrap to a valid order in WASM. The window is bounded to odd values in [3, 1001] and the polyorder to at most min(10, window − 2), the verified Savitzky–Golay domain.
   - The SNV sensitivity declares a numerical-rank criterion: the per-band RMS of the SNV residual variance must exceed 8·p·ε·κ, where κ is the largest offset-to-range ratio. Otherwise the SNV effective dimension and sensitivity are `undefined` with `SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED`. The residual variance, threshold and criterion are published. Constant spectra now stay flat in the SNV view, through Methods.
+- Fixes from the independent review of the duplicate-reference conflicts:
+  - New per-target metric `reference.within_physical_sample_conflicts` compares sample IDs that declare the same physical sample. These aliases were hidden by the physical-identity exclusion of the spectral pair searches.
+  - The relative rule is normalized as |x/m − y/m| > v with m = max(|x|, |y|) and m = 0 compatible, so it cannot overflow; listings add `relative_difference`.
+  - Shared reference and reference-group IDs use the sets of all admissible exact references (non-empty intersection), so they are independent of measurement order; listings report `reference_ids_a/b` as sorted sets.
+  - Conflict metrics publish total, admissible and excluded development observations and name each fraction's denominator.
 - `options.quasi_duplicates.context` accepts `instrument`, which pairs observations of one instrument across campaigns. Listed quasi-duplicate pairs carry descriptive `concordant_indices`: instrument, campaign, individual, independence group and, for development pairs, per-target reference identity and shared reference IDs. The example `examples/quasi_duplicates.json` exercises both features. Methods requirements are unchanged (ABI 2.19).
 
 ## 0.1.0-alpha.3 — 2026-10-13

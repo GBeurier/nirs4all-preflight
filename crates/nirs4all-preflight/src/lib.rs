@@ -237,18 +237,12 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
     let references: Vec<_> = input
         .targets
         .iter()
-        .map(|target| TargetReferences {
-            target,
-            by_sample: exact_development_references(target, &samples)
-                .eligible
-                .into_iter()
-                .map(|v| (v.sample_id.as_str(), v))
-                .collect(),
-        })
+        .map(|target| TargetReferences::new(target, &samples))
         .collect();
     for source in &input.sources {
         analyze_source(source, &samples, &references, input, provider, &mut report);
     }
+    analyze_within_physical_conflicts(&samples, &references, input, &mut report);
     for target in &input.targets {
         analyze_target(target, &samples, input, provider, &mut report);
     }
@@ -342,10 +336,13 @@ fn analyze_source(
     m.denominators.insert("n_observations_source".into(), n);
     report.metrics.push(m);
     let mut duplicate_rows: BTreeMap<Vec<u64>, BTreeMap<String, Vec<usize>>> = BTreeMap::new();
+    // Development rows with at least one valid cell: the exact-pass population.
+    let mut keyed_rows = Vec::new();
     for &r in &dev_rows {
         let Some(key) = exact_spectrum_key(source, r) else {
             continue;
         };
+        keyed_rows.push(r);
         let sample = samples[source.sample_ids[r].as_str()];
         let physical = sample
             .physical_sample_id
@@ -511,7 +508,9 @@ fn analyze_source(
         &PairPopulation {
             metric_id: "reference.exact_duplicate_conflicts",
             view_id: "native",
-            rows: &dev_rows,
+            n_development_observations: dev_rows.len(),
+            rows: &keyed_rows,
+            admissibility: "development real observations with at least one valid cell",
             parameters: exact_parameters,
         },
         references,
@@ -534,7 +533,9 @@ fn analyze_source(
         &PairPopulation {
             metric_id: "reference.quasi_duplicate_conflicts",
             view_id: quasi_view,
+            n_development_observations: dev_rows.len(),
             rows: &quasi_rows,
+            admissibility: "complete development real observations (no masked or missing cell)",
             parameters: quasi_parameters,
         },
         references,
@@ -1800,10 +1801,137 @@ const SUSPECT_PAIR_BUDGET: usize = 1_000_000;
 /// Upper bound on pairs listed inline in one metric.
 const MAX_LISTED_PAIRS: usize = 1000;
 
-/// Eligible exact development reference of each sample for one target.
+/// Admissible references of one sample: its exact, internally consistent
+/// development references. They share one value or class (`value`); every
+/// one of them contributes its reference and reference-group IDs.
+pub(crate) struct AdmissibleReference<'a> {
+    value: &'a TargetValue,
+    reference_ids: BTreeSet<&'a str>,
+    reference_group_ids: BTreeSet<&'a str>,
+}
+
+/// Admissible exact development references of each sample for one target.
 pub(crate) struct TargetReferences<'a> {
     target: &'a Target,
-    by_sample: HashMap<&'a str, &'a TargetValue>,
+    by_sample: HashMap<&'a str, AdmissibleReference<'a>>,
+}
+
+impl<'a> TargetReferences<'a> {
+    fn new(target: &'a Target, samples: &HashMap<&str, &Sample>) -> Self {
+        let mut by_sample: HashMap<&'a str, AdmissibleReference<'a>> =
+            exact_development_references(target, samples)
+                .eligible
+                .into_iter()
+                .map(|v| {
+                    let reference = AdmissibleReference {
+                        value: v,
+                        reference_ids: BTreeSet::new(),
+                        reference_group_ids: BTreeSet::new(),
+                    };
+                    (v.sample_id.as_str(), reference)
+                })
+                .collect();
+        // Identity first: only references of eligible development samples are read.
+        for v in &target.values {
+            if let Some(r) = by_sample.get_mut(v.sample_id.as_str()) {
+                if v.status == ReferenceStatus::Exact {
+                    r.reference_ids.extend(v.reference_id.as_deref());
+                    r.reference_group_ids
+                        .extend(v.reference_group_id.as_deref());
+                }
+            }
+        }
+        Self { target, by_sample }
+    }
+}
+
+/// Concordance of two ID sets: non-empty intersection; null when either is empty.
+fn shared_ids(a: &BTreeSet<&str>, b: &BTreeSet<&str>) -> serde_json::Value {
+    if a.is_empty() || b.is_empty() {
+        serde_json::Value::Null
+    } else {
+        json!(!a.is_disjoint(b))
+    }
+}
+
+/// Declared incompatibility of two exact references. Returns the decision,
+/// the absolute difference when representable and, for the relative rule,
+/// |x/m - y/m| with m = max(|x|, |y|) (0 when m = 0), which cannot overflow.
+fn references_conflict(
+    tolerance: ReferenceContradictionTolerance,
+    a: &TargetValue,
+    b: &TargetValue,
+) -> (bool, Option<f64>, Option<f64>) {
+    match (tolerance, a.value, b.value) {
+        (ReferenceContradictionTolerance::DifferentClass, _, _) => {
+            (a.category != b.category, None, None)
+        }
+        (ReferenceContradictionTolerance::Absolute { value }, Some(x), Some(y)) => {
+            // An unrepresentable |x - y| is +inf, which exceeds every finite tolerance.
+            let d = (x - y).abs();
+            (d > value, d.is_finite().then_some(d), None)
+        }
+        (ReferenceContradictionTolerance::Relative { value }, Some(x), Some(y)) => {
+            let d = (x - y).abs();
+            let m = x.abs().max(y.abs());
+            let relative = if m == 0.0 { 0.0 } else { (x / m - y / m).abs() };
+            (relative > value, d.is_finite().then_some(d), Some(relative))
+        }
+        _ => (false, None, None),
+    }
+}
+
+fn reference_json(kind: TargetKind, v: &TargetValue) -> serde_json::Value {
+    match kind {
+        TargetKind::Continuous => json!(v.value),
+        TargetKind::Categorical => json!(v.category),
+    }
+}
+
+/// Declared contradiction rule parameters shared by every conflict metric.
+fn contradiction_parameters(
+    tolerance: ReferenceContradictionTolerance,
+    target: &Target,
+) -> BTreeMap<String, serde_json::Value> {
+    let (rule, value, unit) = match tolerance {
+        ReferenceContradictionTolerance::Absolute { value } => (
+            "absolute_difference_greater_than_tolerance",
+            json!(value),
+            json!(target.unit),
+        ),
+        ReferenceContradictionTolerance::Relative { value } => (
+            "relative_difference_greater_than_tolerance: |x/m - y/m| > tolerance, m = max(|x|, |y|), equal when m = 0",
+            json!(value),
+            json!("fraction_of_max_absolute_reference"),
+        ),
+        ReferenceContradictionTolerance::DifferentClass => (
+            "different_class",
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
+    };
+    let mut p = BTreeMap::new();
+    p.insert("contradiction_rule".to_string(), json!(rule));
+    p.insert("contradiction_tolerance".into(), value);
+    p.insert("contradiction_tolerance_unit".into(), unit);
+    p.insert(
+        "contradiction_tolerance_source".into(),
+        json!("declared_in_options_reference_contradiction_tolerances"),
+    );
+    p.insert(
+        "reference_eligibility".into(),
+        json!("exact consistent references of real development samples; censored, composite, inconsistent and missing references are not compared"),
+    );
+    p.insert(
+        "reference_ids".into(),
+        json!("all admissible exact references of a sample; listed as sorted ID sets"),
+    );
+    p.insert(
+        "test_access".into(),
+        json!("development_only_retained_test_Y_never_read"),
+    );
+    p.insert("listing_limit".into(), json!(MAX_LISTED_PAIRS));
+    p
 }
 
 /// Two development rows of one source under different physical samples.
@@ -1818,7 +1946,11 @@ type PairsOutcome = Result<Vec<SpectralPair>, (Availability, String)>;
 struct PairPopulation<'a> {
     metric_id: &'a str,
     view_id: &'a str,
+    /// Every real development observation of the source.
+    n_development_observations: usize,
+    /// Admissible observations: the population of the pair search.
     rows: &'a [usize],
+    admissibility: &'a str,
     parameters: BTreeMap<String, serde_json::Value>,
 }
 
@@ -1850,9 +1982,9 @@ fn concordant_indices(
                 r.by_sample.get(b.sample_id.as_str()),
             ) {
                 (Some(x), Some(y)) => json!({
-                    "identical_exact_value": x.value == y.value && x.category == y.category,
-                    "shared_reference_id": same(x.reference_id.as_ref(), y.reference_id.as_ref()),
-                    "shared_reference_group_id": same(x.reference_group_id.as_ref(), y.reference_group_id.as_ref()),
+                    "identical_exact_value": x.value.value == y.value.value && x.value.category == y.value.category,
+                    "shared_reference_id": shared_ids(&x.reference_ids, &y.reference_ids),
+                    "shared_reference_group_id": shared_ids(&x.reference_group_ids, &y.reference_group_ids),
                 }),
                 _ => serde_json::Value::Null,
             };
@@ -2349,20 +2481,8 @@ fn analyze_reference_conflicts(
                 continue;
             };
             compared += 1;
-            let (conflict, difference) = match (*tolerance, ra.value, rb.value) {
-                (ReferenceContradictionTolerance::DifferentClass, _, _) => {
-                    (ra.category != rb.category, None)
-                }
-                (ReferenceContradictionTolerance::Absolute { value }, Some(x), Some(y)) => {
-                    let d = (x - y).abs();
-                    (d > value, Some(d))
-                }
-                (ReferenceContradictionTolerance::Relative { value }, Some(x), Some(y)) => {
-                    let d = (x - y).abs();
-                    (d > value * x.abs().max(y.abs()), Some(d))
-                }
-                _ => (false, None),
-            };
+            let (conflict, difference, relative) =
+                references_conflict(*tolerance, ra.value, rb.value);
             if !conflict {
                 continue;
             }
@@ -2371,20 +2491,17 @@ fn analyze_reference_conflicts(
             affected_samples.insert(*b);
             affected_rows.extend(pair.rows.iter().flatten().copied());
             if listed.len() < MAX_LISTED_PAIRS {
-                let reference = |v: &TargetValue| match target.kind {
-                    TargetKind::Continuous => json!(v.value),
-                    TargetKind::Categorical => json!(v.category),
-                };
                 listed.push(json!({
                     "sample_a": a,
                     "sample_b": b,
                     "physical_sample_a": samples[a].physical_sample_id,
                     "physical_sample_b": samples[b].physical_sample_id,
-                    "reference_a": reference(ra),
-                    "reference_b": reference(rb),
-                    "reference_id_a": ra.reference_id,
-                    "reference_id_b": rb.reference_id,
-                    "absolute_difference": difference.filter(|d| d.is_finite()),
+                    "reference_a": reference_json(target.kind, ra.value),
+                    "reference_b": reference_json(target.kind, rb.value),
+                    "reference_ids_a": ra.reference_ids,
+                    "reference_ids_b": rb.reference_ids,
+                    "absolute_difference": difference,
+                    "relative_difference": relative,
                     "observation_pairs": pair.observation_pairs,
                     "min_rms_difference": pair.min_rms_difference,
                 }));
@@ -2416,8 +2533,18 @@ fn analyze_reference_conflicts(
         );
         m.view_id = population.view_id.into();
         m.unit = target.unit.clone();
-        m.denominators
-            .insert("n_development_observations".into(), population.rows.len());
+        m.denominators.insert(
+            "n_development_observations".into(),
+            population.n_development_observations,
+        );
+        m.denominators.insert(
+            "n_admissible_development_observations".into(),
+            population.rows.len(),
+        );
+        m.denominators.insert(
+            "n_excluded_development_observations".into(),
+            population.n_development_observations - population.rows.len(),
+        );
         m.denominators
             .insert("n_suspect_observation_pairs".into(), pairs.len());
         m.denominators.insert(
@@ -2429,47 +2556,24 @@ fn analyze_reference_conflicts(
             by_samples.len() - compared,
         );
         m.parameters = population.parameters.clone();
-        let (rule, tolerance_value, tolerance_unit) = match *tolerance {
-            ReferenceContradictionTolerance::Absolute { value } => (
-                "absolute_difference_greater_than_tolerance",
-                json!(value),
-                json!(target.unit),
-            ),
-            ReferenceContradictionTolerance::Relative { value } => (
-                "absolute_difference_greater_than_tolerance_times_max_absolute_reference",
-                json!(value),
-                json!("fraction_of_max_absolute_reference"),
-            ),
-            ReferenceContradictionTolerance::DifferentClass => (
-                "different_class",
-                serde_json::Value::Null,
-                serde_json::Value::Null,
-            ),
-        };
         m.parameters
-            .insert("contradiction_rule".into(), json!(rule));
-        m.parameters
-            .insert("contradiction_tolerance".into(), tolerance_value);
-        m.parameters
-            .insert("contradiction_tolerance_unit".into(), tolerance_unit);
+            .extend(contradiction_parameters(*tolerance, target));
         m.parameters.insert(
-            "contradiction_tolerance_source".into(),
-            json!("declared_in_options_reference_contradiction_tolerances"),
+            "admissible_observations".into(),
+            json!(population.admissibility),
         );
         m.parameters.insert(
-            "reference_eligibility".into(),
-            json!("exact consistent references of real development samples; censored, composite, inconsistent and missing references are not compared"),
+            "fraction_denominators".into(),
+            json!({
+                "affected_development_fraction": "n_admissible_development_observations",
+                "affected_sample_fraction": "n_development_samples_with_exact_reference",
+                "incompatible_pair_rate": "compared_sample_pairs",
+            }),
         );
         m.parameters.insert(
             "identity_level".into(),
-            json!("unordered sample pairs under different physical samples; one comparison per sample pair"),
+            json!("unordered sample pairs under different physical samples (presumed repeats between objects); one comparison per sample pair; aliases of one physical sample are compared in reference.within_physical_sample_conflicts"),
         );
-        m.parameters.insert(
-            "test_access".into(),
-            json!("development_only_retained_test_Y_never_read"),
-        );
-        m.parameters
-            .insert("listing_limit".into(), json!(MAX_LISTED_PAIRS));
         report.metrics.push(m);
         if incompatible > 0 {
             report.findings.push(Finding {
@@ -2478,7 +2582,7 @@ fn analyze_reference_conflicts(
                 confidence: "unknown".into(),
                 evidence: vec![population.metric_id.into()],
                 message: format!(
-                    "{incompatible} spectrally {} sample pairs carry incompatible references for {} in {} ({rule}); suspicion only",
+                    "{incompatible} spectrally {} sample pairs carry incompatible references for {} in {}; suspicion only",
                     if population.metric_id == "reference.exact_duplicate_conflicts" {
                         "identical"
                     } else {
@@ -2488,6 +2592,133 @@ fn analyze_reference_conflicts(
                     source.source_id
                 ),
                 action: "Verify the reference values and the spectrum-to-sample pairing; nothing is removed automatically".into(),
+            });
+        }
+    }
+}
+
+/// Incompatible exact references between sample IDs that declare the same
+/// physical sample (aliases of one object). One object has one reference
+/// value, so no spectral evidence is needed. This population is distinct
+/// from the presumed repeats between different physical samples.
+fn analyze_within_physical_conflicts(
+    samples: &HashMap<&str, &Sample>,
+    references: &[TargetReferences],
+    input: &QualificationInput,
+    report: &mut QualificationReport,
+) {
+    const ID: &str = "reference.within_physical_sample_conflicts";
+    for refs in references {
+        let target = refs.target;
+        let tid = Some(target.target_id.as_str());
+        let Some(tolerance) = input
+            .options
+            .reference_contradiction_tolerances
+            .get(&target.target_id)
+        else {
+            report.metrics.push(Metric::unavailable(
+                ID,
+                Availability::NotApplicable,
+                "REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED",
+                None,
+                tid,
+            ));
+            continue;
+        };
+        let mut by_physical: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for sample_id in refs.by_sample.keys() {
+            if let Some(physical) = &samples[sample_id].physical_sample_id {
+                by_physical.entry(physical).or_default().insert(sample_id);
+            }
+        }
+        by_physical.retain(|_, ids| ids.len() > 1);
+        let mut compared = 0usize;
+        let mut incompatible = 0usize;
+        let mut affected_physical = BTreeSet::new();
+        let mut affected_samples = BTreeSet::new();
+        let mut listed = Vec::new();
+        for (physical, ids) in &by_physical {
+            let ids: Vec<&str> = ids.iter().copied().collect();
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    compared += 1;
+                    let (ra, rb) = (&refs.by_sample[a], &refs.by_sample[b]);
+                    let (conflict, difference, relative) =
+                        references_conflict(*tolerance, ra.value, rb.value);
+                    if !conflict {
+                        continue;
+                    }
+                    incompatible += 1;
+                    affected_physical.insert(*physical);
+                    affected_samples.insert(*a);
+                    affected_samples.insert(*b);
+                    if listed.len() < MAX_LISTED_PAIRS {
+                        listed.push(json!({
+                            "physical_sample": physical,
+                            "sample_a": a,
+                            "sample_b": b,
+                            "reference_a": reference_json(target.kind, ra.value),
+                            "reference_b": reference_json(target.kind, rb.value),
+                            "reference_ids_a": ra.reference_ids,
+                            "reference_ids_b": rb.reference_ids,
+                            "absolute_difference": difference,
+                            "relative_difference": relative,
+                        }));
+                    }
+                }
+            }
+        }
+        let fraction = |a: usize, b: usize| (b > 0).then(|| a as f64 / b as f64);
+        let in_shared: usize = by_physical.values().map(BTreeSet::len).sum();
+        let mut m = Metric::computed(
+            ID,
+            json!({
+                "physical_samples_with_aliases": by_physical.len(),
+                "compared_sample_pairs": compared,
+                "incompatible_sample_pairs": incompatible,
+                "incompatible_pair_rate": fraction(incompatible, compared),
+                "affected_physical_samples": affected_physical.len(),
+                "affected_physical_fraction": fraction(affected_physical.len(), by_physical.len()),
+                "affected_samples": affected_samples.len(),
+                "affected_sample_fraction": fraction(affected_samples.len(), in_shared),
+                "listed_pairs": listed,
+                "listing_truncated": listed.len() < incompatible,
+            }),
+            None,
+            tid,
+        );
+        m.unit = target.unit.clone();
+        m.denominators.insert(
+            "n_development_samples_with_exact_reference".into(),
+            refs.by_sample.len(),
+        );
+        m.denominators
+            .insert("n_samples_sharing_a_physical_sample".into(), in_shared);
+        m.parameters = contradiction_parameters(*tolerance, target);
+        m.parameters.insert(
+            "identity_level".into(),
+            json!("pairs of sample IDs declaring the same physical_sample_id; no spectral evidence required; distinct from presumed repeats between physical samples"),
+        );
+        m.parameters.insert(
+            "fraction_denominators".into(),
+            json!({
+                "affected_physical_fraction": "physical_samples_with_aliases",
+                "affected_sample_fraction": "n_samples_sharing_a_physical_sample",
+                "incompatible_pair_rate": "compared_sample_pairs",
+            }),
+        );
+        report.metrics.push(m);
+        if incompatible > 0 {
+            report.findings.push(Finding {
+                rule_id: "reference.verify_reference_or_pairing.v1".into(),
+                severity: "warning".into(),
+                confidence: "unknown".into(),
+                evidence: vec![ID.into()],
+                message: format!(
+                    "{incompatible} pairs of sample IDs declaring one physical sample carry incompatible references for {}",
+                    target.target_id
+                ),
+                action: "Verify the reference values and the sample-to-object identity; nothing is removed automatically".into(),
             });
         }
     }
