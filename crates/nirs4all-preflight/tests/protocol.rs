@@ -1252,6 +1252,7 @@ impl MethodsProvider for SnvTrace {
                 .iter()
                 .map(|r| r.iter().map(|v| v + 1000.0).collect())
                 .collect(),
+            row_error_bounds: vec![0.0, 1e-12, 3e-12, 2e-12],
             backend_version: "fake".into(),
         })
     }
@@ -1259,9 +1260,9 @@ impl MethodsProvider for SnvTrace {
 
 #[test]
 fn snv_ratios_require_numerically_resolved_residual_variance() {
-    // Rows [i, 2i]: row 0 is constant (skipped), others have max|x|/range = 2.
-    // p = 2, so the threshold on sqrt(trace / p) is 8 * 2 * eps * 2.
-    let threshold = 32.0 * f64::EPSILON;
+    // Threshold 4 (max_i B_i + n u max|z|): fake bounds peak at 3e-12, four
+    // aggregated samples, largest fake SNV entry 1006 (row [3, 6] + 1000).
+    let threshold = 4.0 * (3e-12 + 4.0 * (f64::EPSILON / 2.0) * 1006.0);
     for (rms, resolved) in [(0.9 * threshold, false), (1.1 * threshold, true)] {
         let report = analyze(&input(), &SnvTrace(2.0 * rms * rms));
         let m = metric(&report, "structure.snv_sensitivity");
@@ -1270,11 +1271,12 @@ fn snv_ratios_require_numerically_resolved_residual_variance() {
             (m.parameters["numerical_resolution_threshold"]
                 .as_f64()
                 .unwrap()
-                - threshold)
+                / threshold
+                - 1.0)
                 .abs()
-                <= 1e-30
+                <= 1e-12
         );
-        assert_eq!(m.parameters["max_offset_to_range_ratio"], 2.0);
+        assert_eq!(m.parameters["max_snv_entry_error_bound"], 3e-12);
         let d = metric(&report, "structure.snv_effective_dimension");
         if resolved {
             assert!(matches!(m.status, Availability::Computed));

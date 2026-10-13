@@ -84,9 +84,7 @@ type Association = unsafe extern "C" fn(
     *mut i64,
 ) -> i32;
 type Holm = unsafe extern "C" fn(*mut c_void, *const f64, i64, *mut f64) -> i32;
-type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
-type SnvDestroy = unsafe extern "C" fn(*mut c_void);
-type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
+type Snv = unsafe extern "C" fn(*mut c_void, *const MatrixView, *const MatrixView, *mut f64) -> i32;
 type NoiseProxy = unsafe extern "C" fn(
     *mut c_void,
     *const MatrixView,
@@ -146,9 +144,7 @@ pub struct NativeMethodsProvider {
     local_fn: LocalContrast,
     hdbscan_fn: Hdbscan,
     ari_fn: Ari,
-    snv_create: SnvCreate,
-    snv_destroy: SnvDestroy,
-    snv_transform: SnvTransform,
+    snv_fn: Snv,
     noise_fn: NoiseProxy,
     pairs_fn: TolerancePairs,
     association_fn: Association,
@@ -167,8 +163,8 @@ impl NativeMethodsProvider {
             let compat = *library
                 .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
                 .map_err(err)?;
-            if compat(2, 19) != 0 {
-                return Err(ProviderError("METHODS_ABI_2_19_REQUIRED".into()));
+            if compat(2, 20) != 0 {
+                return Err(ProviderError("METHODS_ABI_2_20_REQUIRED".into()));
             }
             let create = *library
                 .get::<Create>(b"n4m_context_create\0")
@@ -200,14 +196,8 @@ impl NativeMethodsProvider {
             let ari_fn = *library
                 .get::<Ari>(b"n4m_preflight_adjusted_rand_index\0")
                 .map_err(err)?;
-            let snv_create = *library
-                .get::<SnvCreate>(b"n4m_transform_snv_create\0")
-                .map_err(err)?;
-            let snv_destroy = *library
-                .get::<SnvDestroy>(b"n4m_transform_snv_destroy\0")
-                .map_err(err)?;
-            let snv_transform = *library
-                .get::<SnvTransform>(b"n4m_transform_snv_transform\0")
+            let snv_fn = *library
+                .get::<Snv>(b"n4m_preflight_snv_compute\0")
                 .map_err(err)?;
             let noise_fn = *library
                 .get::<NoiseProxy>(b"n4m_preflight_noise_proxy_compute\0")
@@ -246,9 +236,7 @@ impl NativeMethodsProvider {
                 local_fn,
                 association_fn,
                 holm_fn,
-                snv_create,
-                snv_destroy,
-                snv_transform,
+                snv_fn,
                 noise_fn,
                 pairs_fn,
                 hdbscan_fn,
@@ -308,7 +296,7 @@ impl MethodsProvider for NativeMethodsProvider {
                 capability_id: (*id).into(),
                 available: true,
                 qualified: false,
-                reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
+                reason: Some(format!("Methods {} ABI 2.20; alpha protocol", self.version)),
             })
             .collect()
     }
@@ -589,26 +577,15 @@ impl MethodsProvider for NativeMethodsProvider {
     fn snv(&self, r: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
         let (mut x, n, p) = flatten(&r.matrix)?;
         let mut out = vec![0.; n * p];
+        let mut bounds = vec![f64::NAN; n];
         let xv = MatrixView::new(&mut x, n, p);
         let ov = MatrixView::new(&mut out, n, p);
-        let mut handle = std::ptr::null_mut();
-        // SAFETY: Methods SNV with mean and population SD (ddof 0), the same
-        // operator the WASM registry builds; the handle is destroyed below.
-        let status = unsafe {
-            let created = (self.snv_create)(&mut handle, 1, 1, 0);
-            if created != 0 || handle.is_null() {
-                created.max(1)
-            } else {
-                let status = (self.snv_transform)(handle, xv, ov);
-                (self.snv_destroy)(handle);
-                status
-            }
-        };
-        if status != 0 {
-            return Err(ProviderError(format!("METHODS_STATUS_{status}")));
-        }
+        // SAFETY: caller-owned buffers sized rows x cols and rows; Methods SNV
+        // (mean and population SD) with per-row rounding bounds.
+        self.check(unsafe { (self.snv_fn)(self.context, &xv, &ov, bounds.as_mut_ptr()) })?;
         Ok(SnvDiagnostics {
             matrix: out.chunks(p).map(<[f64]>::to_vec).collect(),
+            row_error_bounds: bounds,
             backend_version: self.version.clone(),
         })
     }

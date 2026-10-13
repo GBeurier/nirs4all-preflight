@@ -997,6 +997,9 @@ pub struct SnvRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnvDiagnostics {
     pub matrix: Vec<Vec<f64>>,
+    /// Methods first-order bound on the absolute rounding error of every
+    /// entry of each row (0 for constant rows).
+    pub row_error_bounds: Vec<f64>,
     pub backend_version: String,
 }
 

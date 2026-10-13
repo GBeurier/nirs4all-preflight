@@ -159,3 +159,15 @@ test('WASM relative contradiction tolerance cannot overflow and aliases are comp
  assert.equal(alias.incompatible_sample_pairs,1);
  assert.equal(alias.listed_pairs[0].physical_sample,'p0');
 });
+test('WASM SNV rank bound rejects rounding residue on 100,000 offset bands',()=>{
+ // Review b1fix #3: identical analytic SNV rows (99,999 ones then a two).
+ const p=100000, shape=Array.from({length:p},(_,j)=>j+1<p?1:2);
+ const rows=[[1,0],[1.1,100],[1.2,10],[2.1,-3]], rid=['a','b','c','d'];
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'nir',observation_ids:rid.map(i=>`o-${i}`),sample_ids:rid,x:rows.map(([a,b])=>shape.map(v=>a*v+b)),axis:shape.map((_,j)=>j),axis_unit:'nm',signal_unit:'absorbance'}],
+  samples:rid.map(i=>({sample_id:i,physical_sample_id:i}))});
+ const m=report.metrics.find(x=>x.metric_id==='structure.snv_sensitivity');
+ assert.equal(m.reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
+ assert.ok(m.parameters.snv_rms_band_deviation<m.parameters.numerical_resolution_threshold);
+ assert.ok(m.parameters.max_snv_entry_error_bound<1e-9);
+});

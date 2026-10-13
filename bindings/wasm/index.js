@@ -23,7 +23,7 @@ export async function createQualificationRuntime(options = {}) {
   await init(options.wasmModule ? { module_or_path: options.wasmModule } : undefined);
   await methods.loadModule();
   const abi = methods.abiVersion();
-  if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
+  if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
   const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
@@ -79,14 +79,9 @@ export async function createQualificationRuntime(options = {}) {
         break;
       }
       case 'snv': {
-        // Methods registry SNV: row mean and population SD (ddof 0).
-        const x = matrix(request.matrix);
-        const op = methods.ppCreate('StandardNormalVariate');
-        try {
-          result = { matrix: nested(methods.ppTransform(op, x.data, x.rows, x.cols), x.cols), backend_version };
-        } finally {
-          methods.ppDestroy(op);
-        }
+        // Methods SNV (row mean, population SD) with per-row rounding bounds.
+        const output = methods.preflightSnv(matrix(request.matrix));
+        result = { matrix: nested(output.matrix.data, output.matrix.cols), row_error_bounds: Array.from(output.rowErrorBounds), backend_version };
         break;
       }
       case 'noise_proxy': {

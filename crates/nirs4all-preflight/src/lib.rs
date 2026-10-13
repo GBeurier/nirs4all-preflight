@@ -1426,6 +1426,10 @@ fn analyze_snv(
     let snv = match provider.snv(&request) {
         Ok(d)
             if d.matrix.len() == request.matrix.len()
+                && d.row_error_bounds.len() == request.matrix.len()
+                && d.row_error_bounds
+                    .iter()
+                    .all(|b| b.is_finite() && *b >= 0.0)
                 && d.matrix
                     .iter()
                     .all(|row| row.len() == p && row.iter().all(|v| v.is_finite())) =>
@@ -1470,36 +1474,33 @@ fn analyze_snv(
             return;
         }
     };
-    // Numerical rank of the SNV view. SNV entries have unit scale, and the
-    // rounding of a p-term row mean perturbs them by about p·ε·max|x|/sd: the
-    // offset-to-shape ratio max|x|/range (at least 1) of the most offset row
-    // stands for max|x|/sd. Residual variance whose per-band RMS does not
-    // exceed SNV_RESOLUTION_FACTOR·p·ε·κ is rounding, not structure. Constant
-    // rows (range 0) are mapped exactly to zero by Methods and are skipped.
-    let kappa = request
+    // Numerical rank of the SNV view. Methods bounds the rounding error of
+    // every SNV entry of acquisition i by B_i. If the analytic SNV rows were
+    // identical, each aggregated row would differ from the band mean by at
+    // most 2 max B, so the per-band RMS deviation (n-1 denominator, n >= 2)
+    // would not exceed 2 sqrt(2) max B. The PCA column means add at most
+    // n u max|z| per entry. Residual variance under
+    // SNV_RESOLUTION_FACTOR (max B + n u max|z|) is rounding, not structure.
+    let [sum, sum2] = result.full_moments;
+    let max_bound = snv.row_error_bounds.iter().copied().fold(0.0f64, f64::max);
+    let max_entry = snv
         .matrix
         .iter()
-        .filter_map(|row| {
-            let (lo, hi, amplitude) = row.iter().fold(
-                (f64::INFINITY, f64::NEG_INFINITY, 0.0f64),
-                |(lo, hi, a), &v| (lo.min(v), hi.max(v), a.max(v.abs())),
-            );
-            (hi > lo).then(|| amplitude / (hi - lo))
-        })
-        .fold(1.0f64, f64::max);
-    let [sum, sum2] = result.full_moments;
+        .flatten()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
     let rms_band_deviation = (sum.max(0.0) / p as f64).sqrt();
-    let resolution = SNV_RESOLUTION_FACTOR * p as f64 * f64::EPSILON * kappa;
+    let resolution =
+        SNV_RESOLUTION_FACTOR * (max_bound + n as f64 * f64::EPSILON / 2.0 * max_entry);
     let resolved = rms_band_deviation > resolution;
     let mut resolution_parameters = BTreeMap::new();
     resolution_parameters.insert("snv_total_variance".to_string(), json!(sum));
     resolution_parameters.insert("snv_rms_band_deviation".into(), json!(rms_band_deviation));
     resolution_parameters.insert("numerical_resolution_threshold".into(), json!(resolution));
-    resolution_parameters.insert("max_offset_to_range_ratio".into(), json!(kappa));
+    resolution_parameters.insert("max_snv_entry_error_bound".into(), json!(max_bound));
     resolution_parameters.insert(
         "numerical_resolution_criterion".into(),
         json!(format!(
-            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*p*machine_epsilon*kappa, kappa = max(1, max over non-constant acquisitions of max|x|/(max x - min x)); unit SNV scale"
+            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*(max_i B_i + n*u*max|z|), B_i the Methods first-order rounding bound of acquisition i, n aggregated samples, u = 2^-53"
         )),
     );
     resolution_parameters.insert("numerically_resolved".into(), json!(resolved));
@@ -1793,8 +1794,9 @@ fn analyze_noise_proxy(
     }
 }
 
-/// Multiple of p·ε·κ (unit SNV scale) below which SNV residual variance is rounding.
-const SNV_RESOLUTION_FACTOR: f64 = 8.0;
+/// Factor on the SNV entry rounding bound: 2*sqrt(2) for the per-band
+/// deviation of identical analytic rows, rounded up to 4 for aggregation.
+const SNV_RESOLUTION_FACTOR: f64 = 4.0;
 
 /// Upper bound on spectral pairs retained to compare references.
 const SUSPECT_PAIR_BUDGET: usize = 1_000_000;

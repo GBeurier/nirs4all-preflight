@@ -547,11 +547,17 @@ fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
     // [1e200, 0, -1e200] standardizes to sqrt(3/2) * [1, 0, -1] instead of zeros.
     let snv = provider
         .snv(&SnvRequest {
-            matrix: vec![vec![1e200, 0., -1e200], vec![0.1; 3]],
+            matrix: vec![
+                vec![1e200, 0., -1e200],
+                vec![0.1; 3],
+                // Review b1fix #1: halving 2^-1074 used to zero the deviations.
+                vec![f64::from_bits(1), 0., -f64::from_bits(1)],
+            ],
         })
         .unwrap();
     assert!(near(snv.matrix[0][0], 1.5f64.sqrt()) && near(snv.matrix[0][2], -(1.5f64.sqrt())));
-    assert!(snv.matrix[1].iter().all(|v| *v == 0.0));
+    assert!(snv.matrix[1].iter().all(|v| *v == 0.0) && snv.row_error_bounds[1] == 0.0);
+    assert!(near(snv.matrix[2][0], 1.5f64.sqrt()) && near(snv.matrix[2][2], -(1.5f64.sqrt())));
 }
 
 #[test]
@@ -592,13 +598,66 @@ fn native_snv_rounding_residue_is_not_reported_as_structure() {
         let threshold = m.parameters["numerical_resolution_threshold"]
             .as_f64()
             .unwrap();
-        // kappa = max|x|/range of row (1.1, 100): 105.5 / 4.4.
-        let kappa = 105.5 / 4.4;
-        assert!((threshold / (8. * 5. * f64::EPSILON * kappa) - 1.).abs() < 1e-12);
-        assert!(rms > 0.0 && rms * 10. < threshold);
+        assert!(rms <= threshold && threshold < 1e-12);
     }
     assert_eq!(
         metric(&report, "structure.effective_dimension").status_wire(),
         "computed"
     );
+}
+
+#[test]
+fn native_snv_rounding_bound_covers_wide_offset_spectra() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b1fix #3: 99,999 ones then a two under the same (a, b) offsets;
+    // every row has the analytic SNV -1/sqrt(99999), ..., sqrt(99999). The
+    // former range-based criterion accepted a 2.66e-8 residual as structure.
+    let p = 100_000;
+    let shape: Vec<f64> = (0..p).map(|j| if j + 1 < p { 1.0 } else { 2.0 }).collect();
+    let input = input_with(
+        [(1.0, 0.0), (1.1, 100.0), (1.2, 10.0), (2.1, -3.0)]
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (
+                    ["a", "b", "c", "d"][i],
+                    Partition::Development,
+                    shape.iter().map(|v| a * v + b).collect(),
+                )
+            })
+            .collect(),
+        (0..p).map(|j| j as f64).collect(),
+    );
+    let snv = provider
+        .snv(&SnvRequest {
+            matrix: input.sources[0]
+                .x
+                .iter()
+                .map(|r| r.iter().map(|v| v.unwrap()).collect())
+                .collect(),
+        })
+        .unwrap();
+    let (lo, hi) = (-1.0 / 99_999f64.sqrt(), 99_999f64.sqrt());
+    for (row, bound) in snv.matrix.iter().zip(&snv.row_error_bounds) {
+        let error = row
+            .iter()
+            .enumerate()
+            .map(|(j, z)| (z - if j + 1 < p { lo } else { hi }).abs())
+            .fold(0.0f64, f64::max);
+        assert!(error <= *bound && *bound < 1e-9, "{error} > {bound}");
+    }
+    let report = analyze(&input, &provider);
+    for id in [
+        "structure.snv_sensitivity",
+        "structure.snv_effective_dimension",
+    ] {
+        let m = metric(&report, id);
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"),
+            "{id}"
+        );
+    }
 }
