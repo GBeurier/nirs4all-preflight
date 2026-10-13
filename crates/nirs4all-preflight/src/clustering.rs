@@ -1061,11 +1061,11 @@ fn matching_parameters(metric: &mut Metric) {
         ),
         (
             "assignment",
-            json!("one-to-one maximum total jaccard, methods n4m_linear_sum_assignment (scipy 1.18.1 linear_sum_assignment port); rows reference labels ascending, columns subsample labels ascending"),
+            json!("one-to-one maximum total jaccard, methods n4m_linear_sum_assignment (scipy 1.18.1 linear_sum_assignment algorithm with exact-sum duals, exact optimum); rows reference labels ascending, columns subsample labels ascending"),
         ),
         (
             "tie_rule",
-            json!("scipy 1.18.1 shortest augmenting path order: columns scanned last to first, unassigned column first on equal reduced cost"),
+            json!("scipy 1.18.1 shortest augmenting path order on exact values: columns scanned last to first, unassigned column first on equal reduced cost"),
         ),
         ("appearance_rule", json!("matched jaccard > 0.5")),
         ("appearance_threshold", json!(APPEARANCE_JACCARD)),
