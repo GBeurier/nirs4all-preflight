@@ -1232,8 +1232,98 @@ pub struct RepeatabilityDiagnostics {
     pub backend_version: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProviderError(pub String);
+/// Why a numerical provider did not return a result. The kind decides the
+/// report status: only `unsupported` (a capability or a declared limit that
+/// is absent or exceeded) maps to `unsupported`; numerical and internal
+/// failures map to `error`. The reason is a stable code, identical for the
+/// CPU and WASM adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderErrorKind {
+    Unsupported,
+    Numerical,
+    Internal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderError {
+    pub kind: ProviderErrorKind,
+    pub reason: String,
+}
+
+impl ProviderError {
+    pub fn unsupported(reason: impl Into<String>) -> Self {
+        Self {
+            kind: ProviderErrorKind::Unsupported,
+            reason: reason.into(),
+        }
+    }
+    pub fn numerical(reason: impl Into<String>) -> Self {
+        Self {
+            kind: ProviderErrorKind::Numerical,
+            reason: reason.into(),
+        }
+    }
+    pub fn internal(reason: impl Into<String>) -> Self {
+        Self {
+            kind: ProviderErrorKind::Internal,
+            reason: reason.into(),
+        }
+    }
+    /// Report status of a metric that this error prevented.
+    pub fn availability(&self) -> Availability {
+        match self.kind {
+            ProviderErrorKind::Unsupported => Availability::Unsupported,
+            ProviderErrorKind::Numerical | ProviderErrorKind::Internal => Availability::Error,
+        }
+    }
+    /// A Methods failure with its context message: a refusal outside the
+    /// supported numerical domain (`N4M_ERR_UNSUPPORTED` with
+    /// [`METHODS_DOMAIN_MESSAGE`]) is unsupported with reason
+    /// [`NUMERICAL_DOMAIN_EXCEEDED`]; every other status maps as
+    /// [`ProviderError::from_methods_status`]. Shared by every adapter.
+    pub fn from_methods_error(status: i32, message: &str) -> Self {
+        if status == 10 && message.contains(METHODS_DOMAIN_MESSAGE) {
+            Self::unsupported(NUMERICAL_DOMAIN_EXCEEDED)
+        } else {
+            Self::from_methods_status(status)
+        }
+    }
+    /// A non-zero Methods `n4m_status_t`, shared by every adapter: numerical
+    /// and convergence failures are numerical; unsupported, not implemented,
+    /// ABI, version and backend refusals are unsupported; anything else
+    /// (argument, shape, memory, internal) is internal.
+    pub fn from_methods_status(status: i32) -> Self {
+        let name = match status {
+            1 => "INVALID_ARGUMENT",
+            2 => "NULL_POINTER",
+            3 => "SHAPE_MISMATCH",
+            4 => "DTYPE_MISMATCH",
+            5 => "STRIDE_INVALID",
+            6 => "NOT_FITTED",
+            7 => "NUMERICAL_FAILURE",
+            8 => "CONVERGENCE_FAILED",
+            9 => "OUT_OF_MEMORY",
+            10 => "UNSUPPORTED",
+            11 => "NOT_IMPLEMENTED",
+            12 => "ABI_MISMATCH",
+            13 => "IO",
+            14 => "CORRUPT_BUFFER",
+            15 => "VERSION_INCOMPATIBLE",
+            16 => "BACKEND_UNAVAILABLE",
+            17 => "CANCELLED",
+            255 => "INTERNAL",
+            _ => return Self::internal(format!("METHODS_STATUS_{status}")),
+        };
+        let reason = format!("METHODS_{name}");
+        match status {
+            7 | 8 => Self::numerical(reason),
+            10 | 11 | 12 | 15 | 16 => Self::unsupported(reason),
+            _ => Self::internal(reason),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SummaryRequest {
@@ -1447,8 +1537,23 @@ pub mod u64_number_or_decimal {
 
 pub const PERMUTATION_PLAN_VERSION: &str = "permutation_plan.v1";
 
-/// Versioned description of one permutation test, carried with its metric so
-/// later protocols (for example confounding) reuse the same contract.
+/// Stable per-test seed: SplitMix64 finalizer of the root seed XOR the FNV-1a
+/// 64 hash of a provider-specific derivation domain. Every permutation
+/// protocol derives its seeds through this function with its own domain.
+pub fn derive_seed(root: u64, domain: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in domain.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut z = root ^ hash;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Versioned description of one permutation test, carried with its metric.
+/// Metadata associations and confounding share this contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermutationPlan {
     pub plan_version: String,
@@ -1458,8 +1563,11 @@ pub struct PermutationPlan {
     /// Independence unit whose labels are permuted (never acquisitions).
     pub exchangeable_unit: IndependenceUnit,
     pub exchangeability_declared: bool,
-    /// `none_single_block` is the only executable MVP plan.
+    /// `none_single_block` (units permuted freely in one block) or
+    /// `within_blocks` (units permuted only inside their block; blocks never
+    /// move, so unequal block sizes are never exchanged).
     pub restrictions: String,
+    /// One size per block, in the plan's block order.
     pub block_sizes: Vec<usize>,
     pub reduced_model: Option<String>,
     pub draw_method: String,
@@ -1611,6 +1719,72 @@ pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Prefix of the Methods context message for that refusal.
 pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
 
+/// PERMANOVA of one categorical term on Euclidean distances between rows,
+/// optionally given strata (Methods ABI 2.20 `n4m_stats_permanova`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermanovaRequest {
+    /// Coordinates whose Euclidean distances are analysed, one row per unit.
+    pub matrix: Vec<Vec<f64>>,
+    pub term_codes: Vec<i64>,
+    /// None tests the term alone; rows are permuted only inside a stratum.
+    pub strata_codes: Option<Vec<i64>>,
+    pub n_permutations: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermanovaDiagnostics {
+    pub ss_total: f64,
+    pub ss_strata: f64,
+    /// SS(strata + term) - SS(strata).
+    pub ss_term: f64,
+    pub ss_residual: f64,
+    pub r2: Option<f64>,
+    pub partial_r2: Option<f64>,
+    pub pseudo_f: Option<f64>,
+    /// Identifiable term df: levels minus connected components; 0 when aliased.
+    pub df_term: usize,
+    pub df_residual: usize,
+    pub n_levels: usize,
+    pub n_strata: usize,
+    /// log10 of the distinct within-strata level assignments.
+    pub log10_distinct_permutations: f64,
+    pub p_value: Option<f64>,
+    pub n_at_least_observed: usize,
+    pub n_permutations_executed: usize,
+    pub backend_version: String,
+}
+
+/// PERMDISP, vegan `betadisper(type = "centroid")` + `permutest`
+/// (Methods ABI 2.20 `n4m_stats_permdisp`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermdispRequest {
+    pub matrix: Vec<Vec<f64>>,
+    pub group_codes: Vec<i64>,
+    pub n_permutations: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermdispDiagnostics {
+    /// Euclidean distance of each row to its group centroid.
+    pub distances: Vec<f64>,
+    /// Mean distance per group, in ascending group-code order.
+    pub group_mean_distances: Vec<f64>,
+    pub f: Option<f64>,
+    pub df1: usize,
+    pub df2: usize,
+    pub n_groups: usize,
+    /// log10(n! / prod n_g!).
+    pub log10_distinct_permutations: f64,
+    pub p_value: Option<f64>,
+    pub n_at_least_observed: usize,
+    pub n_permutations_executed: usize,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -1619,86 +1793,109 @@ pub trait MethodsProvider {
         request: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError>;
     fn summary(&self, _request: &SummaryRequest) -> Result<SummaryDiagnostics, ProviderError> {
-        Err(ProviderError("SUMMARY_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "SUMMARY_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn nearest_neighbors(
         &self,
         _request: &NearestNeighborsRequest,
     ) -> Result<NearestNeighborsDiagnostics, ProviderError> {
-        Err(ProviderError("KNN_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported("KNN_PROVIDER_NOT_CONFIGURED"))
     }
     fn local_contrast(
         &self,
         _request: &LocalContrastRequest,
     ) -> Result<LocalContrastDiagnostics, ProviderError> {
-        Err(ProviderError(
-            "LOCAL_CONTRAST_PROVIDER_NOT_CONFIGURED".into(),
+        Err(ProviderError::unsupported(
+            "LOCAL_CONTRAST_PROVIDER_NOT_CONFIGURED",
         ))
     }
     fn hdbscan(&self, _request: &HdbscanRequest) -> Result<HdbscanDiagnostics, ProviderError> {
-        Err(ProviderError("HDBSCAN_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "HDBSCAN_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn adjusted_rand_index(
         &self,
         _request: &AdjustedRandRequest,
     ) -> Result<AdjustedRandDiagnostics, ProviderError> {
-        Err(ProviderError("ARI_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported("ARI_PROVIDER_NOT_CONFIGURED"))
     }
     fn snv(&self, _request: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
-        Err(ProviderError("SNV_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported("SNV_PROVIDER_NOT_CONFIGURED"))
     }
     fn noise_proxy(
         &self,
         _request: &NoiseProxyRequest,
     ) -> Result<NoiseProxyDiagnostics, ProviderError> {
-        Err(ProviderError("NOISE_PROXY_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "NOISE_PROXY_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn tolerance_pairs(
         &self,
         _request: &TolerancePairsRequest,
     ) -> Result<TolerancePairsDiagnostics, ProviderError> {
-        Err(ProviderError(
-            "TOLERANCE_PAIRS_PROVIDER_NOT_CONFIGURED".into(),
+        Err(ProviderError::unsupported(
+            "TOLERANCE_PAIRS_PROVIDER_NOT_CONFIGURED",
         ))
     }
     fn association(
         &self,
         _request: &AssociationRequest,
     ) -> Result<AssociationDiagnostics, ProviderError> {
-        Err(ProviderError("ASSOCIATION_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "ASSOCIATION_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn holm_adjust(&self, _request: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
-        Err(ProviderError("HOLM_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported("HOLM_PROVIDER_NOT_CONFIGURED"))
     }
     fn correlation(
         &self,
         _request: &CorrelationRequest,
     ) -> Result<CorrelationDiagnostics, ProviderError> {
-        Err(ProviderError("CORRELATION_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "CORRELATION_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn bh_adjust(&self, _request: &BhRequest) -> Result<BhDiagnostics, ProviderError> {
-        Err(ProviderError("BH_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported("BH_PROVIDER_NOT_CONFIGURED"))
     }
     fn association_exact(
         &self,
         _request: &AssociationExactRequest,
     ) -> Result<ExactPermutationDiagnostics, ProviderError> {
-        Err(ProviderError(
-            "EXACT_PERMUTATION_PROVIDER_NOT_CONFIGURED".into(),
+        Err(ProviderError::unsupported(
+            "EXACT_PERMUTATION_PROVIDER_NOT_CONFIGURED",
         ))
     }
     fn correlation_exact(
         &self,
         _request: &CorrelationExactRequest,
     ) -> Result<ExactPermutationDiagnostics, ProviderError> {
-        Err(ProviderError(
-            "EXACT_PERMUTATION_PROVIDER_NOT_CONFIGURED".into(),
+        Err(ProviderError::unsupported(
+            "EXACT_PERMUTATION_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+    fn permanova(
+        &self,
+        _request: &PermanovaRequest,
+    ) -> Result<PermanovaDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "PERMANOVA_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+    fn permdisp(&self, _request: &PermdispRequest) -> Result<PermdispDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "PERMDISP_PROVIDER_NOT_CONFIGURED",
         ))
     }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 16] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 18] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -1715,6 +1912,8 @@ pub const METHODS_CAPABILITY_IDS: [&str; 16] = [
     "methods.bh_adjust",
     "methods.association_exact",
     "methods.correlation_exact",
+    "methods.permanova",
+    "methods.permdisp",
 ];
 
 pub struct UnavailableMethodsProvider;
@@ -1731,12 +1930,16 @@ impl MethodsProvider for UnavailableMethodsProvider {
             .collect()
     }
     fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
-        Err(ProviderError("METHODS_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "METHODS_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn repeatability(
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("METHODS_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "METHODS_PROVIDER_NOT_CONFIGURED",
+        ))
     }
 }

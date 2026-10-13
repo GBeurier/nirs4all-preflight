@@ -40,13 +40,13 @@ impl MethodsProvider for Scripted {
         .collect()
     }
     fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_SCRIPTED".into()))
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
     }
     fn repeatability(
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_SCRIPTED".into()))
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
     }
     fn summary(&self, r: &SummaryRequest) -> Result<SummaryDiagnostics, ProviderError> {
         Ok(SummaryDiagnostics {
@@ -85,7 +85,7 @@ impl MethodsProvider for Scripted {
         // Identity adjustment: exact only for single-hypothesis families,
         // which are the only families whose adjusted values are asserted.
         if self.holm_fails {
-            return Err(ProviderError("HOLM_SCRIPTED_FAILURE".into()));
+            return Err(ProviderError::unsupported("HOLM_SCRIPTED_FAILURE"));
         }
         Ok(HolmDiagnostics {
             adjusted: r.p_values.clone(),
