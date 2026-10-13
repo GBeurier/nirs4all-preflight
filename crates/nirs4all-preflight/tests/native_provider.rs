@@ -517,3 +517,88 @@ fn native_quasi_duplicates_flag_incompatible_references_on_development_pairs() {
     let json = serde_json::to_string(&report).unwrap();
     assert!(!json.contains("987.654") && !json.contains("zz-test-only"));
 }
+
+#[test]
+fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b1 #1: three constant spectra have no SNV shape; the naive mean
+    // residue used to become eleven ones (SNV dimension 1, no quasi-identity).
+    let mut constant = input_with(
+        [0.1, 0.5, 0.7]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (["a", "b", "c"][i], Partition::Development, vec![*v; 11]))
+            .collect(),
+        (0..11).map(|j| 1000. + 10. * j as f64).collect(),
+    );
+    constant.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.01,
+        view: QuasiDuplicateView::Snv,
+        context: ComparisonContext::Source,
+    });
+    let report = analyze(&constant, &provider);
+    let pairs = metric(&report, "integrity.quasi_duplicate_pairs");
+    assert_eq!(pairs.value.as_ref().unwrap()["suspect_pairs"], 3);
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert_eq!(m.status_wire(), "undefined");
+    assert_eq!(m.reason_code.as_deref(), Some("ZERO_SNV_TOTAL_VARIANCE"));
+    // [1e200, 0, -1e200] standardizes to sqrt(3/2) * [1, 0, -1] instead of zeros.
+    let snv = provider
+        .snv(&SnvRequest {
+            matrix: vec![vec![1e200, 0., -1e200], vec![0.1; 3]],
+        })
+        .unwrap();
+    assert!(near(snv.matrix[0][0], 1.5f64.sqrt()) && near(snv.matrix[0][2], -(1.5f64.sqrt())));
+    assert!(snv.matrix[1].iter().all(|v| *v == 0.0));
+}
+
+#[test]
+fn native_snv_rounding_residue_is_not_reported_as_structure() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b1 #6: x_i = a_i [1..5] + b_i have identical SNV rows analytically;
+    // amplitudes that are not powers of two leave only rounding residue.
+    let input = input_with(
+        [(1.0, 0.0), (1.1, 100.0), (1.2, 10.0), (2.1, -3.0)]
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (
+                    ["a", "b", "c", "d"][i],
+                    Partition::Development,
+                    (1..=5).map(|j| a * j as f64 + b).collect(),
+                )
+            })
+            .collect(),
+        vec![1., 2., 3., 4., 5.],
+    );
+    let report = analyze(&input, &provider);
+    for id in [
+        "structure.snv_sensitivity",
+        "structure.snv_effective_dimension",
+    ] {
+        let m = metric(&report, id);
+        assert_eq!(m.status_wire(), "undefined", "{id}");
+        assert!(m.value.is_none());
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"),
+            "{id}"
+        );
+        let rms = m.parameters["snv_rms_band_deviation"].as_f64().unwrap();
+        let threshold = m.parameters["numerical_resolution_threshold"]
+            .as_f64()
+            .unwrap();
+        // kappa = max|x|/range of row (1.1, 100): 105.5 / 4.4.
+        let kappa = 105.5 / 4.4;
+        assert!((threshold / (8. * 5. * f64::EPSILON * kappa) - 1.).abs() < 1e-12);
+        assert!(rms > 0.0 && rms * 10. < threshold);
+    }
+    assert_eq!(
+        metric(&report, "structure.effective_dimension").status_wire(),
+        "computed"
+    );
+}

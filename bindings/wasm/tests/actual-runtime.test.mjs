@@ -103,3 +103,35 @@ test('WASM duplicate reference conflicts match the hand-counted fixture',async()
  const json=JSON.stringify(report);
  assert.ok(!json.includes('987.654')&&!json.includes('zz-test-only'));
 });
+test('WASM validation rejects wrapping SG orders like the CPU engine',()=>{
+ // Review b1 #4: 4294967295 + 2 wrapped to a valid order on 32-bit WASM.
+ for(const [window_bands,polyorder] of [[11,4294967295],[11,4294967294],[11,Number.MAX_SAFE_INTEGER],[41,38],[21,11],[1003,2]]){
+  const v=runtime.validate({...input,options:{...input.options,noise_proxy:{window_bands,polyorder}}});
+  assert.equal(v.valid,false,`${window_bands}/${polyorder}`);
+  assert.ok(v.issues.some(i=>i.code==='INVALID_NOISE_PROXY_PARAMETERS'));
+ }
+ assert.equal(runtime.validate({...input,options:{...input.options,noise_proxy:{window_bands:13,polyorder:10}}}).valid,true);
+});
+test('WASM SNV keeps constant spectra flat and rounding residue unresolved',()=>{
+ const axis=Array.from({length:11},(_,j)=>1000+10*j);
+ const ids=['a','b','c'];
+ // Review b1 #1: constant spectra 0.1, 0.5, 0.7 are identical (zero) in the SNV view.
+ const flat=runtime.analyze({schema_version:1,data_origin:'synthetic',
+  sources:[{source_id:'nir',observation_ids:ids.map(i=>`o-${i}`),sample_ids:ids,x:[0.1,0.5,0.7].map(v=>Array(11).fill(v)),axis,axis_unit:'nm',signal_unit:'absorbance'}],
+  samples:ids.map(i=>({sample_id:i,physical_sample_id:i})),
+  options:{quasi_duplicates:{tolerance:0.01,view:'snv',context:'source'}}});
+ const fm=Object.fromEntries(flat.metrics.map(m=>[m.metric_id,m]));
+ assert.equal(fm['integrity.quasi_duplicate_pairs'].value.suspect_pairs,3);
+ assert.equal(fm['structure.snv_sensitivity'].reason_code,'ZERO_SNV_TOTAL_VARIANCE');
+ // Review b1 #6: x_i = a_i [1..5] + b_i have identical SNV rows analytically.
+ const rows=[[1,0],[1.1,100],[1.2,10],[2.1,-3]], rid=['a','b','c','d'];
+ const residue=runtime.analyze({schema_version:1,data_origin:'synthetic',
+  sources:[{source_id:'nir',observation_ids:rid.map(i=>`o-${i}`),sample_ids:rid,x:rows.map(([a,b])=>[1,2,3,4,5].map(j=>a*j+b)),axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'absorbance'}],
+  samples:rid.map(i=>({sample_id:i,physical_sample_id:i}))});
+ const rm=Object.fromEntries(residue.metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['structure.snv_sensitivity','structure.snv_effective_dimension']){
+  assert.equal(rm[id].status,'undefined');
+  assert.equal(rm[id].reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
+  assert.ok(rm[id].parameters.snv_rms_band_deviation*10<rm[id].parameters.numerical_resolution_threshold);
+ }
+});

@@ -194,13 +194,15 @@ fn default_true() -> bool {
 }
 
 /// Savitzky-Golay smoothing-residual noise proxy profile (window in bands).
+/// Fields are u64 so 32-bit (WASM) and 64-bit hosts parse and validate the
+/// same values identically.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoiseProxyOptions {
     #[serde(default = "default_noise_window")]
-    pub window_bands: usize,
+    pub window_bands: u64,
     #[serde(default = "default_noise_polyorder")]
-    pub polyorder: usize,
+    pub polyorder: u64,
 }
 
 impl Default for NoiseProxyOptions {
@@ -211,10 +213,15 @@ impl Default for NoiseProxyOptions {
         }
     }
 }
-fn default_noise_window() -> usize {
+/// Largest Savitzky-Golay window of the Methods noise proxy.
+pub const NOISE_PROXY_MAX_WINDOW: u64 = 1001;
+/// Largest polynomial order whose smoothing weights Methods verified.
+pub const NOISE_PROXY_MAX_POLYORDER: u64 = 10;
+
+fn default_noise_window() -> u64 {
     11
 }
-fn default_noise_polyorder() -> usize {
+fn default_noise_polyorder() -> u64 {
     2
 }
 
@@ -384,16 +391,18 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             );
         }
     }
+    // Methods' verified Savitzky-Golay domain. The window is bounded first so
+    // `window_bands - 2` cannot underflow; no addition can wrap on 32-bit WASM.
     let noise = input.options.noise_proxy;
-    if noise.window_bands < 3
+    if !(3..=NOISE_PROXY_MAX_WINDOW).contains(&noise.window_bands)
         || noise.window_bands.is_multiple_of(2)
-        || noise.window_bands > 1001
-        || noise.polyorder + 2 > noise.window_bands
+        || noise.polyorder > NOISE_PROXY_MAX_POLYORDER
+        || noise.polyorder > noise.window_bands - 2
     {
         out.add(
             "INVALID_NOISE_PROXY_PARAMETERS",
             "options.noise_proxy",
-            "Noise proxy window must be odd, between 3 and 1001 bands, with polyorder <= window - 2",
+            "Noise proxy window must be odd, between 3 and 1001 bands, with polyorder <= min(10, window - 2)",
             true,
         );
     }

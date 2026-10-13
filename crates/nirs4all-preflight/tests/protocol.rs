@@ -1180,3 +1180,113 @@ fn contradiction_tolerances_are_validated_against_declared_targets() {
         Some("REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED")
     );
 }
+
+#[test]
+fn noise_proxy_validation_cannot_wrap_and_matches_the_methods_domain() {
+    // Review b1 #4: polyorder + 2 overflowed (panic on 64-bit, wrap to valid on
+    // 32-bit WASM). Review b1 #2: orders above 10 leave the verified SG domain.
+    let invalid = |window: u64, polyorder: u64| {
+        let mut x = input();
+        x.options.noise_proxy = NoiseProxyOptions {
+            window_bands: window,
+            polyorder,
+        };
+        let issues = validate_input(&x).issues;
+        issues
+            .iter()
+            .any(|i| i.code == "INVALID_NOISE_PROXY_PARAMETERS" && i.blocking)
+    };
+    for (w, o) in [
+        (11, u64::MAX),
+        (11, u64::MAX - 1),
+        (11, 4_294_967_295),
+        (11, 4_294_967_296),
+        (u64::MAX, 2),
+        (41, 38),
+        (21, 11),
+        (1003, 2),
+        (11, 10),
+        (2, 0),
+        (12, 2),
+    ] {
+        assert!(invalid(w, o), "{w}/{o}");
+    }
+    for (w, o) in [(3, 0), (3, 1), (13, 10), (1001, 10), (11, 2)] {
+        assert!(!invalid(w, o), "{w}/{o}");
+    }
+    // u64 fields parse identically on 32- and 64-bit hosts.
+    let parsed: Options = serde_json::from_str(
+        r#"{"noise_proxy":{"window_bands":11,"polyorder":18446744073709551615}}"#,
+    )
+    .unwrap();
+    assert_eq!(parsed.noise_proxy.polyorder, u64::MAX);
+}
+
+/// SNV is the identity plus a marker offset so the fake PCA can tell the
+/// canonical call from the SNV call and return a chosen SNV trace.
+struct SnvTrace(f64);
+impl MethodsProvider for SnvTrace {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![]
+    }
+    fn pca(&self, req: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        let snv = req.matrix.iter().flatten().any(|v| *v >= 1000.0);
+        let trace = if snv { self.0 } else { 1.0 };
+        Ok(PcaDiagnostics {
+            eigenvalues: vec![trace / req.n_components as f64; req.n_components],
+            scores: vec![vec![0.0; req.n_components]; req.matrix.len()],
+            full_moments: [trace, trace * trace],
+            backend_version: "fake".into(),
+        })
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+    fn snv(&self, req: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
+        Ok(SnvDiagnostics {
+            matrix: req
+                .matrix
+                .iter()
+                .map(|r| r.iter().map(|v| v + 1000.0).collect())
+                .collect(),
+            backend_version: "fake".into(),
+        })
+    }
+}
+
+#[test]
+fn snv_ratios_require_numerically_resolved_residual_variance() {
+    // Rows [i, 2i]: row 0 is constant (skipped), others have max|x|/range = 2.
+    // p = 2, so the threshold on sqrt(trace / p) is 8 * 2 * eps * 2.
+    let threshold = 32.0 * f64::EPSILON;
+    for (rms, resolved) in [(0.9 * threshold, false), (1.1 * threshold, true)] {
+        let report = analyze(&input(), &SnvTrace(2.0 * rms * rms));
+        let m = metric(&report, "structure.snv_sensitivity");
+        assert_eq!(m.parameters["numerically_resolved"], resolved);
+        assert!(
+            (m.parameters["numerical_resolution_threshold"]
+                .as_f64()
+                .unwrap()
+                - threshold)
+                .abs()
+                <= 1e-30
+        );
+        assert_eq!(m.parameters["max_offset_to_range_ratio"], 2.0);
+        let d = metric(&report, "structure.snv_effective_dimension");
+        if resolved {
+            assert!(matches!(m.status, Availability::Computed));
+            assert!(matches!(d.status, Availability::Computed));
+        } else {
+            for metric in [m, d] {
+                assert!(matches!(metric.status, Availability::Undefined) && metric.value.is_none());
+                assert_eq!(
+                    metric.reason_code.as_deref(),
+                    Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED")
+                );
+            }
+        }
+    }
+}

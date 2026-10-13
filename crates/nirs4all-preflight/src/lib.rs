@@ -1469,12 +1469,46 @@ fn analyze_snv(
             return;
         }
     };
+    // Numerical rank of the SNV view. SNV entries have unit scale, and the
+    // rounding of a p-term row mean perturbs them by about p·ε·max|x|/sd: the
+    // offset-to-shape ratio max|x|/range (at least 1) of the most offset row
+    // stands for max|x|/sd. Residual variance whose per-band RMS does not
+    // exceed SNV_RESOLUTION_FACTOR·p·ε·κ is rounding, not structure. Constant
+    // rows (range 0) are mapped exactly to zero by Methods and are skipped.
+    let kappa = request
+        .matrix
+        .iter()
+        .filter_map(|row| {
+            let (lo, hi, amplitude) = row.iter().fold(
+                (f64::INFINITY, f64::NEG_INFINITY, 0.0f64),
+                |(lo, hi, a), &v| (lo.min(v), hi.max(v), a.max(v.abs())),
+            );
+            (hi > lo).then(|| amplitude / (hi - lo))
+        })
+        .fold(1.0f64, f64::max);
+    let [sum, sum2] = result.full_moments;
+    let rms_band_deviation = (sum.max(0.0) / p as f64).sqrt();
+    let resolution = SNV_RESOLUTION_FACTOR * p as f64 * f64::EPSILON * kappa;
+    let resolved = rms_band_deviation > resolution;
+    let mut resolution_parameters = BTreeMap::new();
+    resolution_parameters.insert("snv_total_variance".to_string(), json!(sum));
+    resolution_parameters.insert("snv_rms_band_deviation".into(), json!(rms_band_deviation));
+    resolution_parameters.insert("numerical_resolution_threshold".into(), json!(resolution));
+    resolution_parameters.insert("max_offset_to_range_ratio".into(), json!(kappa));
+    resolution_parameters.insert(
+        "numerical_resolution_criterion".into(),
+        json!(format!(
+            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*p*machine_epsilon*kappa, kappa = max(1, max over non-constant acquisitions of max|x|/(max x - min x)); unit SNV scale"
+        )),
+    );
+    resolution_parameters.insert("numerically_resolved".into(), json!(resolved));
     let mut eigen = Metric::computed(
         "structure.snv_pca_eigenvalues",
         json!(result.eigenvalues),
         src,
         None,
     );
+    eigen.parameters.extend(resolution_parameters.clone());
     eigen.view_id = VIEW.into();
     eigen.denominators.insert("n_aggregated_samples".into(), n);
     eigen.parameters.insert("n_components".into(), json!(k));
@@ -1482,11 +1516,17 @@ fn analyze_snv(
         .parameters
         .insert("backend_version".into(), json!(result.backend_version));
     report.metrics.push(eigen);
-    let [sum, sum2] = result.full_moments;
     let mut dimension = match (sum2 > 0.0).then(|| sum * sum / sum2) {
-        Some(v) if v.is_finite() => {
+        Some(v) if v.is_finite() && resolved => {
             Metric::computed("structure.snv_effective_dimension", json!(v), src, None)
         }
+        Some(v) if v.is_finite() => Metric::unavailable(
+            "structure.snv_effective_dimension",
+            Availability::Undefined,
+            "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED",
+            src,
+            None,
+        ),
         _ => Metric::unavailable(
             "structure.snv_effective_dimension",
             Availability::Undefined,
@@ -1495,14 +1535,28 @@ fn analyze_snv(
             None,
         ),
     };
+    dimension.parameters.extend(resolution_parameters.clone());
     dimension.view_id = VIEW.into();
     dimension.parameters.insert(
         "moments_provenance".into(),
         json!("methods_full_covariance_moments"),
     );
     report.metrics.push(dimension);
-    if sum <= 0.0 {
-        push_unavailable(report, Availability::Undefined, "ZERO_SNV_TOTAL_VARIANCE");
+    if sum <= 0.0 || !resolved {
+        let mut m = Metric::unavailable(
+            "structure.snv_sensitivity",
+            Availability::Undefined,
+            if sum <= 0.0 {
+                "ZERO_SNV_TOTAL_VARIANCE"
+            } else {
+                "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"
+            },
+            src,
+            None,
+        );
+        m.view_id = VIEW.into();
+        m.parameters = resolution_parameters;
+        report.metrics.push(m);
         return;
     }
     let reference = pca_structure(canonical);
@@ -1546,6 +1600,7 @@ fn analyze_snv(
     );
     m.parameters
         .insert("snv_backend_version".into(), json!(snv.backend_version));
+    m.parameters.extend(resolution_parameters);
     report.metrics.push(m);
 }
 
@@ -1578,7 +1633,7 @@ fn analyze_noise_proxy(
         );
         return;
     }
-    if p < options.window_bands {
+    if (p as u64) < options.window_bands {
         unavailable(
             report,
             Availability::InsufficientData,
@@ -1622,8 +1677,9 @@ fn analyze_noise_proxy(
                 .iter()
                 .map(|&r| (0..p).map(|c| valid_cell(source, r, c).is_some()).collect())
                 .collect(),
-            window_length: options.window_bands,
-            polyorder: options.polyorder,
+            // Validated: window <= 1001, polyorder <= 10.
+            window_length: options.window_bands as usize,
+            polyorder: options.polyorder as usize,
         };
         let d = match provider.noise_proxy(&request) {
             Ok(d)
@@ -1735,6 +1791,9 @@ fn analyze_noise_proxy(
         report.metrics.push(pooled);
     }
 }
+
+/// Multiple of p·ε·κ (unit SNV scale) below which SNV residual variance is rounding.
+const SNV_RESOLUTION_FACTOR: f64 = 8.0;
 
 /// Upper bound on spectral pairs retained to compare references.
 const SUSPECT_PAIR_BUDGET: usize = 1_000_000;
