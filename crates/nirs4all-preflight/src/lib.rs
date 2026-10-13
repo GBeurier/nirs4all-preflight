@@ -4,6 +4,7 @@ pub use nirs4all_preflight_core::*;
 mod association;
 mod clustering;
 mod confounding;
+mod domain_shift;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 use serde_json::json;
@@ -25,11 +26,7 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
         },
     ];
     out.extend(provider.capabilities());
-    for id in [
-        "validation_probe",
-        "domain_shift",
-        "repeatability_uncertainty",
-    ] {
+    for id in ["validation_probe", "repeatability_uncertainty"] {
         out.push(Capability {
             capability_id: id.into(),
             available: false,
@@ -89,6 +86,16 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
                 "methods.holm_adjust",
             ]),
             "PERMANOVA_PROVIDER_NOT_CONFIGURED",
+        ),
+        (
+            "domain_shift",
+            provided(&[
+                "methods.energy_distance",
+                "methods.pca_monitor",
+                "methods.holm_adjust",
+                "methods.summary",
+            ]),
+            "DOMAIN_SHIFT_PROVIDER_NOT_CONFIGURED",
         ),
     ];
     for (id, available, missing) in protocols {
@@ -243,6 +250,8 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
         analyze_target(target, &samples, input, provider, &mut report);
     }
     association::analyze_metadata_associations(input, &samples, provider, &mut report);
+    // After associations: domain-shift recommendations read their results.
+    domain_shift::analyze(input, &samples, provider, &mut report);
     report
 }
 
@@ -312,16 +321,7 @@ fn analyze_source(
         json!("none; source column order retained"),
     );
     report.metrics.push(axis_order);
-    let dev_rows: Vec<usize> = source
-        .sample_ids
-        .iter()
-        .enumerate()
-        .filter_map(|(i, id)| {
-            let sample = samples.get(id.as_str())?;
-            (sample.partition == Partition::Development && sample.augmentation_parent_id.is_none())
-                .then_some(i)
-        })
-        .collect();
+    let dev_rows = real_rows(source, samples, Partition::Development);
     let mut m = Metric::computed(
         "integrity.development_observations",
         json!(dev_rows.len()),
@@ -375,16 +375,7 @@ fn analyze_source(
     if duplicate_pairs > 0 {
         report.findings.push(Finding { rule_id: "identity.possible_undocumented_repeats.v1".into(), severity: "warning".into(), confidence: "unknown".into(), evidence: vec!["integrity.cross_physical_exact_duplicate_pairs".into()], message: format!("{duplicate_pairs} exact spectral pairs span declared physical samples in {}", source.source_id), action: "Review acquisition provenance and physical IDs before treating these as independent".into() });
     }
-    let test_rows: Vec<usize> = source
-        .sample_ids
-        .iter()
-        .enumerate()
-        .filter_map(|(i, id)| {
-            let sample = samples.get(id.as_str())?;
-            (sample.partition == Partition::RetainedTest && sample.augmentation_parent_id.is_none())
-                .then_some(i)
-        })
-        .collect();
+    let test_rows = real_rows(source, samples, Partition::RetainedTest);
     let mut retained_rows: BTreeMap<Vec<u64>, BTreeMap<String, usize>> = BTreeMap::new();
     for &r in &test_rows {
         let Some(key) = exact_spectrum_key(source, r) else {
@@ -464,80 +455,15 @@ fn analyze_source(
         report,
     );
 
-    // Numeric source structure is one vote per physical sample and homogeneous instrument/campaign.
-    // Unknown or biological repeat types cannot be silently averaged as technical replicates.
-    let mut groups: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
-    for &r in &dev_rows {
-        let sample = samples[source.sample_ids[r].as_str()];
-        groups
-            .entry((
-                sample
-                    .physical_sample_id
-                    .clone()
-                    .unwrap_or_else(|| sample.sample_id.clone()),
-                sample.instrument.clone().unwrap_or_default(),
-                sample.campaign.clone().unwrap_or_default(),
-            ))
-            .or_default()
-            .push(r);
-    }
-    let mut matrix = Vec::new();
-    let mut group_rows = Vec::new();
-    let mut ids = Vec::new();
-    let mut representative_sample_ids = Vec::new();
-    let mut excluded_incomplete = 0usize;
-    let mut excluded_ambiguous = 0usize;
-    let mut excluded_multicontext = 0usize;
-    let mut contexts_per_physical = BTreeMap::<&str, usize>::new();
-    for (physical, _, _) in groups.keys() {
-        *contexts_per_physical.entry(physical).or_default() += 1;
-    }
-    for ((physical, instrument, campaign), rows) in &groups {
-        if contexts_per_physical[physical.as_str()] > 1 {
-            excluded_multicontext += rows.len();
-            continue;
-        }
-        if rows
-            .iter()
-            .map(|&r| source.sample_ids[r].as_str())
-            .collect::<BTreeSet<_>>()
-            .len()
-            > 1
-        {
-            excluded_ambiguous += rows.len();
-            continue;
-        }
-        if rows.len() > 1
-            && !rows.iter().all(|&r| {
-                source
-                    .repetition_types
-                    .as_ref()
-                    .is_some_and(|types| types[r].is_technical())
-            })
-        {
-            excluded_ambiguous += rows.len();
-            continue;
-        }
-        let mut means = Vec::with_capacity(p);
-        for c in 0..p {
-            let values: Vec<f64> = rows
-                .iter()
-                .filter_map(|&r| valid_cell(source, r, c))
-                .collect();
-            if values.len() != rows.len() {
-                break;
-            }
-            means.push(values.iter().sum::<f64>() / values.len() as f64);
-        }
-        if means.len() != p {
-            excluded_incomplete += rows.len();
-            continue;
-        }
-        matrix.push(means);
-        group_rows.push(rows.clone());
-        ids.push(format!("{physical}|{instrument}|{campaign}"));
-        representative_sample_ids.push(source.sample_ids[rows[0]].clone());
-    }
+    let Aggregation {
+        matrix,
+        group_rows,
+        keys: ids,
+        sample_ids: representative_sample_ids,
+        excluded_incomplete,
+        excluded_ambiguous,
+        excluded_multicontext,
+    } = aggregate(source, samples, &dev_rows);
     let mut agg = Metric::computed(
         "structure.eligible_samples",
         json!(matrix.len()),
@@ -777,6 +703,127 @@ fn analyze_source(
     }
     analyze_repeats(source, samples, &dev_rows, provider, report);
     analyze_noise_proxy(source, samples, &dev_rows, input, provider, report);
+}
+
+/// Structure rows of one population: equal-weight means of the complete
+/// acquisitions of one physical sample in one instrument × campaign context.
+pub(crate) struct Aggregation {
+    pub(crate) matrix: Vec<Vec<f64>>,
+    pub(crate) group_rows: Vec<Vec<usize>>,
+    pub(crate) keys: Vec<String>,
+    /// Sample ID of each aggregated row (one sample per row).
+    pub(crate) sample_ids: Vec<String>,
+    pub(crate) excluded_incomplete: usize,
+    pub(crate) excluded_ambiguous: usize,
+    pub(crate) excluded_multicontext: usize,
+}
+
+pub(crate) fn aggregate(
+    source: &SpectralSource,
+    samples: &HashMap<&str, &Sample>,
+    rows_in: &[usize],
+) -> Aggregation {
+    let p = source.axis.len();
+    // Numeric source structure is one vote per physical sample and homogeneous instrument/campaign.
+    // Unknown or biological repeat types cannot be silently averaged as technical replicates.
+    let mut groups: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
+    for &r in rows_in {
+        let sample = samples[source.sample_ids[r].as_str()];
+        groups
+            .entry((
+                sample
+                    .physical_sample_id
+                    .clone()
+                    .unwrap_or_else(|| sample.sample_id.clone()),
+                sample.instrument.clone().unwrap_or_default(),
+                sample.campaign.clone().unwrap_or_default(),
+            ))
+            .or_default()
+            .push(r);
+    }
+    let mut matrix = Vec::new();
+    let mut group_rows = Vec::new();
+    let mut ids = Vec::new();
+    let mut representative_sample_ids = Vec::new();
+    let mut excluded_incomplete = 0usize;
+    let mut excluded_ambiguous = 0usize;
+    let mut excluded_multicontext = 0usize;
+    let mut contexts_per_physical = BTreeMap::<&str, usize>::new();
+    for (physical, _, _) in groups.keys() {
+        *contexts_per_physical.entry(physical).or_default() += 1;
+    }
+    for ((physical, instrument, campaign), rows) in &groups {
+        if contexts_per_physical[physical.as_str()] > 1 {
+            excluded_multicontext += rows.len();
+            continue;
+        }
+        if rows
+            .iter()
+            .map(|&r| source.sample_ids[r].as_str())
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1
+        {
+            excluded_ambiguous += rows.len();
+            continue;
+        }
+        if rows.len() > 1
+            && !rows.iter().all(|&r| {
+                source
+                    .repetition_types
+                    .as_ref()
+                    .is_some_and(|types| types[r].is_technical())
+            })
+        {
+            excluded_ambiguous += rows.len();
+            continue;
+        }
+        let mut means = Vec::with_capacity(p);
+        for c in 0..p {
+            let values: Vec<f64> = rows
+                .iter()
+                .filter_map(|&r| valid_cell(source, r, c))
+                .collect();
+            if values.len() != rows.len() {
+                break;
+            }
+            means.push(values.iter().sum::<f64>() / values.len() as f64);
+        }
+        if means.len() != p {
+            excluded_incomplete += rows.len();
+            continue;
+        }
+        matrix.push(means);
+        group_rows.push(rows.clone());
+        ids.push(format!("{physical}|{instrument}|{campaign}"));
+        representative_sample_ids.push(source.sample_ids[rows[0]].clone());
+    }
+    Aggregation {
+        matrix,
+        group_rows,
+        keys: ids,
+        sample_ids: representative_sample_ids,
+        excluded_incomplete,
+        excluded_ambiguous,
+        excluded_multicontext,
+    }
+}
+
+/// Real (non-augmented) rows of one partition.
+pub(crate) fn real_rows(
+    source: &SpectralSource,
+    samples: &HashMap<&str, &Sample>,
+    partition: Partition,
+) -> Vec<usize> {
+    source
+        .sample_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| {
+            let sample = samples.get(id.as_str())?;
+            (sample.partition == partition && sample.augmentation_parent_id.is_none()).then_some(i)
+        })
+        .collect()
 }
 
 fn pca_result_valid(result: &PcaDiagnostics, k: usize, n: usize) -> bool {

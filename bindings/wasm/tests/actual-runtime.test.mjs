@@ -185,3 +185,44 @@ test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  assert.equal(metrics['structure.snv_sensitivity'].status,'computed');
  assert.ok(report.capabilities.some(c=>c.capability_id==='quasi_duplicates'&&c.available));
 });
+// Goldens: NumPy 2.2.6 / SciPy 1.15.3 (cdist energy, numpy.linalg.svd PCA,
+// numpy.quantile out-of-fold limits, default_rng(derived seed) counts).
+test('WASM domain shift matches the native engine goldens',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/domain_shift.json',import.meta.url),'utf8'));
+  const report=runtime.analyze(fixture);
+  const find=(id,factor,level)=>report.metrics.find(m=>m.metric_id===id&&m.parameters.factor===factor&&(level===undefined||m.parameters.target_domain===level));
+  const close=(a,b)=>assert.ok(Math.abs(a-b)<=1e-9*Math.max(1,Math.abs(b)),`${a} != ${b}`);
+  const instrument=find('domain_shift.energy_test','instrument');
+  assert.equal(instrument.parameters.permutation_plan.seed,'3370720132560741253');
+  assert.equal(instrument.value.n_at_least_observed,0);
+  close(instrument.value.p_value_holm,0.002);
+  close(instrument.value.statistic,2.9563946134953585);
+  assert.equal(find('domain_shift.energy_test','campaign').value.n_at_least_observed,894);
+  const coverage=find('domain_shift.coverage','instrument','A');
+  close(coverage.value.t2_limit,23.820918374509468);
+  close(coverage.value.q_limit,0.0026974145909210608);
+  assert.equal(coverage.value.n_target_beyond_either_limit,8);
+  close(find('domain_shift.distribution_distance','campaign','c1').value.energy_e,0.06168426505535718);
+  const audit=find('domain_shift.energy_test','partition');
+  assert.equal(audit.parameters.family,'external_domain_audit');
+  assert.equal(find('domain_shift.target_change','partition','retained_test').reason_code,'RETAINED_TEST_Y_NEVER_READ');
+  assert.ok(report.findings.some(f=>f.rule_id==='domain_shift.detected.v1'&&f.action.includes('held out')));
+  assert.ok(runtime.capabilities().some(c=>c.capability_id==='domain_shift'&&c.available));
+});
+
+test('WASM domain shift: residual-free reference, effective k and explicit refusals',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/domain_shift.json',import.meta.url),'utf8'));
+  const a=[-5,-4,-3,-2,-1,0,1,2,3,4,5].map(i=>[i,0]);
+  const rows=[...a,[0,100],[1,100],[2,0]];
+  const ids=rows.map((_,i)=>`s${String(i).padStart(2,'0')}`);
+  const input={...fixture,targets:[],samples:ids.map((id,i)=>({sample_id:id,physical_sample_id:`p${i}`,partition:'development',instrument:i<11?'A':'B',campaign:'c1'})),
+    sources:[{...fixture.sources[0],observation_ids:ids.map(i=>`o_${i}`),sample_ids:ids,x:rows,axis:[1000,1010]}],
+    options:{...fixture.options,domain_shift:{}}};
+  const report=runtime.analyze(input);
+  const coverage=report.metrics.find(m=>m.metric_id==='domain_shift.coverage'&&m.parameters.target_domain==='B');
+  assert.equal(coverage.status,'computed');
+  assert.equal(coverage.parameters.n_components_effective,1);
+  assert.equal(coverage.value.n_target_beyond_q_limit,2);
+  for(const m of report.metrics.filter(m=>m.metric_id.startsWith('domain_shift.')))
+    assert.equal(m.value!==null,m.status==='computed',m.metric_id);
+});
