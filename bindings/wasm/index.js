@@ -18,6 +18,9 @@ function nested(values, width) {
 }
 const nullable = value => Number.isFinite(value) ? value : null;
 
+const DOMAIN_MESSAGE = 'input outside the supported numerical domain';
+const NUMERICAL_DOMAIN_EXCEEDED = 'NUMERICAL_DOMAIN_EXCEEDED';
+
 /** The u64 root seed travels as a decimal string: bigint and safe-integer
  * numbers are converted, unsafe numbers are refused (they are already
  * rounded), strings are validated by the Rust engine. */
@@ -43,6 +46,18 @@ export async function createQualificationRuntime(options = {}) {
     reason: `${backend_version}; alpha protocol`,
   }));
   const callback = (operation, payload) => {
+    try {
+      return dispatch(operation, payload);
+    } catch (error) {
+      // Methods refusals outside the supported numerical domain keep their
+      // reason; every other failure stays a generic callback error.
+      if (error?.name === 'N4mError' && error.status === 10 && String(error.message).includes(DOMAIN_MESSAGE)) {
+        throw new Error(NUMERICAL_DOMAIN_EXCEEDED);
+      }
+      throw error;
+    }
+  };
+  const dispatch = (operation, payload) => {
     const request = JSON.parse(payload);
     let result;
     switch (operation) {

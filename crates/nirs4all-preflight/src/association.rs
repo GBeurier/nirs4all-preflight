@@ -261,6 +261,18 @@ fn unit_label(unit: IndependenceUnit) -> &'static str {
     }
 }
 
+/// Numerical domain published with every association metric (rule 13).
+fn numerical_domain() -> Value {
+    json!({"supported_domain": {
+               "nonzero_abs_min": "2^-256", "nonzero_abs_max": "2^256",
+               "max_over_min_nonzero_abs_per_array": "2^64",
+               "zeros": "allowed",
+               "checked_arrays": "continuous metadata and continuous targets; categorical codes are labels"},
+           "outside_domain": "unsupported_NUMERICAL_DOMAIN_EXCEEDED",
+           "invariance": "scale_2k_and_translation_inside_domain",
+           "effect_absolute_error": "order_n_times_f64_epsilon"})
+}
+
 /// Shared identity of the two metrics of one metadata × target pair.
 struct Pair<'a> {
     input: &'a QualificationInput,
@@ -289,6 +301,8 @@ impl Pair<'_> {
         m.parameters
             .insert("association_type".into(), json!(self.spec.association_type));
         m.parameters.insert("protocol".into(), json!(PROTOCOL));
+        m.parameters
+            .insert("numerical_domain".into(), numerical_domain());
         m
     }
 
@@ -552,13 +566,6 @@ fn analyze_pair(
     metric.parameters.insert(
         "unit_weighting".into(),
         json!("one_vote_per_independence_unit"),
-    );
-    metric.parameters.insert(
-        "numerical_domain".into(),
-        json!({"inputs": "finite_f64",
-               "invariance": "scale_2k_and_translation_up_to_input_rounding",
-               "effect_absolute_error": "order_n_times_f64_epsilon",
-               "unrepresentable_statistic": "explicit_provider_error"}),
     );
     if input.options.independence_unit == IndependenceUnit::Unknown {
         metric.parameters.insert(

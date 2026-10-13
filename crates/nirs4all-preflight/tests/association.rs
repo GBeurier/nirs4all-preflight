@@ -1045,9 +1045,11 @@ fn real_methods_example_matches_the_wasm_goldens() {
 }
 
 #[test]
-fn real_methods_association_is_invariant_over_the_double_range() {
-    // Robustness rule: metadata and targets scaled by 2^k (subnormals to
-    // 2^1000) or shifted by 1e300 give the same effects, counts and plans.
+fn real_methods_association_follows_the_supported_numerical_domain() {
+    // Rule 13: inside D (nonzero |x| in [2^-256, 2^256], spread <= 2^64)
+    // metadata and targets scaled by 2^k or shifted by 2^200 give the same
+    // effects, counts and plans; outside D every metric of the affected pair
+    // is unsupported with NUMERICAL_DOMAIN_EXCEEDED.
     let Some(provider) = native() else {
         return;
     };
@@ -1078,40 +1080,71 @@ fn real_methods_association_is_invariant_over_the_double_range() {
             })
             .collect::<Vec<_>>()
     };
-    // Integer-valued data (Y * 100, temperature * 10) stay exactly
-    // representable at every scale, subnormals included.
+    // Integer-valued data (Y * 100, temperature * 10) are exact at every
+    // scale used here.
     let y: Vec<f64> = D_Y.iter().map(|v| (v * 100.0).round()).collect();
     let t: Vec<f64> = TEMPERATURE.iter().map(|v| (v * 10.0).round()).collect();
     let base = with_typed_metadata(dataset(&D_CODES, &y, TargetKind::Continuous), &SITE, &t);
     let reference = summary(&base);
-    // 2^k as two exact half powers: powi(-1060) alone underflows.
-    let pow2 = |k: i32| 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
-    for k in [-1060, -1022, -500, -100, 100, 500, 1000] {
-        let scale = |v: f64| v * 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+    let scaled = |k: i32| {
         let mut input = base.clone();
         for v in &mut input.targets[0].values {
-            v.value = v.value.map(scale);
+            v.value = v.value.map(|x| x * 2f64.powi(k));
         }
         for row in input.metadata.values.values_mut() {
             if let Some(Some(MetadataValue::Number(t))) = row.get_mut("temperature") {
-                *t *= pow2(k.min(900));
+                *t *= 2f64.powi(k);
             }
         }
-        let got = summary(&input);
+        input
+    };
+    for k in [-240, -100, 100, 240] {
+        let got = summary(&scaled(k));
         for (a, b) in got.iter().zip(&reference) {
             assert!((a.0 - b.0).abs() <= 1e-12 * b.0.abs(), "k={k}");
             assert_eq!(a.1, b.1, "k={k}");
             assert_eq!(a.2, b.2, "k={k}");
         }
     }
-    // Translation of the covariate by 1e300 (a multiple of its ulp 2^944).
+    // Translation of the covariate by 2^200 (a multiple of its ulp 2^148).
     let mut input = base.clone();
     for row in input.metadata.values.values_mut() {
         if let Some(Some(MetadataValue::Number(t))) = row.get_mut("temperature") {
-            *t = 1e300 + *t * 2f64.powi(944);
+            *t = 2f64.powi(200) + *t * 2f64.powi(150);
         }
     }
     let got = summary(&input);
     assert!((got[2].0 - reference[2].0).abs() <= 1e-12);
     assert_eq!(got[2].1, reference[2].1);
+    // Outside D: targets at 2^300 refuse the target pairs; a covariate with
+    // a spread above 2^64 refuses only its own pair.
+    let report = analyze(&scaled(300), &provider);
+    for name in ["instrument", "site", "temperature"] {
+        for id in [
+            "association.metadata_target",
+            "association.metadata_target_test",
+        ] {
+            let m = metric(&report, id, name);
+            assert!(matches!(m.status, Availability::Unsupported), "{name} {id}");
+            assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
+            assert!(m.value.is_none());
+            assert_eq!(
+                m.parameters["numerical_domain"]["supported_domain"]["nonzero_abs_max"],
+                "2^256"
+            );
+        }
+    }
+    let mut wide = base.clone();
+    wide.metadata
+        .values
+        .get_mut("s00")
+        .unwrap()
+        .insert("temperature".into(), Some(MetadataValue::Number(1e-30)));
+    let report = analyze(&wide, &provider);
+    let d = metric(&report, "association.metadata_target", "temperature");
+    assert_eq!(d.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
+    assert!(matches!(
+        metric(&report, "association.metadata_target_test", "instrument").status,
+        Availability::Computed
+    ));
 }

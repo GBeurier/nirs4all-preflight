@@ -20,7 +20,20 @@ impl CallbackProvider<'_> {
                 &JsValue::from_str(operation),
                 &JsValue::from_str(&request),
             )
-            .map_err(|_| ProviderError("METHODS_CALLBACK_FAILED".into()))?;
+            .map_err(|error| {
+                // The only reason forwarded from a callback exception.
+                let domain = error
+                    .dyn_ref::<js_sys::Error>()
+                    .is_some_and(|e| e.message() == NUMERICAL_DOMAIN_EXCEEDED);
+                ProviderError(
+                    if domain {
+                        NUMERICAL_DOMAIN_EXCEEDED
+                    } else {
+                        "METHODS_CALLBACK_FAILED"
+                    }
+                    .into(),
+                )
+            })?;
         let text = result
             .as_string()
             .ok_or_else(|| ProviderError("METHODS_CALLBACK_MUST_RETURN_JSON_STRING".into()))?;

@@ -1605,6 +1605,12 @@ pub struct BhDiagnostics {
     pub backend_version: String,
 }
 
+/// Provider reason for a Methods refusal of inputs outside the supported
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^64).
+pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
+/// Prefix of the Methods context message for that refusal.
+pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;

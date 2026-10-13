@@ -73,22 +73,31 @@ test('WASM report is invariant to reserved Y content',async()=>{
   });
   assert.ok(outputs.every(o=>o===outputs[0]));
 });
-// Robustness rule: the covariate scaled by 2^k (subnormal to 2^1000) or
-// shifted by 1e300 gives the same Spearman rho, count and plan.
-test('WASM association is invariant over the double range',async()=>{
+// Rule 13: inside D the covariate scaled by 2^k or shifted by 2^200 gives
+// the same Spearman rho and count; outside D the pair is unsupported with
+// NUMERICAL_DOMAIN_EXCEEDED (the Methods refusal reason crosses the bridge).
+test('WASM association follows the supported numerical domain',async()=>{
   const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
   const run=map=>{
     const input=structuredClone(fixture);
     for(const row of Object.values(input.metadata.values)) row.temperature=map(Math.round(row.temperature*10));
     const r=runtime.analyze(input);
     const find=id=>r.metrics.find(m=>m.metric_id===id&&m.parameters.metadata==='temperature');
-    return [find('association.metadata_target').value.effect_size,find('association.metadata_target_test').value.n_at_least_observed];
+    return [find('association.metadata_target'),find('association.metadata_target_test')];
   };
-  const reference=run(t=>t);
-  for(const map of [t=>t*2**-1060,t=>t*2**-1022,t=>t*2**1000,t=>1e300+t*2**944]){
-    const [rho,b]=run(map);
-    assert.ok(Math.abs(rho-reference[0])<=1e-12*Math.abs(reference[0]));
-    assert.equal(b,reference[1]);
+  const [d0,t0]=run(t=>t);
+  for(const map of [t=>t*2**-240,t=>t*2**240,t=>2**200+t*2**150]){
+    const [d,t]=run(map);
+    assert.ok(Math.abs(d.value.effect_size-d0.value.effect_size)<=1e-12*Math.abs(d0.value.effect_size));
+    assert.equal(t.value.n_at_least_observed,t0.value.n_at_least_observed);
+  }
+  for(const map of [t=>t*2**-300,t=>t*2**1000,t=>1e300+t*2**944,t=>t===172?1e-30:t]){
+    for(const m of run(map)){
+      assert.equal(m.status,'unsupported');
+      assert.equal(m.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+      assert.equal(m.value,null);
+      assert.equal(m.parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^64');
+    }
   }
 });
 // A development row, a prediction bridge and a retained-test row linked by
