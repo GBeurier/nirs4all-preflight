@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GBeurier/nirs4all-methods
-          ref: 72486e41e229d1bda1fad8f15d4a3aab3dd93210
+          ref: 131a15a6bbf73a8ab941c7b3fb81b21f6b71b059
           path: upstream-methods
       - run: cmake --preset dev-release && cmake --build --preset dev-release --target n4m_c --parallel 2
         working-directory: upstream-methods
