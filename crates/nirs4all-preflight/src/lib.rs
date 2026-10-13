@@ -27,10 +27,7 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
         "validation_probe",
         "confounding",
         "domain_shift",
-        "noise_proxy",
         "repeatability_uncertainty",
-        "snv_sensitivity",
-        "quasi_duplicates",
         "metadata_association_tests",
     ] {
         out.push(Capability {
@@ -38,6 +35,42 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
             available: false,
             qualified: false,
             reason: Some("PROTOCOL_NOT_IMPLEMENTED".into()),
+        });
+    }
+    let provided = |ids: &[&str]| {
+        ids.iter()
+            .all(|id| out.iter().any(|c| c.capability_id == *id && c.available))
+    };
+    let protocols = [
+        (
+            "noise_proxy",
+            provided(&["methods.noise_proxy"]),
+            "NOISE_PROXY_PROVIDER_NOT_CONFIGURED",
+        ),
+        (
+            "snv_sensitivity",
+            provided(&["methods.snv", "methods.pca"]),
+            "SNV_PROVIDER_NOT_CONFIGURED",
+        ),
+        (
+            "quasi_duplicates",
+            provided(&["methods.tolerance_pairs"]),
+            "TOLERANCE_PAIRS_PROVIDER_NOT_CONFIGURED",
+        ),
+    ];
+    for (id, available, missing) in protocols {
+        out.push(Capability {
+            capability_id: id.into(),
+            available,
+            qualified: false,
+            reason: Some(
+                if available {
+                    "ALPHA_PROTOCOL_UNQUALIFIED"
+                } else {
+                    missing
+                }
+                .into(),
+            ),
         });
     }
     let clustering_available = [
@@ -107,6 +140,17 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
             "No validation probe or calibrated thresholds are available".into(),
         ],
     };
+    for capability in &mut report.capabilities {
+        let reason = match capability.capability_id.as_str() {
+            "quasi_duplicates" if input.options.quasi_duplicates.is_none() => {
+                "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED"
+            }
+            "snv_sensitivity" if !input.options.snv_sensitivity => "SNV_SENSITIVITY_DISABLED",
+            _ => continue,
+        };
+        capability.available = false;
+        capability.reason = Some(reason.into());
+    }
     if !report.validation.valid {
         return report;
     }
@@ -377,6 +421,14 @@ fn analyze_source(
     if cross_partition_pairs > 0 {
         report.findings.push(Finding { rule_id: "identity.possible_cross_partition_duplicate.v1".into(), severity: "high".into(), confidence: "unknown".into(), evidence: vec!["integrity.cross_partition_exact_duplicate_pairs".into()], message: format!("{cross_partition_pairs} exact spectral pairs span development and retained test in {}", source.source_id), action: "Review physical identities and partition assignment before fitting".into() });
     }
+    analyze_quasi_duplicates(
+        source,
+        samples,
+        (&dev_rows, &test_rows),
+        input,
+        provider,
+        report,
+    );
 
     // Numeric source structure is one vote per physical sample and homogeneous instrument/campaign.
     // Unknown or biological repeat types cannot be silently averaged as technical replicates.
@@ -396,6 +448,7 @@ fn analyze_source(
             .push(r);
     }
     let mut matrix = Vec::new();
+    let mut group_rows = Vec::new();
     let mut ids = Vec::new();
     let mut representative_sample_ids = Vec::new();
     let mut excluded_incomplete = 0usize;
@@ -447,6 +500,7 @@ fn analyze_source(
             continue;
         }
         matrix.push(means);
+        group_rows.push(rows.clone());
         ids.push(format!("{physical}|{instrument}|{campaign}"));
         representative_sample_ids.push(source.sample_ids[rows[0]].clone());
     }
@@ -483,6 +537,11 @@ fn analyze_source(
             Some(&source.source_id),
             None,
         ));
+        let canonical = Err((
+            Availability::InsufficientData,
+            "FEWER_THAN_THREE_COMPLETE_SAMPLES",
+        ));
+        analyze_snv(source, &group_rows, 0, canonical, input, provider, report);
         clustering::unavailable(
             report,
             &source.source_id,
@@ -498,24 +557,7 @@ fn analyze_source(
             n_components: k,
         };
         match provider.pca(&req) {
-            Ok(result)
-                if result.eigenvalues.len() == k
-                    && result.scores.len() == req.matrix.len()
-                    && result
-                        .scores
-                        .iter()
-                        .all(|s| s.len() == k && s.iter().all(|v| v.is_finite()))
-                    && result.full_moments[0].is_finite()
-                    && result.full_moments[1].is_finite()
-                    && result.full_moments[0] >= 0.0
-                    && result.full_moments[1] >= 0.0
-                    && result
-                        .eigenvalues
-                        .iter()
-                        .all(|v| v.is_finite() && *v >= 0.0)
-                    && result.eigenvalues.iter().sum::<f64>()
-                        <= result.full_moments[0] * (1.0 + 1e-8) + 1e-12 =>
-            {
+            Ok(result) if pca_result_valid(&result, k, req.matrix.len()) => {
                 let mut metric = Metric::computed(
                     "structure.pca_eigenvalues",
                     json!(result.eigenvalues),
@@ -646,6 +688,7 @@ fn analyze_source(
                     json!("methods_full_covariance_moments"),
                 );
                 report.metrics.push(dm);
+                analyze_snv(source, &group_rows, k, Ok(&result), input, provider, report);
             }
             Ok(_) => {
                 report.metrics.push(Metric::unavailable(
@@ -661,6 +704,8 @@ fn analyze_source(
                     Availability::Error,
                     "INVALID_PROVIDER_RESULT",
                 );
+                let canonical = Err((Availability::Error, "CANONICAL_PCA_UNAVAILABLE"));
+                analyze_snv(source, &group_rows, k, canonical, input, provider, report);
             }
             Err(e) => {
                 report.metrics.push(Metric::unavailable(
@@ -671,10 +716,43 @@ fn analyze_source(
                     None,
                 ));
                 clustering::unavailable(report, &source.source_id, Availability::Unsupported, &e.0);
+                let canonical = Err((Availability::Unsupported, "CANONICAL_PCA_UNAVAILABLE"));
+                analyze_snv(source, &group_rows, k, canonical, input, provider, report);
             }
         }
     }
     analyze_repeats(source, samples, &dev_rows, provider, report);
+    analyze_noise_proxy(source, samples, &dev_rows, input, provider, report);
+}
+
+fn pca_result_valid(result: &PcaDiagnostics, k: usize, n: usize) -> bool {
+    result.eigenvalues.len() == k
+        && result.scores.len() == n
+        && result
+            .scores
+            .iter()
+            .all(|s| s.len() == k && s.iter().all(|v| v.is_finite()))
+        && result.full_moments[0].is_finite()
+        && result.full_moments[1].is_finite()
+        && result.full_moments[0] >= 0.0
+        && result.full_moments[1] >= 0.0
+        && result
+            .eigenvalues
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.0)
+        && result.eigenvalues.iter().sum::<f64>() <= result.full_moments[0] * (1.0 + 1e-8) + 1e-12
+}
+
+/// Eigenvalue shares of the full spectrum and the full-moment effective dimension.
+fn pca_structure(result: &PcaDiagnostics) -> serde_json::Value {
+    let [sum, sum2] = result.full_moments;
+    let shares: Vec<f64> = result.eigenvalues.iter().map(|v| v / sum).collect();
+    json!({
+        "eigenvalue_shares": shares,
+        "first_component_share": shares.first(),
+        "retained_share": shares.iter().sum::<f64>(),
+        "effective_dimension": (sum2 > 0.0).then(|| sum * sum / sum2).filter(|v| v.is_finite()),
+    })
 }
 
 fn analyze_local(
@@ -1176,6 +1254,701 @@ fn analyze_repeats(
             Some(&source.source_id),
             None,
         ));
+    }
+}
+
+/// Labelled unsupervised SNV view of the same aggregated samples as the canonical PCA.
+fn analyze_snv(
+    source: &SpectralSource,
+    group_rows: &[Vec<usize>],
+    k: usize,
+    canonical: Result<&PcaDiagnostics, (Availability, &str)>,
+    input: &QualificationInput,
+    provider: &impl MethodsProvider,
+    report: &mut QualificationReport,
+) {
+    const VIEW: &str = "canonical:snv_centered";
+    let src = Some(source.source_id.as_str());
+    let push_unavailable = |report: &mut QualificationReport, status, reason: &str| {
+        let mut m = Metric::unavailable("structure.snv_sensitivity", status, reason, src, None);
+        m.view_id = VIEW.into();
+        report.metrics.push(m);
+    };
+    if !input.options.snv_sensitivity {
+        push_unavailable(
+            report,
+            Availability::NotApplicable,
+            "SNV_SENSITIVITY_DISABLED",
+        );
+        return;
+    }
+    let canonical = match canonical {
+        Ok(c) => c,
+        Err((status, reason)) => {
+            push_unavailable(report, status, reason);
+            return;
+        }
+    };
+    let p = source.axis.len();
+    if p < 2 {
+        push_unavailable(report, Availability::NotApplicable, "FEWER_THAN_TWO_BANDS");
+        return;
+    }
+    if canonical.full_moments[0] <= 0.0 {
+        push_unavailable(report, Availability::Undefined, "ZERO_TOTAL_VARIANCE");
+        return;
+    }
+    // SNV is a per-acquisition transform; aggregation follows it, as for the canonical view.
+    let request = SnvRequest {
+        matrix: group_rows
+            .iter()
+            .flatten()
+            .map(|&r| {
+                (0..p)
+                    .map(|c| valid_cell(source, r, c).unwrap_or(0.0))
+                    .collect()
+            })
+            .collect(),
+    };
+    let snv = match provider.snv(&request) {
+        Ok(d)
+            if d.matrix.len() == request.matrix.len()
+                && d.matrix
+                    .iter()
+                    .all(|row| row.len() == p && row.iter().all(|v| v.is_finite())) =>
+        {
+            d
+        }
+        Ok(_) => {
+            push_unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
+            return;
+        }
+        Err(e) => {
+            push_unavailable(report, Availability::Unsupported, &e.0);
+            return;
+        }
+    };
+    let mut offset = 0;
+    let matrix: Vec<Vec<f64>> = group_rows
+        .iter()
+        .map(|rows| {
+            let block = &snv.matrix[offset..offset + rows.len()];
+            offset += rows.len();
+            (0..p)
+                .map(|c| block.iter().map(|row| row[c]).sum::<f64>() / rows.len() as f64)
+                .collect()
+        })
+        .collect();
+    let n = matrix.len();
+    let req = PcaRequest {
+        source_id: source.source_id.clone(),
+        sample_ids: Vec::new(),
+        matrix,
+        n_components: k,
+    };
+    let result = match provider.pca(&req) {
+        Ok(r) if pca_result_valid(&r, k, n) => r,
+        Ok(_) => {
+            push_unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
+            return;
+        }
+        Err(e) => {
+            push_unavailable(report, Availability::Unsupported, &e.0);
+            return;
+        }
+    };
+    let mut eigen = Metric::computed(
+        "structure.snv_pca_eigenvalues",
+        json!(result.eigenvalues),
+        src,
+        None,
+    );
+    eigen.view_id = VIEW.into();
+    eigen.denominators.insert("n_aggregated_samples".into(), n);
+    eigen.parameters.insert("n_components".into(), json!(k));
+    eigen
+        .parameters
+        .insert("backend_version".into(), json!(result.backend_version));
+    report.metrics.push(eigen);
+    let [sum, sum2] = result.full_moments;
+    let mut dimension = match (sum2 > 0.0).then(|| sum * sum / sum2) {
+        Some(v) if v.is_finite() => {
+            Metric::computed("structure.snv_effective_dimension", json!(v), src, None)
+        }
+        _ => Metric::unavailable(
+            "structure.snv_effective_dimension",
+            Availability::Undefined,
+            "ZERO_TOTAL_VARIANCE",
+            src,
+            None,
+        ),
+    };
+    dimension.view_id = VIEW.into();
+    dimension.parameters.insert(
+        "moments_provenance".into(),
+        json!("methods_full_covariance_moments"),
+    );
+    report.metrics.push(dimension);
+    if sum <= 0.0 {
+        push_unavailable(report, Availability::Undefined, "ZERO_SNV_TOTAL_VARIANCE");
+        return;
+    }
+    let reference = pca_structure(canonical);
+    let snv_view = pca_structure(&result);
+    let delta = |key: &str| match (reference[key].as_f64(), snv_view[key].as_f64()) {
+        (Some(a), Some(b)) => json!(b - a),
+        _ => serde_json::Value::Null,
+    };
+    let mut m = Metric::computed(
+        "structure.snv_sensitivity",
+        json!({
+            "canonical": reference,
+            "snv": snv_view,
+            "delta_first_component_share": delta("first_component_share"),
+            "delta_retained_share": delta("retained_share"),
+            "delta_effective_dimension": delta("effective_dimension"),
+        }),
+        src,
+        None,
+    );
+    m.view_id = VIEW.into();
+    m.denominators.insert("n_aggregated_samples".into(), n);
+    m.denominators
+        .insert("n_observations".into(), request.matrix.len());
+    m.parameters
+        .insert("reference_view".into(), json!("canonical:centered"));
+    m.parameters.insert("n_components".into(), json!(k));
+    m.parameters.insert(
+        "snv".into(),
+        json!("methods_snv_row_mean_and_population_sd_ddof_0_zero_sd_rows_centered_only"),
+    );
+    m.parameters.insert(
+        "aggregation".into(),
+        json!("snv_per_observation_then_equal_sample_mean_within_physical_instrument_campaign"),
+    );
+    m.parameters
+        .insert("shares_denominator".into(), json!("full_variance_trace"));
+    m.parameters.insert(
+        "interpretation".into(),
+        json!("descriptive_change_only_no_attribution_to_nuisance_or_chemistry"),
+    );
+    m.parameters
+        .insert("snv_backend_version".into(), json!(snv.backend_version));
+    report.metrics.push(m);
+}
+
+/// Smoothing-residual noise proxy per instrument/campaign context. Never an SNR.
+fn analyze_noise_proxy(
+    source: &SpectralSource,
+    samples: &HashMap<&str, &Sample>,
+    dev_rows: &[usize],
+    input: &QualificationInput,
+    provider: &impl MethodsProvider,
+    report: &mut QualificationReport,
+) {
+    let options = input.options.noise_proxy;
+    let p = source.axis.len();
+    let src = Some(source.source_id.as_str());
+    let unavailable = |report: &mut QualificationReport, status, reason: &str| {
+        report.metrics.push(Metric::unavailable(
+            "measurement.noise_proxy",
+            status,
+            reason,
+            src,
+            None,
+        ));
+    };
+    if dev_rows.is_empty() {
+        unavailable(
+            report,
+            Availability::InsufficientData,
+            "NO_DEVELOPMENT_OBSERVATIONS",
+        );
+        return;
+    }
+    if p < options.window_bands {
+        unavailable(
+            report,
+            Availability::InsufficientData,
+            "FEWER_BANDS_THAN_WINDOW",
+        );
+        return;
+    }
+    // The Savitzky-Golay residual assumes equal spacing; tolerance covers stored rounding only.
+    let spacing = (source.axis[p - 1] - source.axis[0]) / (p - 1) as f64;
+    if source
+        .axis
+        .windows(2)
+        .any(|w| ((w[1] - w[0]) - spacing).abs() > 1e-3 * spacing.abs())
+    {
+        unavailable(report, Availability::Unsupported, "NON_UNIFORM_AXIS");
+        return;
+    }
+    let axis_unit = (!source.axis_unit.trim().is_empty()).then(|| source.axis_unit.clone());
+    let mut contexts: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for &r in dev_rows {
+        let s = samples[source.sample_ids[r].as_str()];
+        contexts
+            .entry((
+                s.instrument.clone().unwrap_or_default(),
+                s.campaign.clone().unwrap_or_default(),
+            ))
+            .or_default()
+            .push(r);
+    }
+    for ((instrument, campaign), rows) in contexts {
+        let request = NoiseProxyRequest {
+            matrix: rows
+                .iter()
+                .map(|&r| {
+                    (0..p)
+                        .map(|c| valid_cell(source, r, c).unwrap_or(0.0))
+                        .collect()
+                })
+                .collect(),
+            valid_mask: rows
+                .iter()
+                .map(|&r| (0..p).map(|c| valid_cell(source, r, c).is_some()).collect())
+                .collect(),
+            window_length: options.window_bands,
+            polyorder: options.polyorder,
+        };
+        let d = match provider.noise_proxy(&request) {
+            Ok(d)
+                if d.band_noise.len() == p
+                    && d.band_counts.len() == p
+                    && d.residual_gain.is_finite()
+                    && d.residual_gain > 0.0
+                    && d.band_noise.iter().zip(&d.band_counts).all(|(v, &count)| {
+                        count <= rows.len()
+                            && (count == 0) == v.is_none()
+                            && v.is_none_or(|v| v.is_finite() && v >= 0.0)
+                    })
+                    && d.pooled.is_some() == d.band_counts.iter().any(|&c| c > 0)
+                    && d.pooled.is_none_or(|v| v.is_finite() && v >= 0.0) =>
+            {
+                d
+            }
+            Ok(_) => {
+                unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
+                continue;
+            }
+            Err(e) => {
+                unavailable(report, Availability::Unsupported, &e.0);
+                continue;
+            }
+        };
+        let evaluable = d.band_counts.iter().filter(|&&c| c > 0).count();
+        let describe = |m: &mut Metric| {
+            m.unit = (!source.signal_unit.trim().is_empty()).then(|| source.signal_unit.clone());
+            m.denominators.insert("n_observations".into(), rows.len());
+            m.denominators.insert("n_evaluable_bands".into(), evaluable);
+            m.denominators.insert("n_bands".into(), p);
+            m.parameters.insert("instrument".into(), json!(instrument));
+            m.parameters.insert("campaign".into(), json!(campaign));
+            m.parameters
+                .insert("smoother".into(), json!("methods_savitzky_golay_deriv_0"));
+            m.parameters
+                .insert("window_bands".into(), json!(options.window_bands));
+            m.parameters
+                .insert("polyorder".into(), json!(options.polyorder));
+            m.parameters.insert(
+                "physical_window_width".into(),
+                json!(axis_unit
+                    .as_ref()
+                    .map(|_| (options.window_bands - 1) as f64 * spacing.abs())),
+            );
+            m.parameters.insert("axis_unit".into(), json!(axis_unit));
+            m.parameters
+                .insert("axis_spacing".into(), json!(spacing.abs()));
+            m.parameters
+                .insert("axis_uniformity_relative_tolerance".into(), json!(1e-3));
+            m.parameters.insert(
+                "edge_behavior".into(),
+                json!("interior_bands_only_no_padding"),
+            );
+            m.parameters.insert(
+                "mask_behavior".into(),
+                json!("window_containing_any_masked_cell_skipped"),
+            );
+            m.parameters.insert(
+                "normalization".into(),
+                json!("rms_residual_divided_by_white_noise_residual_gain"),
+            );
+            m.parameters
+                .insert("residual_gain".into(), json!(d.residual_gain));
+            m.parameters.insert(
+                "aggregation".into(),
+                json!("root_mean_square_over_native_observations_equal_weight"),
+            );
+            m.parameters.insert(
+                "assumption".into(),
+                json!("locally_polynomial_signal_and_white_noise; residual_signal_curvature_inflates_proxy"),
+            );
+            m.parameters
+                .insert("label".into(), json!("noise_proxy_not_snr"));
+            m.parameters
+                .insert("backend_version".into(), json!(d.backend_version));
+        };
+        let mut band = if evaluable > 0 {
+            Metric::computed("measurement.noise_proxy", json!(d.band_noise), src, None)
+        } else {
+            Metric::unavailable(
+                "measurement.noise_proxy",
+                Availability::InsufficientData,
+                "NO_COMPLETE_WINDOW",
+                src,
+                None,
+            )
+        };
+        describe(&mut band);
+        band.parameters
+            .insert("n_observations_per_band".into(), json!(d.band_counts));
+        report.metrics.push(band);
+        let mut pooled = match d.pooled {
+            Some(v) => Metric::computed("measurement.noise_proxy_pooled", json!(v), src, None),
+            None => Metric::unavailable(
+                "measurement.noise_proxy_pooled",
+                Availability::InsufficientData,
+                "NO_COMPLETE_WINDOW",
+                src,
+                None,
+            ),
+        };
+        describe(&mut pooled);
+        pooled.denominators.insert(
+            "n_residual_cells".into(),
+            d.band_counts.iter().sum::<usize>(),
+        );
+        report.metrics.push(pooled);
+    }
+}
+
+/// Quasi-identity suspicions within a declared view, context and tolerance. X only.
+fn analyze_quasi_duplicates(
+    source: &SpectralSource,
+    samples: &HashMap<&str, &Sample>,
+    rows: (&[usize], &[usize]),
+    input: &QualificationInput,
+    provider: &impl MethodsProvider,
+    report: &mut QualificationReport,
+) {
+    const WITHIN: &str = "integrity.quasi_duplicate_pairs";
+    const CROSS: &str = "integrity.cross_partition_quasi_duplicate_pairs";
+    const MAX_LISTED: usize = 1000;
+    let (dev_rows, test_rows) = rows;
+    let src = Some(source.source_id.as_str());
+    let p = source.axis.len();
+    let push = |report: &mut QualificationReport, id: &str, status, reason: &str| {
+        let mut m = Metric::unavailable(id, status, reason, src, None);
+        if id == CROSS {
+            m.population_id = "development_real_vs_retained_test_real".into();
+        }
+        report.metrics.push(m);
+    };
+    let Some(options) = &input.options.quasi_duplicates else {
+        for id in [WITHIN, CROSS] {
+            push(
+                report,
+                id,
+                Availability::NotApplicable,
+                "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED",
+            );
+        }
+        return;
+    };
+    let view_id = match options.view {
+        QuasiDuplicateView::Native => "native",
+        QuasiDuplicateView::Snv => "canonical:snv",
+    };
+    if options.view == QuasiDuplicateView::Snv && p < 2 {
+        for id in [WITHIN, CROSS] {
+            push(
+                report,
+                id,
+                Availability::NotApplicable,
+                "FEWER_THAN_TWO_BANDS",
+            );
+        }
+        return;
+    }
+    let complete = |r: &usize| (0..p).all(|c| valid_cell(source, *r, c).is_some());
+    let dev: Vec<usize> = dev_rows.iter().copied().filter(complete).collect();
+    let test: Vec<usize> = test_rows.iter().copied().filter(complete).collect();
+    let all: Vec<usize> = dev.iter().chain(&test).copied().collect();
+    let raw: Vec<Vec<f64>> = all
+        .iter()
+        .map(|&r| {
+            (0..p)
+                .map(|c| valid_cell(source, r, c).unwrap_or(0.0))
+                .collect()
+        })
+        .collect();
+    // SNV is stateless per spectrum: transforming retained-test X fits nothing.
+    let (values, snv_backend) = if options.view == QuasiDuplicateView::Snv && !raw.is_empty() {
+        match provider.snv(&SnvRequest { matrix: raw }) {
+            Ok(d)
+                if d.matrix.len() == all.len()
+                    && d.matrix
+                        .iter()
+                        .all(|row| row.len() == p && row.iter().all(|v| v.is_finite())) =>
+            {
+                (d.matrix, Some(d.backend_version))
+            }
+            Ok(_) => {
+                for id in [WITHIN, CROSS] {
+                    push(report, id, Availability::Error, "INVALID_PROVIDER_RESULT");
+                }
+                return;
+            }
+            Err(e) => {
+                for id in [WITHIN, CROSS] {
+                    push(report, id, Availability::Unsupported, &e.0);
+                }
+                return;
+            }
+        }
+    } else {
+        (raw, None)
+    };
+    let value_of: HashMap<usize, &Vec<f64>> = all.iter().copied().zip(&values).collect();
+    let mut physical_codes = BTreeMap::<String, i64>::new();
+    let mut physical = |r: usize| {
+        let s = samples[source.sample_ids[r].as_str()];
+        let key = s
+            .physical_sample_id
+            .clone()
+            .unwrap_or_else(|| s.sample_id.clone());
+        let next = physical_codes.len() as i64;
+        *physical_codes.entry(key).or_insert(next)
+    };
+    let context_of = |r: usize| match options.context {
+        ComparisonContext::Source => (String::new(), String::new()),
+        ComparisonContext::InstrumentCampaign => {
+            let s = samples[source.sample_ids[r].as_str()];
+            (
+                s.instrument.clone().unwrap_or_default(),
+                s.campaign.clone().unwrap_or_default(),
+            )
+        }
+    };
+    let mut contexts: BTreeMap<(String, String), (Vec<usize>, Vec<usize>)> = BTreeMap::new();
+    for &r in &dev {
+        contexts.entry(context_of(r)).or_default().0.push(r);
+    }
+    for &r in &test {
+        contexts.entry(context_of(r)).or_default().1.push(r);
+    }
+    #[derive(Default)]
+    struct Tally {
+        pairs: usize,
+        candidates: usize,
+        affected_query: BTreeSet<usize>,
+        affected_reference: BTreeSet<usize>,
+        listed: Vec<serde_json::Value>,
+        backend: Option<String>,
+    }
+    let mut within = Tally::default();
+    let mut cross = Tally::default();
+    let mut failures: [Option<(Availability, String)>; 2] = [None, None];
+    for (d_rows, t_rows) in contexts.values() {
+        let query_rows = d_rows;
+        for (slot, reference_rows) in [(0, None), (1, Some(t_rows))] {
+            let tally = if slot == 0 { &mut within } else { &mut cross };
+            if failures[slot].is_some()
+                || query_rows.is_empty()
+                || (reference_rows.is_none() && query_rows.len() < 2)
+                || reference_rows.is_some_and(|r| r.is_empty())
+            {
+                continue;
+            }
+            let request = TolerancePairsRequest {
+                query: query_rows.iter().map(|r| value_of[r].clone()).collect(),
+                reference: reference_rows
+                    .map(|rows| rows.iter().map(|r| value_of[r].clone()).collect()),
+                query_group_ids: query_rows.iter().map(|&r| physical(r)).collect(),
+                reference_group_ids: reference_rows
+                    .map_or_else(Vec::new, |rows| rows.iter().map(|&r| physical(r)).collect()),
+                tolerance: options.tolerance,
+                max_pairs: MAX_LISTED - tally.listed.len(),
+            };
+            let n_reference = reference_rows.map_or(0, Vec::len);
+            match provider.tolerance_pairs(&request) {
+                Ok(d)
+                    if d.query_flags.len() == query_rows.len()
+                        && d.reference_flags.len() == n_reference
+                        && d.pairs.len() == d.total_pairs.min(request.max_pairs)
+                        && d.distances.len() == d.pairs.len()
+                        && d.total_pairs <= d.candidate_pairs
+                        && d.pairs.iter().zip(&d.distances).all(|(&[a, b], &dist)| {
+                            a < query_rows.len()
+                                && b < reference_rows.map_or(query_rows.len(), Vec::len)
+                                && request.query_group_ids[a]
+                                    != if reference_rows.is_some() {
+                                        request.reference_group_ids[b]
+                                    } else {
+                                        request.query_group_ids[b]
+                                    }
+                                && dist.is_finite()
+                                && (0.0..=options.tolerance).contains(&dist)
+                        }) =>
+                {
+                    tally.pairs += d.total_pairs;
+                    tally.candidates += d.candidate_pairs;
+                    let reference = reference_rows.unwrap_or(query_rows);
+                    for (i, _) in d.query_flags.iter().enumerate().filter(|(_, f)| **f) {
+                        tally.affected_query.insert(query_rows[i]);
+                    }
+                    for (i, _) in d.reference_flags.iter().enumerate().filter(|(_, f)| **f) {
+                        tally.affected_reference.insert(reference[i]);
+                    }
+                    for (&[a, b], dist) in d.pairs.iter().zip(&d.distances) {
+                        tally.listed.push(json!({
+                            "observation_a": source.observation_ids[query_rows[a]],
+                            "observation_b": source.observation_ids[reference[b]],
+                            "rms_difference": dist,
+                        }));
+                    }
+                    tally.backend = Some(d.backend_version);
+                }
+                Ok(_) => {
+                    failures[slot] = Some((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
+                }
+                Err(e) => failures[slot] = Some((Availability::Unsupported, e.0)),
+            }
+        }
+    }
+    let tolerance_unit = match options.view {
+        QuasiDuplicateView::Native => {
+            (!source.signal_unit.trim().is_empty()).then(|| source.signal_unit.clone())
+        }
+        QuasiDuplicateView::Snv => Some("snv_standardized_signal".into()),
+    };
+    let fraction = |a: usize, b: usize| (b > 0).then(|| a as f64 / b as f64);
+    for (slot, tally) in [(0, within), (1, cross)] {
+        let id = if slot == 0 { WITHIN } else { CROSS };
+        if let Some((status, reason)) = failures[slot].take() {
+            push(report, id, status, &reason);
+            continue;
+        }
+        if slot == 1 && test.is_empty() {
+            push(
+                report,
+                id,
+                Availability::NotApplicable,
+                "NO_COMPLETE_RETAINED_TEST_OBSERVATIONS",
+            );
+            continue;
+        }
+        if tally.candidates == 0 {
+            push(
+                report,
+                id,
+                Availability::InsufficientData,
+                "NO_CANDIDATE_PAIRS",
+            );
+            continue;
+        }
+        let affected_dev = if slot == 0 {
+            tally
+                .affected_query
+                .union(&tally.affected_reference)
+                .count()
+        } else {
+            tally.affected_query.len()
+        };
+        let mut value = json!({
+            "suspect_pairs": tally.pairs,
+            "candidate_pairs": tally.candidates,
+            "suspect_pair_rate": fraction(tally.pairs, tally.candidates),
+            "affected_development_observations": affected_dev,
+            "affected_development_fraction": fraction(affected_dev, dev.len()),
+            "listed_pairs": tally.listed,
+            "listing_truncated": tally.listed.len() < tally.pairs,
+        });
+        if slot == 1 {
+            value["affected_retained_test_observations"] = json!(tally.affected_reference.len());
+            value["affected_retained_test_fraction"] =
+                json!(fraction(tally.affected_reference.len(), test.len()));
+        }
+        let mut m = Metric::computed(id, value, src, None);
+        m.view_id = view_id.into();
+        m.denominators
+            .insert("n_development_observations".into(), dev_rows.len());
+        m.denominators
+            .insert("n_compared_development_observations".into(), dev.len());
+        m.denominators.insert(
+            "n_excluded_incomplete_development_observations".into(),
+            dev_rows.len() - dev.len(),
+        );
+        if slot == 1 {
+            m.population_id = "development_real_vs_retained_test_real".into();
+            m.denominators
+                .insert("n_retained_test_observations".into(), test_rows.len());
+            m.denominators
+                .insert("n_compared_retained_test_observations".into(), test.len());
+            m.parameters
+                .insert("test_access".into(), json!("X_only_integrity_no_fit_no_Y"));
+        }
+        m.parameters
+            .insert("tolerance".into(), json!(options.tolerance));
+        m.parameters
+            .insert("tolerance_unit".into(), json!(tolerance_unit));
+        m.parameters.insert(
+            "tolerance_source".into(),
+            json!("declared_in_options_quasi_duplicates"),
+        );
+        m.parameters
+            .insert("distance".into(), json!("root_mean_square_band_difference"));
+        m.parameters.insert(
+            "context".into(),
+            json!(match options.context {
+                ComparisonContext::InstrumentCampaign => "same_instrument_and_campaign",
+                ComparisonContext::Source => "whole_source",
+            }),
+        );
+        m.parameters.insert(
+            "exclusions".into(),
+            json!("pairs_within_one_physical_sample; incomplete_rows"),
+        );
+        m.parameters
+            .insert("includes_exact_duplicates".into(), json!(true));
+        m.parameters
+            .insert("listing_limit".into(), json!(MAX_LISTED));
+        m.parameters
+            .insert("backend_version".into(), json!(tally.backend));
+        if let Some(v) = &snv_backend {
+            m.parameters.insert("snv_backend_version".into(), json!(v));
+        }
+        report.metrics.push(m);
+        if tally.pairs > 0 {
+            let (rule, severity, scope, action) = if slot == 0 {
+                (
+                    "identity.possible_quasi_duplicate_repeats.v1",
+                    "warning",
+                    "declared physical samples",
+                    "Review acquisition provenance and physical IDs; identities are not rewritten",
+                )
+            } else {
+                (
+                    "identity.possible_cross_partition_quasi_duplicate.v1",
+                    "high",
+                    "development and retained test",
+                    "Review physical identities and partition assignment before fitting",
+                )
+            };
+            report.findings.push(Finding {
+                rule_id: rule.into(),
+                severity: severity.into(),
+                confidence: "unknown".into(),
+                evidence: vec![id.into()],
+                message: format!(
+                    "{} spectral pairs within the declared tolerance {} span {scope} in {} ({view_id} view); suspicion only",
+                    tally.pairs, options.tolerance, source.source_id
+                ),
+                action: action.into(),
+            });
+        }
     }
 }
 

@@ -72,6 +72,33 @@ type Knn = unsafe extern "C" fn(
     *mut i64,
     *mut f64,
 ) -> i32;
+type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
+type SnvDestroy = unsafe extern "C" fn(*mut c_void);
+type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
+type NoiseProxy = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const u8,
+    i32,
+    i32,
+    *mut f64,
+    *mut i64,
+    *mut f64,
+) -> i32;
+type TolerancePairs = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const MatrixView,
+    *const i64,
+    *const i64,
+    f64,
+    i64,
+    *mut i64,
+    *mut f64,
+    *mut u8,
+    *mut u8,
+    *mut i64,
+) -> i32;
 type Hdbscan = unsafe extern "C" fn(
     *mut c_void,
     *const MatrixView,
@@ -107,6 +134,11 @@ pub struct NativeMethodsProvider {
     local_fn: LocalContrast,
     hdbscan_fn: Hdbscan,
     ari_fn: Ari,
+    snv_create: SnvCreate,
+    snv_destroy: SnvDestroy,
+    snv_transform: SnvTransform,
+    noise_fn: NoiseProxy,
+    pairs_fn: TolerancePairs,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -149,10 +181,25 @@ impl NativeMethodsProvider {
                 .get::<LocalContrast>(b"n4m_preflight_local_contrast\0")
                 .map_err(err)?;
             let hdbscan_fn = *library
-                .get::<Hdbscan>(b"n4m_preflight_hdbscan\0")
+                .get::<Hdbscan>(b"n4m_cluster_hdbscan\0")
                 .map_err(err)?;
             let ari_fn = *library
                 .get::<Ari>(b"n4m_preflight_adjusted_rand_index\0")
+                .map_err(err)?;
+            let snv_create = *library
+                .get::<SnvCreate>(b"n4m_transform_snv_create\0")
+                .map_err(err)?;
+            let snv_destroy = *library
+                .get::<SnvDestroy>(b"n4m_transform_snv_destroy\0")
+                .map_err(err)?;
+            let snv_transform = *library
+                .get::<SnvTransform>(b"n4m_transform_snv_transform\0")
+                .map_err(err)?;
+            let noise_fn = *library
+                .get::<NoiseProxy>(b"n4m_preflight_noise_proxy_compute\0")
+                .map_err(err)?;
+            let pairs_fn = *library
+                .get::<TolerancePairs>(b"n4m_preflight_pairs_within_tolerance\0")
                 .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
@@ -177,6 +224,11 @@ impl NativeMethodsProvider {
                 summary_fn,
                 knn_fn,
                 local_fn,
+                snv_create,
+                snv_destroy,
+                snv_transform,
+                noise_fn,
+                pairs_fn,
                 hdbscan_fn,
                 ari_fn,
                 version,
@@ -228,23 +280,15 @@ impl Drop for NativeMethodsProvider {
 }
 impl MethodsProvider for NativeMethodsProvider {
     fn capabilities(&self) -> Vec<Capability> {
-        [
-            "methods.pca",
-            "methods.repeatability",
-            "methods.summary",
-            "methods.nearest_neighbors",
-            "methods.local_contrast",
-            "methods.hdbscan",
-            "methods.adjusted_rand_index",
-        ]
-        .iter()
-        .map(|id| Capability {
-            capability_id: (*id).into(),
-            available: true,
-            qualified: false,
-            reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
-        })
-        .collect()
+        METHODS_CAPABILITY_IDS
+            .iter()
+            .map(|id| Capability {
+                capability_id: (*id).into(),
+                available: true,
+                qualified: false,
+                reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
+            })
+            .collect()
     }
     fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
         let (mut x, n, p) = flatten(&r.matrix)?;
@@ -517,6 +561,159 @@ impl MethodsProvider for NativeMethodsProvider {
         })?;
         Ok(AdjustedRandDiagnostics {
             ari: ari.is_finite().then_some(ari),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn snv(&self, r: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        let mut out = vec![0.; n * p];
+        let xv = MatrixView::new(&mut x, n, p);
+        let ov = MatrixView::new(&mut out, n, p);
+        let mut handle = std::ptr::null_mut();
+        // SAFETY: Methods SNV with mean and population SD (ddof 0), the same
+        // operator the WASM registry builds; the handle is destroyed below.
+        let status = unsafe {
+            let created = (self.snv_create)(&mut handle, 1, 1, 0);
+            if created != 0 || handle.is_null() {
+                created.max(1)
+            } else {
+                let status = (self.snv_transform)(handle, xv, ov);
+                (self.snv_destroy)(handle);
+                status
+            }
+        };
+        if status != 0 {
+            return Err(ProviderError(format!("METHODS_STATUS_{status}")));
+        }
+        Ok(SnvDiagnostics {
+            matrix: out.chunks(p).map(<[f64]>::to_vec).collect(),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn noise_proxy(&self, r: &NoiseProxyRequest) -> Result<NoiseProxyDiagnostics, ProviderError> {
+        let n = r.matrix.len();
+        let p = r.matrix.first().map_or(0, Vec::len);
+        if r.valid_mask.len() != n
+            || r.valid_mask.iter().any(|row| row.len() != p)
+            || r.window_length > i32::MAX as usize
+            || r.polyorder > i32::MAX as usize
+        {
+            return Err(ProviderError("INVALID_NOISE_PROXY_SHAPE".into()));
+        }
+        // Masked cells are never read by Methods; zero keeps the buffer finite.
+        let masked: Vec<Vec<f64>> = r
+            .matrix
+            .iter()
+            .zip(&r.valid_mask)
+            .map(|(row, mask)| {
+                row.iter()
+                    .zip(mask)
+                    .map(|(v, ok)| if *ok { *v } else { 0.0 })
+                    .collect()
+            })
+            .collect();
+        let (mut x, n, p) = flatten(&masked)?;
+        let mask: Vec<u8> = r
+            .valid_mask
+            .iter()
+            .flatten()
+            .map(|v| u8::from(*v))
+            .collect();
+        let mut band = vec![f64::NAN; p];
+        let mut counts = vec![0i64; p];
+        let mut out = [f64::NAN; 2];
+        let xv = MatrixView::new(&mut x, n, p);
+        self.check(unsafe {
+            (self.noise_fn)(
+                self.context,
+                &xv,
+                mask.as_ptr(),
+                r.window_length as i32,
+                r.polyorder as i32,
+                band.as_mut_ptr(),
+                counts.as_mut_ptr(),
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(NoiseProxyDiagnostics {
+            band_noise: band
+                .into_iter()
+                .map(|v| v.is_finite().then_some(v))
+                .collect(),
+            band_counts: counts.into_iter().map(|v| v.max(0) as usize).collect(),
+            pooled: out[0].is_finite().then_some(out[0]),
+            residual_gain: out[1],
+            backend_version: self.version.clone(),
+        })
+    }
+    fn tolerance_pairs(
+        &self,
+        r: &TolerancePairsRequest,
+    ) -> Result<TolerancePairsDiagnostics, ProviderError> {
+        let (mut query, n, p) = flatten(&r.query)?;
+        let mut reference = r.reference.as_deref().map(flatten).transpose()?;
+        let nr = reference.as_ref().map_or(n, |(_, rows, _)| *rows);
+        let work = match &reference {
+            None => n.checked_mul(n.saturating_sub(1)).map(|v| v / 2),
+            Some(_) => n.checked_mul(nr),
+        }
+        .and_then(|v| v.checked_mul(p));
+        if reference.as_ref().is_some_and(|(_, _, pr)| *pr != p)
+            || r.query_group_ids.len() != n
+            || r.reference_group_ids.len() != if reference.is_some() { nr } else { 0 }
+            || r.max_pairs > 1_000_000
+            || work.is_none_or(|v| v > 250_000_000)
+        {
+            return Err(ProviderError(
+                "TOLERANCE_PAIRS_SHAPE_OR_WORK_BUDGET_EXCEEDED".into(),
+            ));
+        }
+        let qv = MatrixView::new(&mut query, n, p);
+        let rv = reference
+            .as_mut()
+            .map(|(data, rows, cols)| MatrixView::new(data, *rows, *cols));
+        let mut pairs = vec![0i64; 2 * r.max_pairs];
+        let mut distances = vec![f64::NAN; r.max_pairs];
+        let mut query_flags = vec![0u8; n];
+        let mut reference_flags = vec![0u8; if rv.is_some() { nr } else { 0 }];
+        let mut counts = [0i64; 2];
+        self.check(unsafe {
+            (self.pairs_fn)(
+                self.context,
+                &qv,
+                rv.as_ref()
+                    .map_or(std::ptr::null(), |v| v as *const MatrixView),
+                r.query_group_ids.as_ptr(),
+                if rv.is_some() {
+                    r.reference_group_ids.as_ptr()
+                } else {
+                    std::ptr::null()
+                },
+                r.tolerance,
+                r.max_pairs as i64,
+                pairs.as_mut_ptr(),
+                distances.as_mut_ptr(),
+                query_flags.as_mut_ptr(),
+                if rv.is_some() {
+                    reference_flags.as_mut_ptr()
+                } else {
+                    std::ptr::null_mut()
+                },
+                counts.as_mut_ptr(),
+            )
+        })?;
+        let total = counts[0].max(0) as usize;
+        let listed = total.min(r.max_pairs);
+        Ok(TolerancePairsDiagnostics {
+            pairs: pairs[..2 * listed]
+                .chunks(2)
+                .map(|v| [v[0].max(0) as usize, v[1].max(0) as usize])
+                .collect(),
+            distances: distances[..listed].to_vec(),
+            query_flags: query_flags.into_iter().map(|v| v != 0).collect(),
+            reference_flags: reference_flags.into_iter().map(|v| v != 0).collect(),
+            total_pairs: total,
+            candidate_pairs: counts[1].max(0) as usize,
             backend_version: self.version.clone(),
         })
     }

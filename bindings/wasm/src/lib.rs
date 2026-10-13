@@ -73,6 +73,18 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<AdjustedRandDiagnostics, ProviderError> {
         self.invoke("adjusted_rand_index", r)
     }
+    fn snv(&self, r: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
+        self.invoke("snv", r)
+    }
+    fn noise_proxy(&self, r: &NoiseProxyRequest) -> Result<NoiseProxyDiagnostics, ProviderError> {
+        self.invoke("noise_proxy", r)
+    }
+    fn tolerance_pairs(
+        &self,
+        r: &TolerancePairsRequest,
+    ) -> Result<TolerancePairsDiagnostics, ProviderError> {
+        self.invoke("tolerance_pairs", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {

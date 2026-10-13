@@ -25,7 +25,7 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -65,7 +65,7 @@ export async function createQualificationRuntime(options = {}) {
       case 'hdbscan': {
         const x = matrix(request.matrix);
         if (x.rows * x.rows * x.cols > 2.5e9) throw new RangeError('HDBSCAN_WORK_BUDGET');
-        const output = methods.preflightHdbscan(x, { minClusterSize: request.min_cluster_size, minSamples: request.min_samples, selection: request.selection, allowSingleCluster: request.allow_single_cluster });
+        const output = methods.clusterHdbscan(x, { minClusterSize: request.min_cluster_size, minSamples: request.min_samples, selection: request.selection, allowSingleCluster: request.allow_single_cluster });
         const tree = output.tree.map(node => ({
           parent: node.parent < 0 ? null : node.parent, size: node.size, label: node.label < 0 ? null : node.label,
           birth_distance: node.parent < 0 ? null : 1 / node.lambdaBirth, death_distance: 1 / node.lambdaDeath, stability: nullable(node.stability),
@@ -76,6 +76,32 @@ export async function createQualificationRuntime(options = {}) {
       case 'adjusted_rand_index': {
         if (request.labels_a.length > 10_000_000) throw new RangeError('ARI_WORK_BUDGET');
         result = { ari: nullable(methods.preflightAdjustedRandIndex(request.labels_a, request.labels_b)), backend_version };
+        break;
+      }
+      case 'snv': {
+        // Methods registry SNV: row mean and population SD (ddof 0).
+        const x = matrix(request.matrix);
+        const op = methods.ppCreate('StandardNormalVariate');
+        try {
+          result = { matrix: nested(methods.ppTransform(op, x.data, x.rows, x.cols), x.cols), backend_version };
+        } finally {
+          methods.ppDestroy(op);
+        }
+        break;
+      }
+      case 'noise_proxy': {
+        const x = matrix(request.matrix);
+        const output = methods.preflightNoiseProxy(x, request.window_length, request.polyorder, Uint8Array.from(request.valid_mask.flat(), Boolean));
+        result = { band_noise: Array.from(output.bandNoise, nullable), band_counts: output.bandCounts, pooled: nullable(output.pooled), residual_gain: output.gain, backend_version };
+        break;
+      }
+      case 'tolerance_pairs': {
+        const query = matrix(request.query);
+        const reference = request.reference ? matrix(request.reference) : undefined;
+        const n = query.rows, work = reference ? n * reference.rows : n * (n - 1) / 2;
+        if (work * query.cols > 250_000_000 || request.max_pairs > 1_000_000) throw new RangeError('TOLERANCE_PAIRS_WORK_BUDGET');
+        const output = methods.preflightPairsWithinTolerance(query, request.tolerance, request.max_pairs, reference, request.query_group_ids, reference ? request.reference_group_ids : undefined);
+        result = { pairs: nested(output.pairs, 2), distances: Array.from(output.distances), query_flags: Array.from(output.queryFlags, Boolean), reference_flags: Array.from(output.referenceFlags, Boolean), total_pairs: output.totalPairs, candidate_pairs: output.candidatePairs, backend_version };
         break;
       }
       default: throw new Error(`METHODS_OPERATION_UNSUPPORTED: ${operation}`);
