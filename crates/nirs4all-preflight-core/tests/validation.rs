@@ -397,3 +397,61 @@ fn reserved_y_content_stays_opaque_at_parse_time() {
     let error = serde_json::from_value::<QualificationInput>(value).unwrap_err();
     assert!(error.to_string().contains("targets[0].values[0].value"));
 }
+
+#[test]
+fn reserved_y_tokens_are_never_decoded_from_json_text() {
+    // Review P0: textual tokens a typed parser rejects (1e400) or would
+    // decode (nested objects) stay unread for retained-test references.
+    let mut value = serde_json::to_value(fixture()).unwrap();
+    value["targets"] = serde_json::json!([{
+    "target_id": "y", "kind": "continuous",
+    "values": [
+        {"sample_id": "a", "value": 1.5, "status": "exact"},
+        {"sample_id": "b", "value": "__V__", "category": "__C__", "status": "exact"}
+    ]}]);
+    let text = serde_json::to_string(&value).unwrap();
+    for (v, c) in [
+        ("1e400", r#"{"x":1e400}"#),
+        (r#"{"x":1e400}"#, "1e400"),
+        ("-1e400", "[1e999]"),
+    ] {
+        let json = text.replace(r#""__V__""#, v).replace(r#""__C__""#, c);
+        let input: QualificationInput = serde_json::from_str(&json).unwrap();
+        assert!(validate_input(&input).valid);
+        assert!(input.targets[0].values[1].value.is_none());
+    }
+    // A development value out of the f64 range is still rejected.
+    let json = text.replace(r#""__V__""#, "1").replace("1.5", "1e400");
+    let error = serde_json::from_str::<QualificationInput>(&json).unwrap_err();
+    assert!(error.to_string().contains("targets[0].values[0].value"));
+}
+
+#[test]
+fn identity_keys_are_structured_and_cannot_collide() {
+    // Review P0: target "a:b" / group "c" and target "a" / group "b:c" are
+    // different references; they must not link development and test.
+    let mut x = fixture();
+    x.targets = vec![
+        Target {
+            target_id: "a:b".into(),
+            kind: TargetKind::Continuous,
+            values: vec![reference("a", "c")],
+            unit: None,
+        },
+        Target {
+            target_id: "a".into(),
+            kind: TargetKind::Continuous,
+            values: vec![reference("b", "b:c")],
+            unit: None,
+        },
+    ];
+    assert!(validate_input(&x).valid);
+    // A physical ID equal to another sample's ID is a different identity.
+    x.samples[1].physical_sample_id = Some("a".into());
+    assert!(validate_input(&x).valid);
+    // A group genuinely shared inside one target still blocks.
+    x.targets[1].values.push(reference("a", "b:c"));
+    let result = validate_input(&x);
+    assert!(!result.valid);
+    assert!(result.issues.iter().any(|i| i.code == "REFERENCE_LEAKAGE"));
+}

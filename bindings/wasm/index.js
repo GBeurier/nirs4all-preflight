@@ -153,6 +153,10 @@ export async function createQualificationRuntime(options = {}) {
   return {
     analyze: input => JSON.parse(rust.analyze_json(JSON.stringify(seedAsDecimal(input)), callback)),
     validate: input => JSON.parse(rust.validate_json(JSON.stringify(seedAsDecimal(input)))),
+    // JSON-text entry points: the text reaches the Rust parser unchanged, so
+    // nothing is rounded or decoded by JavaScript (u64 seeds, reserved Y).
+    analyzeJson: text => rust.analyze_json(text, callback),
+    validateJson: text => rust.validate_json(text),
     reportHtml: report => rust.report_html_json(JSON.stringify(report)),
     capabilities: () => JSON.parse(rust.capabilities_json(callback)),
   };

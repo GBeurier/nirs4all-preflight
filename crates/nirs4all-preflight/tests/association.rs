@@ -1043,3 +1043,75 @@ fn real_methods_example_matches_the_wasm_goldens() {
     let t = metric(&report, "association.metadata_target_test", "instrument");
     assert_eq!(plan(t)["seed"], "11028598969094618448");
 }
+
+#[test]
+fn real_methods_association_is_invariant_over_the_double_range() {
+    // Robustness rule: metadata and targets scaled by 2^k (subnormals to
+    // 2^1000) or shifted by 1e300 give the same effects, counts and plans.
+    let Some(provider) = native() else {
+        return;
+    };
+    let summary = |input: &QualificationInput| {
+        let report = analyze(input, &provider);
+        ["instrument", "site", "temperature"]
+            .iter()
+            .map(|name| {
+                let d = metric(&report, "association.metadata_target", name);
+                let t = metric(&report, "association.metadata_target_test", name);
+                assert!(
+                    d.value.is_some(),
+                    "{name}: {:?} {:?}",
+                    d.status,
+                    d.reason_code
+                );
+                assert!(
+                    t.value.is_some(),
+                    "{name}: {:?} {:?}",
+                    t.status,
+                    t.reason_code
+                );
+                (
+                    d.value.as_ref().unwrap()["effect_size"].as_f64().unwrap(),
+                    t.value.as_ref().unwrap()["n_at_least_observed"].clone(),
+                    plan(t)["exact_minimum_p_value"].clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Integer-valued data (Y * 100, temperature * 10) stay exactly
+    // representable at every scale, subnormals included.
+    let y: Vec<f64> = D_Y.iter().map(|v| (v * 100.0).round()).collect();
+    let t: Vec<f64> = TEMPERATURE.iter().map(|v| (v * 10.0).round()).collect();
+    let base = with_typed_metadata(dataset(&D_CODES, &y, TargetKind::Continuous), &SITE, &t);
+    let reference = summary(&base);
+    // 2^k as two exact half powers: powi(-1060) alone underflows.
+    let pow2 = |k: i32| 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+    for k in [-1060, -1022, -500, -100, 100, 500, 1000] {
+        let scale = |v: f64| v * 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+        let mut input = base.clone();
+        for v in &mut input.targets[0].values {
+            v.value = v.value.map(scale);
+        }
+        for row in input.metadata.values.values_mut() {
+            if let Some(Some(MetadataValue::Number(t))) = row.get_mut("temperature") {
+                *t *= pow2(k.min(900));
+            }
+        }
+        let got = summary(&input);
+        for (a, b) in got.iter().zip(&reference) {
+            assert!((a.0 - b.0).abs() <= 1e-12 * b.0.abs(), "k={k}");
+            assert_eq!(a.1, b.1, "k={k}");
+            assert_eq!(a.2, b.2, "k={k}");
+        }
+    }
+    // Translation of the covariate by 1e300 (a multiple of its ulp 2^944).
+    let mut input = base.clone();
+    for row in input.metadata.values.values_mut() {
+        if let Some(Some(MetadataValue::Number(t))) = row.get_mut("temperature") {
+            *t = 1e300 + *t * 2f64.powi(944);
+        }
+    }
+    let got = summary(&input);
+    assert!((got[2].0 - reference[2].0).abs() <= 1e-12);
+    assert_eq!(got[2].1, reference[2].1);
+}

@@ -553,6 +553,13 @@ fn analyze_pair(
         "unit_weighting".into(),
         json!("one_vote_per_independence_unit"),
     );
+    metric.parameters.insert(
+        "numerical_domain".into(),
+        json!({"inputs": "finite_f64",
+               "invariance": "scale_2k_and_translation_up_to_input_rounding",
+               "effect_absolute_error": "order_n_times_f64_epsilon",
+               "unrepresentable_statistic": "explicit_provider_error"}),
+    );
     if input.options.independence_unit == IndependenceUnit::Unknown {
         metric.parameters.insert(
             "independence_assumption".into(),

@@ -58,17 +58,38 @@ test('WASM keeps u64 root seeds exact',async()=>{
   assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:9007199254740993}}),/SEED_NOT_SAFE_INTEGER/);
   assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:'18446744073709551616'}}));
 });
-// Retained-test Y stays opaque through the JSON facade (review P0).
+// Retained-test Y stays opaque through the JSON facade (review P0). Inputs
+// are JSON text, so tokens a typed parser rejects (1e400) reach the engine.
 test('WASM report is invariant to reserved Y content',async()=>{
-  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
-  const outputs=[9.9,'do-not-read',{nested:[1]},null,true].map(reserved=>{
-    const input=structuredClone(fixture);
-    const t00=input.targets[0].values.find(v=>v.sample_id==='t00');
-    t00.value=reserved; t00.category=reserved;
-    assert.equal(runtime.validate(input).valid,true);
-    return JSON.stringify(runtime.analyze(input));
+  const text=await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8');
+  const fixture=JSON.parse(text);
+  const t00=fixture.targets[0].values.find(v=>v.sample_id==='t00');
+  t00.value='__RESERVED__'; t00.category='__RESERVED__';
+  const template=JSON.stringify(fixture);
+  const outputs=['9.9','1e400','-1e400','{"x":1e400}','"do-not-read"','[1,{"n":[true]}]','null','true'].map(token=>{
+    const json=template.replaceAll('"__RESERVED__"',token);
+    assert.equal(JSON.parse(runtime.validateJson(json)).valid,true,token);
+    return runtime.analyzeJson(json);
   });
   assert.ok(outputs.every(o=>o===outputs[0]));
+});
+// Robustness rule: the covariate scaled by 2^k (subnormal to 2^1000) or
+// shifted by 1e300 gives the same Spearman rho, count and plan.
+test('WASM association is invariant over the double range',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const run=map=>{
+    const input=structuredClone(fixture);
+    for(const row of Object.values(input.metadata.values)) row.temperature=map(Math.round(row.temperature*10));
+    const r=runtime.analyze(input);
+    const find=id=>r.metrics.find(m=>m.metric_id===id&&m.parameters.metadata==='temperature');
+    return [find('association.metadata_target').value.effect_size,find('association.metadata_target_test').value.n_at_least_observed];
+  };
+  const reference=run(t=>t);
+  for(const map of [t=>t*2**-1060,t=>t*2**-1022,t=>t*2**1000,t=>1e300+t*2**944]){
+    const [rho,b]=run(map);
+    assert.ok(Math.abs(rho-reference[0])<=1e-12*Math.abs(reference[0]));
+    assert.equal(b,reference[1]);
+  }
 });
 // A development row, a prediction bridge and a retained-test row linked by
 // a physical sample then a reference group form one component (review P0).

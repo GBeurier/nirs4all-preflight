@@ -31,7 +31,9 @@ pub struct QualificationInput {
 }
 
 /// Wire form of [`QualificationInput`]: identical fields, with target
-/// values and categories kept as opaque JSON.
+/// values and categories kept as unparsed JSON text (`RawValue`): the
+/// tokenizer only skips them, so no number, string or nested content of a
+/// retained-test reference is ever decoded.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawQualificationInput {
@@ -63,9 +65,9 @@ struct RawTarget {
 struct RawTargetValue {
     sample_id: String,
     #[serde(default)]
-    value: Option<Value>,
+    value: Option<Box<serde_json::value::RawValue>>,
     #[serde(default)]
-    category: Option<Value>,
+    category: Option<Box<serde_json::value::RawValue>>,
     status: ReferenceStatus,
     #[serde(default)]
     reference_id: Option<String>,
@@ -90,20 +92,15 @@ impl TryFrom<RawQualificationInput> for QualificationInput {
                     (None, None)
                 } else {
                     let path = format!("targets[{ti}].values[{vi}]");
-                    let value = match v.value {
-                        None | Some(Value::Null) => None,
-                        Some(Value::Number(n)) => Some(
-                            n.as_f64()
-                                .ok_or_else(|| format!("{path}.value: not representable as f64"))?,
-                        ),
-                        Some(_) => return Err(format!("{path}.value: expected a number or null")),
+                    let value = match &v.value {
+                        None => None,
+                        Some(raw) => serde_json::from_str::<Option<f64>>(raw.get())
+                            .map_err(|e| format!("{path}.value: {e}"))?,
                     };
-                    let category = match v.category {
-                        None | Some(Value::Null) => None,
-                        Some(Value::String(c)) => Some(c),
-                        Some(_) => {
-                            return Err(format!("{path}.category: expected a string or null"))
-                        }
+                    let category = match &v.category {
+                        None => None,
+                        Some(raw) => serde_json::from_str::<Option<String>>(raw.get())
+                            .map_err(|e| format!("{path}.category: {e}"))?,
                     };
                     (value, category)
                 };
@@ -889,7 +886,10 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
 /// and the `reference_group_id` of every value of `targets` (all partitions
 /// and statuses; identity fields only, never Y content). Returns, for each
 /// sample index, the smallest sample index of its component.
-pub fn independence_components(input: &QualificationInput, targets: &[&Target]) -> Vec<usize> {
+pub fn independence_components<'a>(
+    input: &'a QualificationInput,
+    targets: &[&'a Target],
+) -> Vec<usize> {
     identity_components(
         input,
         targets,
@@ -897,10 +897,22 @@ pub fn independence_components(input: &QualificationInput, targets: &[&Target]) 
     )
 }
 
+/// Structured identity key: each kind and each field stays separate, so no
+/// identifier containing a separator can collide with another key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IdentityKey<'a> {
+    Sample(&'a str),
+    Physical(&'a str),
+    Individual(&'a str),
+    Group(&'a str),
+    /// (target_id, reference_group_id): reference groups are per target.
+    Reference(&'a str, &'a str),
+}
+
 /// Union-find over all samples; `groups` adds `independence_group` links.
-fn identity_components(
-    input: &QualificationInput,
-    targets: &[&Target],
+fn identity_components<'a>(
+    input: &'a QualificationInput,
+    targets: &[&'a Target],
     groups: bool,
 ) -> Vec<usize> {
     fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -917,8 +929,8 @@ fn identity_components(
         .map(|(i, s)| (s.sample_id.as_str(), i))
         .collect();
     let mut parent: Vec<usize> = (0..input.samples.len()).collect();
-    let mut first = HashMap::<String, usize>::new();
-    let mut link = |key: String, i: usize, parent: &mut Vec<usize>| {
+    let mut first = HashMap::<IdentityKey<'a>, usize>::new();
+    let mut link = |key: IdentityKey<'a>, i: usize, parent: &mut Vec<usize>| {
         if let Some(&j) = first.get(&key) {
             let (a, b) = (root(parent, i), root(parent, j));
             parent[a.max(b)] = a.min(b);
@@ -927,19 +939,19 @@ fn identity_components(
         }
     };
     for (i, sample) in input.samples.iter().enumerate() {
-        link(format!("sample:{}", sample.sample_id), i, &mut parent);
+        link(IdentityKey::Sample(&sample.sample_id), i, &mut parent);
         if let Some(v) = &sample.physical_sample_id {
-            link(format!("physical:{v}"), i, &mut parent);
+            link(IdentityKey::Physical(v), i, &mut parent);
         }
         if let Some(v) = &sample.individual_id {
-            link(format!("individual:{v}"), i, &mut parent);
+            link(IdentityKey::Individual(v), i, &mut parent);
         }
         if let Some(v) = &sample.augmentation_parent_id {
-            link(format!("sample:{v}"), i, &mut parent);
+            link(IdentityKey::Sample(v), i, &mut parent);
         }
         if groups {
             if let Some(v) = &sample.independence_group {
-                link(format!("group:{v}"), i, &mut parent);
+                link(IdentityKey::Group(v), i, &mut parent);
             }
         }
     }
@@ -950,7 +962,7 @@ fn identity_components(
                 index.get(value.sample_id.as_str()),
             ) {
                 link(
-                    format!("reference:{}:{group}", target.target_id),
+                    IdentityKey::Reference(&target.target_id, group),
                     i,
                     &mut parent,
                 );

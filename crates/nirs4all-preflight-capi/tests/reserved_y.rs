@@ -3,25 +3,28 @@
 use nirs4all_preflight_capi::*;
 use serde_json::{json, Value};
 
+/// Textual JSON variants: the reserved value and category are spliced as
+/// raw tokens, including ones a typed parser rejects (`1e400`).
 fn variants() -> Vec<Vec<u8>> {
-    let base: Value =
+    let mut base: Value =
         serde_json::from_str(include_str!("../../../examples/metadata_association.json")).unwrap();
+    let values = base["targets"][0]["values"].as_array_mut().unwrap();
+    let t00 = values.iter_mut().find(|v| v["sample_id"] == "t00").unwrap();
+    t00["value"] = json!("__RESERVED__");
+    t00["category"] = json!("__RESERVED__");
+    let text = serde_json::to_string(&base).unwrap();
     [
-        json!(9.9),
-        json!("do-not-read"),
-        json!({"nested": [1, 2]}),
-        Value::Null,
-        json!(true),
+        "9.9",
+        "1e400",
+        "-1e400",
+        r#"{"x":1e400}"#,
+        r#""do-not-read""#,
+        r#"[1,{"nested":[true,null]}]"#,
+        "null",
+        "true",
     ]
     .into_iter()
-    .map(|reserved| {
-        let mut input = base.clone();
-        let values = input["targets"][0]["values"].as_array_mut().unwrap();
-        let t00 = values.iter_mut().find(|v| v["sample_id"] == "t00").unwrap();
-        t00["value"] = reserved.clone();
-        t00["category"] = reserved;
-        serde_json::to_vec(&input).unwrap()
-    })
+    .map(|token| text.replace(r#""__RESERVED__""#, token).into_bytes())
     .collect()
 }
 
@@ -55,10 +58,15 @@ fn c_abi_report_is_invariant_to_reserved_y_content() {
         assert!(outputs.iter().all(|o| o.0 == 0), "{:?}", outputs[1]);
         assert!(outputs.iter().all(|o| *o == outputs[0]));
     }
-    // Development Y keeps its typed check.
-    let mut input: Value = serde_json::from_slice(&inputs[0]).unwrap();
-    input["targets"][0]["values"][0]["value"] = json!("not a number");
-    let (status, text) = call(n4pf_validate_json, &serde_json::to_vec(&input).unwrap());
-    assert_eq!(status, 1);
-    assert!(text.contains("targets[0].values[0].value"));
+    // Development Y keeps its typed check, including the range of numbers.
+    for bad in [json!("not a number"), json!("1e400")] {
+        let mut input: Value = serde_json::from_slice(&inputs[0]).unwrap();
+        input["targets"][0]["values"][0]["value"] = bad;
+        let text = serde_json::to_string(&input)
+            .unwrap()
+            .replace(r#""1e400""#, "1e400");
+        let (status, out) = call(n4pf_validate_json, text.as_bytes());
+        assert_eq!(status, 1);
+        assert!(out.contains("targets[0].values[0].value"), "{out}");
+    }
 }
