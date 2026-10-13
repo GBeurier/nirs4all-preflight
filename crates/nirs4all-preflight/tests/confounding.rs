@@ -296,7 +296,8 @@ fn aliased_factors_are_not_identifiable_separately() {
         .as_array()
         .unwrap();
     for f in factors {
-        assert_eq!(f["aliased_with_other_factors"], true);
+        assert_eq!(f["aliased_with_other_factor_cells"], true);
+        assert_eq!(f["identifiable_under_additive_model"], false);
         assert_eq!(f["df_identifiable_given_other_factors"], 0);
         assert_eq!(f["df_nominal"], 1);
     }
@@ -691,7 +692,7 @@ fn native_engine_partitions_balanced_crossed_design_like_closed_forms() {
     );
     let design = find(&report, "confounding.design", None);
     assert_eq!(
-        design.value.as_ref().unwrap()["factors"][0]["aliased_with_other_factors"],
+        design.value.as_ref().unwrap()["factors"][0]["aliased_with_other_factor_cells"],
         false
     );
     // A 0.6 instrument shift against 0.05 noise: the conditional test is
@@ -1210,3 +1211,207 @@ fn native_freedman_lane_matches_independent_refit_oracle() {
 
 /// Freedman-Lane counts b on examples/confounding.json (NumPy 2.2.6 oracle).
 const FREEDMAN_LANE_GOLDENS: [(&str, usize); 2] = [("instrument", 0), ("campaign", 101)];
+
+#[test]
+fn native_xor_factor_is_aliased_by_cells_but_identifiable_additively() {
+    // Astra P1: instrument = campaign XOR site. Every campaign x site cell
+    // holds one instrument (aliased relative to cells, interactions
+    // included), but 1 + campaign + site has rank 3 and adding instrument
+    // gives rank 4: identifiable under the additive model.
+    let Some(provider) = native() else {
+        return;
+    };
+    let mut rows = Vec::new();
+    let mut sites = Vec::new();
+    for cell in 0..4usize {
+        let (campaign, site) = (cell / 2, cell % 2);
+        let instrument = campaign ^ site;
+        for k in 0..6 {
+            let i = cell * 6 + k;
+            rows.push((
+                if instrument == 1 { "A1" } else { "A0" },
+                if campaign == 1 { "b1" } else { "b0" },
+                (0..3)
+                    .map(|j| {
+                        1.0 + 0.8 * instrument as f64 * [1.0, 0.5, 0.0][j]
+                            + 0.05 * (campaign + site) as f64
+                            + wobble(i, j)
+                    })
+                    .collect(),
+            ));
+            sites.push(if site == 1 { "c1" } else { "c0" });
+        }
+    }
+    let mut input = dataset(&rows);
+    input.metadata = MetadataTable {
+        columns: vec![MetadataColumn {
+            name: "site".into(),
+            kind: MetadataKind::Categorical,
+            unit: None,
+        }],
+        values: input
+            .samples
+            .iter()
+            .zip(&sites)
+            .map(|(s, site)| {
+                (
+                    s.sample_id.clone(),
+                    BTreeMap::from([(
+                        "site".to_string(),
+                        Some(MetadataValue::Text(site.to_string())),
+                    )]),
+                )
+            })
+            .collect(),
+    };
+    assert!(validate_input(&input).valid);
+    let report = analyze(&input, &provider);
+    let design = find(&report, "confounding.design", None);
+    let instrument = &design.value.as_ref().unwrap()["factors"][0];
+    assert_eq!(instrument["factor"], "instrument");
+    assert_eq!(instrument["aliased_with_other_factor_cells"], true);
+    assert_eq!(instrument["identifiable_under_additive_model"], true);
+    assert_eq!(instrument["df_identifiable_given_other_main_effects"], 1);
+    let cells = find(
+        &report,
+        "confounding.permanova_conditional_test",
+        Some("instrument"),
+    );
+    assert_eq!(reason(cells), Some("FACTOR_ALIASED_WITH_OTHER_FACTORS"));
+    let fl = find(
+        &report,
+        "confounding.permanova_freedman_lane_test",
+        Some("instrument"),
+    );
+    assert!(matches!(fl.status, Availability::Computed));
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule_id == "confounding.aliased_with_other_cells.v1"
+            && f.message.contains("instrument")
+            && f.severity == "info"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|f| f.rule_id == "confounding.aliased_factors.v1"
+            && f.message.contains(", the effect of instrument")));
+}
+
+/// Records the coordinates sent to PERMANOVA; delegates everything else.
+struct Recording(std::cell::RefCell<Vec<Vec<Vec<f64>>>>);
+impl MethodsProvider for Recording {
+    fn capabilities(&self) -> Vec<Capability> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .capabilities()
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .pca(r)
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
+    }
+    fn permanova(&self, r: &PermanovaRequest) -> Result<PermanovaDiagnostics, ProviderError> {
+        self.0.borrow_mut().push(r.matrix.clone());
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .permanova(r)
+    }
+}
+
+#[test]
+fn unit_coordinates_are_running_means_that_cannot_overflow() {
+    // Two rows of 1.7e308 in one group unit: the mean is 1.7e308, while a
+    // plain sum would overflow to infinity.
+    let mut input = crossed(6, false);
+    input.options.independence_unit = IndependenceUnit::Group;
+    for (i, sample) in input.samples.iter_mut().enumerate() {
+        sample.independence_group = Some(format!("g{}", i / 2));
+    }
+    for row in input.sources[0].x.iter_mut().take(2) {
+        *row = vec![Some(1.7e308), Some(1.0), Some(1.0)];
+    }
+    let provider = Recording(Default::default());
+    analyze(&input, &provider);
+    let calls = provider.0.borrow();
+    assert!(!calls.is_empty());
+    assert_eq!(calls[0][0][0], 1.7e308);
+    assert!(calls.iter().flatten().flatten().all(|v| v.is_finite()));
+}
+
+#[test]
+fn native_engine_partition_is_scale_invariant_or_fails_explicitly() {
+    // Robustness rule at engine level: spectra scaled by 2^k give the same
+    // R2, pseudo-F and permutation counts, or an explicit error status.
+    // k = -1000 is excluded: the canonical PCA (n4m_preflight_pca_compute,
+    // not part of this protocol) then returns zero eigenvalues and the
+    // structure is reported as ZERO_NUMERICAL_RANK before confounding runs.
+    let Some(provider) = native() else {
+        return;
+    };
+    let base = analyze(&crossed(6, false), &provider);
+    let summary = |report: &QualificationReport| {
+        let p = find(report, "confounding.variance_partition", None);
+        let tests: Vec<Value> = [
+            "confounding.permanova_marginal_test",
+            "confounding.permanova_freedman_lane_test",
+            "confounding.permdisp_test",
+        ]
+        .iter()
+        .map(|id| {
+            report
+                .metrics
+                .iter()
+                .find(|m| {
+                    m.metric_id == *id
+                        && m.parameters.get("factor") == Some(&Value::from("instrument"))
+                })
+                .and_then(|m| m.value.clone())
+                .unwrap_or(Value::Null)
+        })
+        .collect();
+        (p.status.clone(), p.value.clone(), tests)
+    };
+    let (status0, value0, tests0) = summary(&base);
+    assert!(matches!(status0, Availability::Computed));
+    let value0 = value0.unwrap();
+    for k in [-500, -100, 100, 500, 1000] {
+        let mut input = crossed(6, false);
+        for row in &mut input.sources[0].x {
+            for v in row.iter_mut() {
+                *v = v.map(|x| x * 2f64.powi(k));
+            }
+        }
+        let report = analyze(&input, &provider);
+        let (status, value, tests) = summary(&report);
+        match status {
+            Availability::Computed => {
+                let value = value.unwrap();
+                for (a, b) in value["factors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .zip(value0["factors"].as_array().unwrap())
+                {
+                    for key in ["r2_marginal", "pseudo_f_given_other_main_effects"] {
+                        let (x, y) = (a[key].as_f64().unwrap(), b[key].as_f64().unwrap());
+                        assert!((x - y).abs() <= 1e-8 * y.abs().max(1.0), "k={k} {key}");
+                    }
+                }
+                for (t, t0) in tests.iter().zip(&tests0) {
+                    assert_eq!(t["n_at_least_observed"], t0["n_at_least_observed"], "k={k}");
+                }
+            }
+            Availability::Error => {}
+            other => panic!("k={k}: unexpected status {other:?}"),
+        }
+    }
+}

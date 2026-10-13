@@ -131,6 +131,9 @@ test('WASM confounding matches the native engine goldens',async()=>{
   assert.equal(fl.value.n_at_least_observed,101);
   assert.ok(fl.parameters.permutation_plan.reduced_model.startsWith('intercept + main effects of instrument'));
   assert.equal(find('confounding.design').value.factors[0].df_identifiable_given_other_factors,1);
+  assert.equal(find('confounding.design').value.factors[0].aliased_with_other_factor_cells,false);
+  assert.equal(find('confounding.design').value.factors[0].identifiable_under_additive_model,true);
+  assert.match(find('confounding.variance_partition').parameters.numerical_domain,/METHODS_NUMERICAL_FAILURE/);
   assert.ok(runtime.capabilities().some(c=>c.capability_id==='confounding'&&c.available&&!c.qualified));
 });
 // A Methods numerical failure keeps its kind and reason across hosts (the

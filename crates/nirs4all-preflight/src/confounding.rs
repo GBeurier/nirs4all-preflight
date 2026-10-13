@@ -16,6 +16,8 @@ const FAMILY_ALPHA: f64 = 0.05;
 /// sqrt(f64::EPSILON), applied by Methods on the F scale: F_perm >= F_obs - tolerance (vegan).
 const TIE_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 const VIEW: &str = "canonical:centered";
+/// Domain of validity of the Methods kernels, published with each metric.
+const NUMERICAL_DOMAIN: &str = "columns centred before a power-of-two scale chosen from centred variation (constant columns and offsets have no effect); residual sums of squares from explicit residuals; sums of squares or distances not representable as doubles give status error METHODS_NUMERICAL_FAILURE";
 
 /// Categorical metadata factors in report order: `instrument`, `campaign`,
 /// then the declared categorical columns of the typed metadata map
@@ -50,6 +52,9 @@ fn seed(input: &QualificationInput, source_id: &str, test: &str, factor: &str) -
 fn tag(metric: &mut Metric, factor: Option<&str>) {
     metric.view_id = VIEW.into();
     metric.parameters.insert("protocol".into(), json!(PROTOCOL));
+    metric
+        .parameters
+        .insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
     if let Some(factor) = factor {
         metric.scope = "source_factor".into();
         metric.parameters.insert("factor".into(), json!(factor));
@@ -176,15 +181,13 @@ fn build_units<'a>(
                 distinct.first().expect("one level").to_string(),
             );
         }
+        // Running mean: never forms a sum that could overflow.
         let k = geometry.scores[unit[0]].len();
         let mut mean = vec![0.0; k];
-        for &row in &unit {
+        for (count, &row) in unit.iter().enumerate() {
             for (m, v) in mean.iter_mut().zip(&geometry.scores[row]) {
-                *m += v;
+                *m += (v - *m) / (count + 1) as f64;
             }
-        }
-        for m in &mut mean {
-            *m /= unit.len() as f64;
         }
         coordinates.push(mean);
         levels.push(unit_levels);
@@ -710,14 +713,25 @@ pub(crate) fn analyze(
                 json!(d.n_strata + d.df_term),
             );
             fields.insert("n_other_factor_cells".into(), json!(d.n_strata));
-            fields.insert("aliased_with_other_factors".into(), json!(d.df_term == 0));
+            // Aliasing is relative to the cells of the other factors
+            // (interactions included); the additive model can still separate
+            // the factor (for example A = B xor C).
+            let additive = freedman_lane
+                .get(factor)
+                .and_then(|(_, r)| r.as_ref().ok())
+                .map(|fl| fl.df_term > 0);
+            fields.insert(
+                "aliased_with_other_factor_cells".into(),
+                json!(d.df_term == 0),
+            );
+            fields.insert("identifiable_under_additive_model".into(), json!(additive));
             fields.insert(
                 "partially_confounded".into(),
                 json!(d.df_term > 0 && d.df_term < level_sets[factor].len() - 1),
             );
             fields.insert("determined_by".into(), json!(determined_by));
             if d.df_term == 0 {
-                aliased.push((factor, others.join(", ")));
+                aliased.push((factor, others.join(", "), additive));
             }
         } else if let Some((_, Err((_, reason)))) = conditional.get(factor) {
             fields.insert("df_nominal".into(), json!(level_sets[factor].len() - 1));
@@ -728,7 +742,8 @@ pub(crate) fn analyze(
                 "df_identifiable_given_other_factors".into(),
                 json!(level_sets[factor].len() - 1),
             );
-            fields.insert("aliased_with_other_factors".into(), json!(false));
+            fields.insert("aliased_with_other_factor_cells".into(), json!(false));
+            fields.insert("identifiable_under_additive_model".into(), json!(true));
         }
         factor_entries.push(entry);
     }
@@ -1296,7 +1311,7 @@ fn finish_family<'a>(
 
 fn findings(
     source_id: &str,
-    aliased: &[(&str, String)],
+    aliased: &[(&str, String, Option<bool>)],
     rejected: &[(TestKind, &str, f64, f64)],
     dispersion: &[(TestKind, &str, f64, f64)],
     report: &mut QualificationReport,
@@ -1310,21 +1325,40 @@ fn findings(
             evidence.push("association.metadata_target".into());
         }
     };
-    for (factor, others) in aliased {
-        let mut evidence = vec!["confounding.design".to_string()];
+    for (factor, others, additive) in aliased {
+        let mut evidence = vec![
+            "confounding.design".to_string(),
+            "confounding.permanova_freedman_lane_test".into(),
+        ];
         association_evidence(&mut evidence);
-        report.findings.push(Finding {
-            rule_id: "confounding.aliased_factors.v1".into(),
-            severity: "warning".into(),
-            confidence: "unknown".into(),
-            evidence,
-            message: format!(
-                "In {source_id}, the effect of {factor} on the spectral structure cannot be separated from {others}: within every level combination of {others} a single {factor} level occurs, so their separate effects are not identifiable"
-            ),
-            action: format!(
-                "Do not attribute structure to {factor} or {others} alone; complete the crossings (independence units measured under several {factor} levels within the same {others} levels) and check Y coverage of each crossing and the metadata-Y associations before choosing a validation split"
-            ),
-        });
+        let finding = if *additive == Some(true) {
+            Finding {
+                rule_id: "confounding.aliased_with_other_cells.v1".into(),
+                severity: "info".into(),
+                confidence: "unknown".into(),
+                evidence,
+                message: format!(
+                    "In {source_id}, {factor} is aliased with the cells of {others} (interactions included): every level combination of {others} holds a single {factor} level, so no within-cell comparison exists; under the additive main-effects model (no interaction) {factor} remains identifiable, and only the Freedman-Lane test can separate it, if interactions are assumed absent"
+                ),
+                action: format!(
+                    "Treat any separation of {factor} from {others} as conditional on the absence of interactions; complete the crossings within the cells of {others} before relying on it, and check Y coverage of each crossing and the metadata-Y associations before choosing a validation split"
+                ),
+            }
+        } else {
+            Finding {
+                rule_id: "confounding.aliased_factors.v1".into(),
+                severity: "warning".into(),
+                confidence: "unknown".into(),
+                evidence,
+                message: format!(
+                    "In {source_id}, the effect of {factor} on the spectral structure cannot be separated from {others}, neither within the cells of {others} (interactions included) nor under the additive main-effects model: their separate effects are not identifiable"
+                ),
+                action: format!(
+                    "Do not attribute structure to {factor} or {others} alone; complete the crossings (independence units measured under several {factor} levels within the same {others} levels) and check Y coverage of each crossing and the metadata-Y associations before choosing a validation split"
+                ),
+            }
+        };
+        report.findings.push(finding);
     }
     for (kind, factor, effect, adjusted) in rejected {
         let mut evidence = vec![
