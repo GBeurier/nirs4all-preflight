@@ -2,12 +2,12 @@
 
 Portable qualification of NIRS datasets before training. Rust owns the protocols and input/report contracts; reusable numerical diagnostics live in [nirs4all-methods](https://github.com/GBeurier/nirs4all-methods), and shared presentation components in [nirs4all-ui](https://github.com/GBeurier/nirs4all-ui).
 
-**First exploratory alpha: engine 0.1.0-alpha.1; npm binding 0.1.0-alpha.2.** This release computes integrity and linked-identity checks, exact duplicate suspicions including development/test overlap, per-band technical repeatability, balanced ICC(1,1), centered PCA with full variance moments, target distributions and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
+**Exploratory alpha 0.1.0-alpha.3 (engine, crates and npm binding).** This release computes integrity and linked-identity checks, exact and declared-tolerance quasi-duplicate suspicions including development/test overlap, a smoothing-residual noise proxy, an SNV sensitivity view, per-band technical repeatability, balanced ICC(1,1), centered PCA with full variance moments, target distributions, metadata–target associations with group-level permutation tests and Holm adjustment, an exploratory HDBSCAN partition with subsample stability, and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
 
 [Browser demo](https://gbeurier.github.io/nirs4all-preflight/) · [npm binding](https://www.npmjs.com/package/@nirs4all/preflight) · [Scientific and integration specification](docs/SPECIFICATION.md)
 
 ```sh
-cargo install nirs4all-preflight-cli --version 0.1.0-alpha.1
+cargo install nirs4all-preflight-cli --version 0.1.0-alpha.3
 n4pf validate dataset.json
 n4pf analyze dataset.json --methods-library /path/to/libn4m.so.2 --html report.html
 ```
@@ -24,7 +24,7 @@ Run the browser runtime in a worker to support cancellation by worker terminatio
 
 Python's thin C ABI facade and a Linux x86_64 wheel are provided under [bindings/python](bindings/python); use `analyze`, `validate` and `report_html`. The release wheel is tested from an isolated Python installation. The [C header](include/nirs4all_preflight.h) describes buffer ownership and versioning.
 
-The alpha has **not** completed the V1 roadmap. Clustering is available but unqualified: an exploratory HDBSCAN partition on the canonical PCA scores with 50-subsample stability; it never states a firm number of clusters and has no null model or cluster matching yet. Nested validation probes, calibrated inferential/permutation tests, domain shift, noise proxies, partial cancellation snapshots, R and MATLAB qualification, and full multi-platform scientific validation remain unavailable. The report lists these limits and retains `profile_status: exploratory`.
+The alpha has **not** completed the V1 roadmap. Clustering, noise proxy, SNV sensitivity, quasi-duplicates and metadata associations are available but unqualified: their defaults and thresholds are declared, not calibrated. Clustering never states a firm number of clusters and has no null model or cluster matching yet; association tests require declared exchangeable units. Nested validation probes, confounding, domain shift, repeatability uncertainty, partial cancellation snapshots, R and MATLAB qualification, and full multi-platform scientific validation remain unavailable. The report lists these limits and retains `profile_status: exploratory`.
 
 Development: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. Set `N4M_LIBRARY_PATH` for the analytic test against the real Methods ABI. Browser binding: `npm ci --prefix bindings/wasm`, `npm run build:native --prefix bindings/wasm`, `npm test --prefix bindings/wasm`. Demo: `npm ci --prefix demo`, `npm test --prefix demo`, `npm run build --prefix demo`.
 

@@ -72,6 +72,18 @@ type Knn = unsafe extern "C" fn(
     *mut i64,
     *mut f64,
 ) -> i32;
+type Association = unsafe extern "C" fn(
+    *mut c_void,
+    *const i64,
+    *const f64,
+    i64,
+    i32,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+) -> i32;
+type Holm = unsafe extern "C" fn(*mut c_void, *const f64, i64, *mut f64) -> i32;
 type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
 type SnvDestroy = unsafe extern "C" fn(*mut c_void);
 type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
@@ -139,6 +151,8 @@ pub struct NativeMethodsProvider {
     snv_transform: SnvTransform,
     noise_fn: NoiseProxy,
     pairs_fn: TolerancePairs,
+    association_fn: Association,
+    holm_fn: Holm,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -201,6 +215,12 @@ impl NativeMethodsProvider {
             let pairs_fn = *library
                 .get::<TolerancePairs>(b"n4m_preflight_pairs_within_tolerance\0")
                 .map_err(err)?;
+            let association_fn = *library
+                .get::<Association>(b"n4m_preflight_factor_association\0")
+                .map_err(err)?;
+            let holm_fn = *library
+                .get::<Holm>(b"n4m_preflight_holm_adjust\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -224,6 +244,8 @@ impl NativeMethodsProvider {
                 summary_fn,
                 knn_fn,
                 local_fn,
+                association_fn,
+                holm_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -714,6 +736,65 @@ impl MethodsProvider for NativeMethodsProvider {
             reference_flags: reference_flags.into_iter().map(|v| v != 0).collect(),
             total_pairs: total,
             candidate_pairs: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn association(&self, r: &AssociationRequest) -> Result<AssociationDiagnostics, ProviderError> {
+        let n = r.targets.len();
+        if n < 2
+            || r.factor_codes.len() != n
+            || r.n_permutations > 1_000_000
+            || r.targets.iter().any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("INVALID_ASSOCIATION_REQUEST".into()));
+        }
+        let mut out = [f64::NAN; 8];
+        let mut counts = [0i64; 2];
+        // SAFETY: input slices have n elements; outputs are owned fixed arrays.
+        self.check(unsafe {
+            (self.association_fn)(
+                self.context,
+                r.factor_codes.as_ptr(),
+                r.targets.as_ptr(),
+                n as i64,
+                i32::from(r.categorical),
+                r.n_permutations as i32,
+                r.seed,
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        Ok(AssociationDiagnostics {
+            effect_size: finite(out[0]),
+            statistic: finite(out[1]),
+            df1: finite(out[2]),
+            df2: finite(out[3]),
+            n_levels: out[4] as usize,
+            n_target_values: out[5] as usize,
+            log10_distinct_permutations: out[6],
+            p_value: finite(out[7]),
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
+        if r.p_values.is_empty() || r.p_values.iter().any(|p| !(0.0..=1.0).contains(p)) {
+            return Err(ProviderError("INVALID_HOLM_REQUEST".into()));
+        }
+        let mut adjusted = vec![f64::NAN; r.p_values.len()];
+        // SAFETY: input and output buffers both hold m elements.
+        self.check(unsafe {
+            (self.holm_fn)(
+                self.context,
+                r.p_values.as_ptr(),
+                r.p_values.len() as i64,
+                adjusted.as_mut_ptr(),
+            )
+        })?;
+        Ok(HolmDiagnostics {
+            adjusted,
             backend_version: self.version.clone(),
         })
     }

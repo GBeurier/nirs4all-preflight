@@ -56,6 +56,7 @@ La review finale Opus est une review documentaire du même draft 0.1. Aucun outi
 | P2 R² et OOF | R² descriptif standard et skill_vs_train_mean distincts ; baseline apprise dans les trains ; une prédiction par sample après agrégation homogène. |
 | P2 Clusters, métadonnées, RNG | Mise à l'échelle déclarée des paramètres de densité ; holdout de dépendance pertinent et classes évaluables ; RNG core figé, seeds fournisseurs exactes et distinctes. |
 | P2 Bindings et MVP | R/Cargo/vendorisation et conflits libstdc++ MATLAB qualifiés ; ICC équilibré dans PF-02 ; permutation/descriptif explicités dès PF-03 ; profileStatus obligatoire dans UI. |
+| Amendement 2026-10-13 : noyaux numériques | Règle « n4m first » : statistiques d'association, permutations (PCG64), HDBSCAN et ARI sont des noyaux C++ de Methods ; Preflight garde le protocole et la dérivation des seeds. Remplace « RNG core figé » et l'implémentation Rust candidate de HDBSCAN. |
 
 Deux suggestions statistiques ne sont pas reprises comme assertions générales. La moyenne des Y d'évaluation dans le dénominateur du R² standard ne fuit pas vers le modèle : elle normalise son évaluation ; le gain face à une baseline de train est une autre métrique, fournie séparément. Le plafond proposé `1 − σ_ref²/s_y²` pour un contraste local exige des hypothèses de bruit indépendant, homogène et de signal parfait ; ce n'est pas une borne universelle des observations. La précision de référence reste publiée et utilisée dans un protocole explicite, sans plafond présenté comme certain.
 

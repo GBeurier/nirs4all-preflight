@@ -1,6 +1,6 @@
 [package]
 name = "nirs4all-preflight-cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 edition = "2021"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
 description = "Command-line NIRS dataset qualification and report export"
@@ -12,5 +12,5 @@ name = "n4pf"
 path = "src/main.rs"
 
 [dependencies]
-nirs4all-preflight = { path = "../nirs4all-preflight", version = "=0.1.0-alpha.1" }
+nirs4all-preflight = { path = "../nirs4all-preflight", version = "=0.1.0-alpha.3" }
 serde_json = "1"

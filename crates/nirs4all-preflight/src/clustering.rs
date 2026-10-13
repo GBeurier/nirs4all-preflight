@@ -108,7 +108,7 @@ fn parameters(
         ("algorithm".into(), json!("hdbscan")),
         (
             "implementation".into(),
-            json!("methods_n4m_preflight_hdbscan_sklearn_1_9_1_port_stable_mst_ties"),
+            json!("methods_n4m_cluster_hdbscan_sklearn_1_9_1_port_stable_mst_ties"),
         ),
         ("metric".into(), json!("euclidean")),
         ("input".into(), json!("canonical_pca_scores")),

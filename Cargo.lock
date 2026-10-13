@@ -32,7 +32,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "nirs4all-preflight"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 dependencies = [
  "libloading",
  "nirs4all-preflight-core",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-capi"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 dependencies = [
  "nirs4all-preflight",
  "serde_json",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 dependencies = [
  "nirs4all-preflight",
  "serde_json",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-core"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 dependencies = [
  "serde",
  "serde_json",

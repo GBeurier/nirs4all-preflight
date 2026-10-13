@@ -1,6 +1,6 @@
 {
   "name": "@nirs4all/preflight",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "Rust NIRS dataset qualification with reusable Methods diagnostics",
   "type": "module",
   "license": "(CECILL-2.1 OR AGPL-3.0-or-later)",
@@ -27,7 +27,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "dependencies": {
-    "@nirs4all/methods": "1.3.5"
+    "@nirs4all/methods": "1.3.6"
   },
   "scripts": {
     "build:native": "wasm-pack build . --target web --out-dir native --release && node scripts/prepare-native.mjs",

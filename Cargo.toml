@@ -4,7 +4,7 @@ members = ["crates/nirs4all-preflight-core", "crates/nirs4all-preflight", "crate
 exclude = ["bindings/wasm", "bindings/python-native"]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 edition = "2021"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
 repository = "https://github.com/GBeurier/nirs4all-preflight"

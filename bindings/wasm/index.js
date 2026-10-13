@@ -25,7 +25,7 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -102,6 +102,16 @@ export async function createQualificationRuntime(options = {}) {
         if (work * query.cols > 250_000_000 || request.max_pairs > 1_000_000) throw new RangeError('TOLERANCE_PAIRS_WORK_BUDGET');
         const output = methods.preflightPairsWithinTolerance(query, request.tolerance, request.max_pairs, reference, request.query_group_ids, reference ? request.reference_group_ids : undefined);
         result = { pairs: nested(output.pairs, 2), distances: Array.from(output.distances), query_flags: Array.from(output.queryFlags, Boolean), reference_flags: Array.from(output.referenceFlags, Boolean), total_pairs: output.totalPairs, candidate_pairs: output.candidatePairs, backend_version };
+        break;
+      }
+      case 'association': {
+        // Seeds travel as decimal strings so no u64 is rounded by JSON.
+        const output = methods.preflightFactorAssociation(request.factor_codes, Float64Array.from(request.targets), request.categorical, request.n_permutations, BigInt(request.seed));
+        result = { effect_size: nullable(output.effectSize), statistic: nullable(output.statistic), df1: nullable(output.df1), df2: nullable(output.df2), n_levels: output.nLevels, n_target_values: output.nTargetValues, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'holm_adjust': {
+        result = { adjusted: Array.from(methods.preflightHolmAdjust(Float64Array.from(request.p_values))), backend_version };
         break;
       }
       default: throw new Error(`METHODS_OPERATION_UNSUPPORTED: ${operation}`);
