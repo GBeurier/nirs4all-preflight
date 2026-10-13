@@ -295,10 +295,70 @@ fn permdisp(
     }
 }
 
+fn freedman_lane_call(
+    provider: &impl MethodsProvider,
+    request: &FreedmanLaneRequest,
+    n_permutations: usize,
+) -> Result<FreedmanLaneDiagnostics, (Availability, String)> {
+    let request = FreedmanLaneRequest {
+        n_permutations,
+        ..request.clone()
+    };
+    let n = request.term_codes.len();
+    let ratio = |v: Option<f64>| v.is_none_or(|v| (0.0..=1.0).contains(&v));
+    let nonnegative = |v: f64| v.is_finite() && v >= 0.0;
+    match provider.permanova_freedman_lane(&request) {
+        Ok(d)
+            if nonnegative(d.ss_total)
+                && nonnegative(d.ss_reduced)
+                && nonnegative(d.ss_term)
+                && nonnegative(d.ss_residual)
+                && ratio(d.r2)
+                && ratio(d.partial_r2)
+                && d.pseudo_f.is_none_or(nonnegative)
+                && d.rank_reduced >= 1
+                && d.rank_reduced + d.df_term + d.df_residual == n
+                && d.log10_distinct_permutations.is_finite()
+                && d.n_at_least_observed <= d.n_permutations_executed
+                && (d.n_permutations_executed == n_permutations
+                    || (d.n_permutations_executed == 0 && d.pseudo_f.is_none()))
+                && d.p_value.is_some() == (d.n_permutations_executed > 0) =>
+        {
+            Ok(d)
+        }
+        Ok(_) => Err((Availability::Error, "INVALID_PROVIDER_RESULT".into())),
+        Err(e) => Err((e.availability(), e.reason)),
+    }
+}
+
+/// A term with no identifiable df given the other factors cannot be tested.
+fn aliased_term(df_term: usize) -> Result<(), (Availability, String)> {
+    if df_term == 0 {
+        Err((
+            Availability::NotIdentifiable,
+            "FACTOR_ALIASED_WITH_OTHER_FACTORS".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// A design without residual df leaves the pseudo-F undefined for any draw.
+fn saturated(df_residual: usize) -> Result<(), (Availability, String)> {
+    if df_residual == 0 {
+        Err((Availability::NotIdentifiable, "SATURATED_DESIGN".into()))
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum TestKind {
     Marginal,
+    /// Units permuted within the cells of the other factors.
     Conditional,
+    /// Freedman-Lane permutation of residuals of the other main effects.
+    FreedmanLane,
     Dispersion,
 }
 
@@ -307,6 +367,7 @@ impl TestKind {
         match self {
             Self::Marginal => "confounding.permanova_marginal_test",
             Self::Conditional => "confounding.permanova_conditional_test",
+            Self::FreedmanLane => "confounding.permanova_freedman_lane_test",
             Self::Dispersion => "confounding.permdisp_test",
         }
     }
@@ -314,6 +375,7 @@ impl TestKind {
         match self {
             Self::Marginal => "permanova_marginal",
             Self::Conditional => "permanova_conditional",
+            Self::FreedmanLane => "permanova_freedman_lane",
             Self::Dispersion => "permdisp",
         }
     }
@@ -333,6 +395,7 @@ struct Candidate<'a> {
 
 enum Request {
     Permanova(PermanovaRequest),
+    FreedmanLane(FreedmanLaneRequest),
     Permdisp(PermdispRequest),
 }
 
@@ -369,8 +432,16 @@ fn plan(
             format!("effect of {factor} given {others} on the canonical spectral structure of source {source_id} (additive-model SS, adonis2 by = \"margin\" for one other factor)"),
             "permanova_pseudo_f_given_strata",
             "within_blocks",
-            Some(format!("strata: {others} level combinations; additive model strata + {factor}")),
+            None,
             "monte_carlo_uniform_unit_permutation_within_blocks_with_replacement_between_draws",
+        ),
+        TestKind::FreedmanLane => (
+            format!("{factor} has no main effect given the additive main effects of {others}: residuals of the reduced model are exchangeable across independence units (approximate test; interactions are not modelled)"),
+            format!("main effect of {factor} given the main effects of {others} on the canonical spectral structure of source {source_id} (partial pseudo-F, Freedman-Lane)"),
+            "permanova_pseudo_f_given_main_effects",
+            "none_single_block",
+            Some(format!("intercept + main effects of {} (no interaction); residuals permuted, reduced fit added back, both designs refitted", spec.others.join(" + "))),
+            "monte_carlo_freedman_lane_permutation_of_reduced_model_residuals_with_replacement_between_draws",
         ),
         TestKind::Dispersion => (
             format!("distances to the {factor} level centroids have equal means across levels (residuals of their one-way ANOVA exchangeable)"),
@@ -525,6 +596,7 @@ pub(crate) fn analyze(
     // Descriptive PERMANOVA of each factor alone and given the others.
     let mut marginal = BTreeMap::new();
     let mut conditional = BTreeMap::new();
+    let mut freedman_lane = BTreeMap::new();
     let mut dispersion = BTreeMap::new();
     let mut backend = String::new();
     for &factor in &effective {
@@ -552,6 +624,18 @@ pub(crate) fn analyze(
             };
             let result = permanova(provider, &request, 0);
             conditional.insert(factor, (request, result));
+            let request = FreedmanLaneRequest {
+                matrix: units.coordinates.clone(),
+                term_codes: term.clone(),
+                condition_codes: others
+                    .iter()
+                    .map(|other| codes(&units.levels, &[other]))
+                    .collect(),
+                n_permutations: 0,
+                seed: seed(input, source_id, TestKind::FreedmanLane.seed_name(), factor).0,
+            };
+            let result = freedman_lane_call(provider, &request, 0);
+            freedman_lane.insert(factor, (request, result));
         }
         let request = PermdispRequest {
             matrix: units.coordinates.clone(),
@@ -611,6 +695,16 @@ pub(crate) fn analyze(
                 "df_identifiable_given_other_factors".into(),
                 json!(d.df_term),
             );
+            if let Some((_, Ok(fl))) = freedman_lane.get(factor) {
+                fields.insert(
+                    "df_identifiable_given_other_main_effects".into(),
+                    json!(fl.df_term),
+                );
+                fields.insert(
+                    "rank_other_main_effects_with_intercept".into(),
+                    json!(fl.rank_reduced),
+                );
+            }
             fields.insert(
                 "design_rank_with_other_factor_cells".into(),
                 json!(d.n_strata + d.df_term),
@@ -689,6 +783,7 @@ pub(crate) fn analyze(
     for &factor in &effective {
         let m = marginal[factor].1.as_ref().ok();
         let c = conditional.get(factor).and_then(|(_, r)| r.as_ref().ok());
+        let fl = freedman_lane.get(factor).and_then(|(_, r)| r.as_ref().ok());
         partition_factors.push(json!({
             "factor": factor,
             "r2_marginal": m.and_then(|d| d.r2),
@@ -698,6 +793,10 @@ pub(crate) fn analyze(
             "partial_r2_given_other_factors": c.and_then(|d| d.partial_r2),
             "pseudo_f_given_other_factors": c.and_then(|d| d.pseudo_f),
             "df_given_other_factors": c.map(|d| d.df_term),
+            "r2_unique_given_other_main_effects": fl.and_then(|d| d.r2),
+            "partial_r2_given_other_main_effects": fl.and_then(|d| d.partial_r2),
+            "pseudo_f_given_other_main_effects": fl.and_then(|d| d.pseudo_f),
+            "df_given_other_main_effects": fl.map(|d| d.df_term),
             "reason_code": marginal[factor].1.as_ref().err().map(|e| e.1.clone()),
         }));
     }
@@ -761,6 +860,7 @@ pub(crate) fn analyze(
         json!({
             "r2_marginal": "SS(factor) / SS_total, factor alone",
             "r2_unique_given_other_factors": "[SS(other-factor cells + factor) - SS(other-factor cells)] / SS_total",
+            "r2_unique_given_other_main_effects": "[SS(other main effects + factor) - SS(other main effects)] / SS_total",
             "r2_all_factor_cells": "SS(all-factor level combinations) / SS_total",
         }),
     );
@@ -825,6 +925,7 @@ pub(crate) fn analyze(
         for kind in [
             TestKind::Marginal,
             TestKind::Conditional,
+            TestKind::FreedmanLane,
             TestKind::Dispersion,
         ] {
             let spec = PlanSpec {
@@ -852,35 +953,52 @@ pub(crate) fn analyze(
     let mut permdisp_candidates = Vec::new();
     for &factor in &effective {
         let others: Vec<&str> = effective.iter().copied().filter(|f| *f != factor).collect();
-        let tests: [(TestKind, Option<Outcome>); 3] = [
+        let tests: [(TestKind, Option<Outcome>); 4] = [
             (
                 TestKind::Marginal,
-                Some(marginal[factor].1.clone().map(|d| {
-                    (
+                Some(marginal[factor].1.clone().and_then(|d| {
+                    saturated(d.df_residual)?;
+                    Ok((
                         Request::Permanova(marginal[factor].0.clone()),
                         d.log10_distinct_permutations,
                         d.pseudo_f,
                         vec![n],
-                    )
+                    ))
                 })),
             ),
             (
                 TestKind::Conditional,
                 conditional.get(factor).map(|(request, result)| {
                     result.clone().and_then(|d| {
-                        if d.df_term == 0 {
-                            Err((
+                        aliased_term(d.df_term)?;
+                        saturated(d.df_residual)?;
+                        Ok((
+                            Request::Permanova(request.clone()),
+                            d.log10_distinct_permutations,
+                            d.pseudo_f,
+                            block_sizes(request.strata_codes.as_deref().unwrap_or_default()),
+                        ))
+                    })
+                }),
+            ),
+            (
+                TestKind::FreedmanLane,
+                freedman_lane.get(factor).map(|(request, result)| {
+                    result.clone().and_then(|d| {
+                        if d.rank_reduced >= n {
+                            return Err((
                                 Availability::NotIdentifiable,
-                                "FACTOR_ALIASED_WITH_OTHER_FACTORS".to_string(),
-                            ))
-                        } else {
-                            Ok((
-                                Request::Permanova(request.clone()),
-                                d.log10_distinct_permutations,
-                                d.pseudo_f,
-                                block_sizes(request.strata_codes.as_deref().unwrap_or_default()),
-                            ))
+                                "REDUCED_MODEL_SATURATED".to_string(),
+                            ));
                         }
+                        aliased_term(d.df_term)?;
+                        saturated(d.df_residual)?;
+                        Ok((
+                            Request::FreedmanLane(request.clone()),
+                            d.log10_distinct_permutations,
+                            d.pseudo_f,
+                            vec![n],
+                        ))
                     })
                 }),
             ),
@@ -1065,6 +1183,14 @@ fn finish_family<'a>(
                     d.backend_version,
                 )
             }),
+            Request::FreedmanLane(r) => freedman_lane_call(provider, r, PERMUTATIONS).map(|d| {
+                (
+                    d.p_value,
+                    d.n_at_least_observed,
+                    d.pseudo_f,
+                    d.backend_version,
+                )
+            }),
             Request::Permdisp(r) => permdisp(provider, r, PERMUTATIONS)
                 .map(|d| (d.p_value, d.n_at_least_observed, d.f, d.backend_version)),
         };
@@ -1208,13 +1334,16 @@ fn findings(
             "confounding.dispersion".into(),
         ];
         association_evidence(&mut evidence);
-        let (rule, what) = if *kind == TestKind::Marginal {
-            ("confounding.marginal_structure.v1", "differs across")
-        } else {
-            (
+        let (rule, what) = match kind {
+            TestKind::Marginal => ("confounding.marginal_structure.v1", "differs across"),
+            TestKind::FreedmanLane => (
+                "confounding.main_effect_structure.v1",
+                "differs, given the main effects of the other declared factors, across",
+            ),
+            _ => (
                 "confounding.conditional_structure.v1",
-                "differs, given the other declared factors, across",
-            )
+                "differs, within the cells of the other declared factors, across",
+            ),
         };
         report.findings.push(Finding {
             rule_id: rule.into(),

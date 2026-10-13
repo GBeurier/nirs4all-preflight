@@ -85,6 +85,7 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
                 "methods.pca",
                 "methods.permanova",
                 "methods.permdisp",
+                "methods.permanova_freedman_lane",
                 "methods.holm_adjust",
             ]),
             "PERMANOVA_PROVIDER_NOT_CONFIGURED",

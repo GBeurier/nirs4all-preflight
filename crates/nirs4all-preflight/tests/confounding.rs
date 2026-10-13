@@ -46,6 +46,7 @@ impl MethodsProvider for Scripted {
             "methods.permanova",
             "methods.permdisp",
             "methods.holm_adjust",
+            "methods.permanova_freedman_lane",
         ]
         .iter()
         .map(|id| Capability {
@@ -81,7 +82,12 @@ impl MethodsProvider for Scripted {
             per_stratum.entry(*s).or_default().insert(*t);
         }
         let aliased = per_stratum.values().all(|t| t.len() == 1);
-        let df_term = if aliased { 0 } else { levels.len() - 1 };
+        // Bounded by the residual space (exact only for the designs used here).
+        let df_term = if aliased {
+            0
+        } else {
+            (levels.len() - 1).min(n - n_strata)
+        };
         let b = 9;
         let executed = if df_term > 0 { r.n_permutations } else { 0 };
         Ok(PermanovaDiagnostics {
@@ -117,6 +123,49 @@ impl MethodsProvider for Scripted {
             log10_distinct_permutations: self.log10_distinct,
             p_value: (executed > 0).then(|| 500.0 / (1.0 + executed as f64)),
             n_at_least_observed: if executed > 0 { 499 } else { 0 },
+            n_permutations_executed: executed,
+            backend_version: "scripted".into(),
+        })
+    }
+    fn permanova_freedman_lane(
+        &self,
+        r: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        // Aliased when every level combination of the conditions holds a
+        // single term level; reduced rank 1 + sum(levels - 1), additive.
+        let n = r.term_codes.len();
+        let levels = |codes: &[i64]| codes.iter().collect::<BTreeSet<_>>().len();
+        let rank_reduced = 1 + r
+            .condition_codes
+            .iter()
+            .map(|c| levels(c) - 1)
+            .sum::<usize>();
+        let mut per_cell = BTreeMap::<Vec<i64>, BTreeSet<i64>>::new();
+        for i in 0..n {
+            let cell = r.condition_codes.iter().map(|c| c[i]).collect();
+            per_cell.entry(cell).or_default().insert(r.term_codes[i]);
+        }
+        let aliased = per_cell.values().all(|t| t.len() == 1);
+        let df_term = if aliased {
+            0
+        } else {
+            levels(&r.term_codes) - 1
+        };
+        let executed = if df_term > 0 { r.n_permutations } else { 0 };
+        Ok(FreedmanLaneDiagnostics {
+            ss_total: 10.0,
+            ss_reduced: 1.0,
+            ss_term: if aliased { 0.0 } else { 4.0 },
+            ss_residual: 5.0,
+            r2: (!aliased).then_some(0.4),
+            partial_r2: (!aliased).then_some(0.5),
+            pseudo_f: (!aliased).then_some(3.0),
+            df_term,
+            df_residual: n.saturating_sub(rank_reduced + df_term),
+            rank_reduced,
+            log10_distinct_permutations: self.log10_distinct,
+            p_value: (executed > 0).then(|| 10.0 / (1.0 + executed as f64)),
+            n_at_least_observed: if executed > 0 { 9 } else { 0 },
             n_permutations_executed: executed,
             backend_version: "scripted".into(),
         })
@@ -308,15 +357,15 @@ fn conditional_test_permutes_within_blocks_with_derived_seed() {
         marginal.parameters["permutation_plan"]["seed"],
         "16193620801551107043"
     );
-    // Four PERMANOVA tests share one Holm family; scripted p = 10/1000.
+    // Six PERMANOVA tests (marginal, within-cells and Freedman-Lane for both
+    // factors) share one Holm family; scripted p = 10/1000, Holm 6 x 0.01.
     let value = test.value.as_ref().unwrap();
     assert_eq!(value["p_value"], 0.01);
-    assert!((value["p_value_holm"].as_f64().unwrap() - 0.04).abs() < 1e-12);
-    assert_eq!(value["rejects_null_at_family_alpha"], true);
-    assert!(report
-        .findings
-        .iter()
-        .any(|f| f.rule_id == "confounding.conditional_structure.v1"));
+    assert!((value["p_value_holm"].as_f64().unwrap() - 0.06).abs() < 1e-12);
+    assert_eq!(value["rejects_null_at_family_alpha"], false);
+    let family = find(&report, "confounding.permanova_family", None);
+    assert_eq!(family.value.as_ref().unwrap()["family_size"], 6);
+    assert!(test.parameters["permutation_plan"]["reduced_model"].is_null());
     let disp = find(&report, "confounding.permdisp_test", Some("instrument"));
     assert_eq!(
         disp.value.as_ref().unwrap()["rejects_null_at_family_alpha"],
@@ -1015,3 +1064,149 @@ fn native_numerical_failure_is_reported_as_error() {
     let partition = find(&report, "confounding.variance_partition", None);
     assert!(matches!(partition.status, Availability::Error));
 }
+
+#[test]
+fn freedman_lane_test_permutes_reduced_model_residuals() {
+    let report = analyze(
+        &crossed(6, false),
+        &Scripted {
+            log10_distinct: 5.0,
+        },
+    );
+    let test = find(
+        &report,
+        "confounding.permanova_freedman_lane_test",
+        Some("instrument"),
+    );
+    assert!(matches!(test.status, Availability::Computed));
+    let plan = &test.parameters["permutation_plan"];
+    assert_eq!(plan["statistic"], "permanova_pseudo_f_given_main_effects");
+    assert_eq!(plan["restrictions"], "none_single_block");
+    assert_eq!(plan["block_sizes"], serde_json::json!([24]));
+    assert!(plan["reduced_model"]
+        .as_str()
+        .unwrap()
+        .starts_with("intercept + main effects of campaign (no interaction)"));
+    assert!(plan["null_hypothesis"]
+        .as_str()
+        .unwrap()
+        .contains("no main effect given the additive main effects of campaign"));
+    // The within-cells test keeps its own, stricter null and no reduced model.
+    let cells = find(
+        &report,
+        "confounding.permanova_conditional_test",
+        Some("instrument"),
+    );
+    assert!(cells.parameters["permutation_plan"]["null_hypothesis"]
+        .as_str()
+        .unwrap()
+        .contains("no instrument effect at any combination"));
+    let partition = find(&report, "confounding.variance_partition", None);
+    let entry = &partition.value.as_ref().unwrap()["factors"][0];
+    assert_eq!(entry["df_given_other_main_effects"], 1);
+    assert_eq!(entry["pseudo_f_given_other_main_effects"], 3.0);
+    // Aliased (instrument = campaign): not identifiable, as within cells.
+    let report = analyze(
+        &crossed(6, true),
+        &Scripted {
+            log10_distinct: 5.0,
+        },
+    );
+    for factor in ["instrument", "campaign"] {
+        let fl = find(
+            &report,
+            "confounding.permanova_freedman_lane_test",
+            Some(factor),
+        );
+        assert!(matches!(fl.status, Availability::NotIdentifiable));
+        assert_eq!(reason(fl), Some("FACTOR_ALIASED_WITH_OTHER_FACTORS"));
+    }
+}
+
+fn saturated_reasons(provider: &impl MethodsProvider) -> [Option<String>; 2] {
+    // Every unit its own campaign: the reduced model (intercept + campaign)
+    // reproduces the data, so instrument has no residual variation to test.
+    let mut input = crossed(6, false);
+    for (i, s) in input.samples.iter_mut().enumerate() {
+        s.campaign = Some(format!("c{i:02}"));
+    }
+    let first = analyze(&input, provider);
+    // Three units, one per occupied cell of a connected 2 x 2 design: the
+    // additive full design has rank 3 = n, no residual df.
+    let input = dataset(&[
+        ("A", "c1", vec![1.0, 2.0, 3.0]),
+        ("B", "c1", vec![2.0, 1.0, 3.5]),
+        ("B", "c2", vec![1.5, 2.5, 2.0]),
+    ]);
+    let second = analyze(&input, provider);
+    [first, second].map(|report| {
+        let fl = find(
+            &report,
+            "confounding.permanova_freedman_lane_test",
+            Some("instrument"),
+        );
+        assert!(matches!(fl.status, Availability::NotIdentifiable));
+        fl.reason_code.clone()
+    })
+}
+
+#[test]
+fn freedman_lane_saturated_designs_are_not_identifiable() {
+    let expected = [
+        Some("REDUCED_MODEL_SATURATED".to_string()),
+        Some("SATURATED_DESIGN".to_string()),
+    ];
+    assert_eq!(
+        saturated_reasons(&Scripted {
+            log10_distinct: 5.0
+        }),
+        expected
+    );
+    if let Some(provider) = native() {
+        assert_eq!(saturated_reasons(&provider), expected);
+    }
+}
+
+#[test]
+fn native_freedman_lane_matches_independent_refit_oracle() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // examples/confounding.json; goldens from an independent NumPy 2.2.6
+    // Freedman-Lane oracle on the reported scores: lstsq refit of
+    // fitted_reduced + E[default_rng(plan seed).permutation(n)] on both
+    // one-hot designs, F_perm >= F_obs - sqrt(eps).
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/confounding.json"
+    );
+    let input: QualificationInput =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let report = analyze(&input, &provider);
+    let partition = find(&report, "confounding.variance_partition", None);
+    for entry in partition.value.as_ref().unwrap()["factors"]
+        .as_array()
+        .unwrap()
+    {
+        // With one other factor the main-effect and within-cells partial
+        // statistics coincide.
+        let a = entry["pseudo_f_given_other_main_effects"].as_f64().unwrap();
+        let b = entry["pseudo_f_given_other_factors"].as_f64().unwrap();
+        assert!((a - b).abs() <= 1e-10 * b);
+    }
+    for (factor, b) in FREEDMAN_LANE_GOLDENS {
+        let test = find(
+            &report,
+            "confounding.permanova_freedman_lane_test",
+            Some(factor),
+        );
+        assert_eq!(
+            test.value.as_ref().unwrap()["n_at_least_observed"],
+            b,
+            "{factor}"
+        );
+    }
+}
+
+/// Freedman-Lane counts b on examples/confounding.json (NumPy 2.2.6 oracle).
+const FREEDMAN_LANE_GOLDENS: [(&str, usize); 2] = [("instrument", 0), ("campaign", 101)];
