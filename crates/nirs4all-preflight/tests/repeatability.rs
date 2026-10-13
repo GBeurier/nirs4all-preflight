@@ -9,6 +9,10 @@ use std::cell::RefCell;
 struct Spy {
     variance: RefCell<Vec<VarianceComponentsRequest>>,
     pca: RefCell<Vec<PcaRequest>>,
+    /// REML band status to return (0 by default).
+    reml_status: Option<i32>,
+    /// Provider failure to return instead of a result.
+    error: Option<ProviderError>,
 }
 impl MethodsProvider for Spy {
     fn capabilities(&self) -> Vec<Capability> {
@@ -54,22 +58,28 @@ impl MethodsProvider for Spy {
         r: &VarianceComponentsRequest,
     ) -> Result<VarianceComponentsDiagnostics, ProviderError> {
         self.variance.borrow_mut().push(r.clone());
+        if let Some(e) = &self.error {
+            return Err(e.clone());
+        }
         let p = r.matrix[0].len();
+        let status = self.reml_status.unwrap_or(0);
+        let usable = matches!(status, 0 | 2 | 4);
         Ok(VarianceComponentsDiagnostics {
             sigma2_between: vec![Some(1.0); p],
             sigma2_within: vec![Some(1.0); p],
-            icc: vec![Some(0.5); p],
+            icc: vec![usable.then_some(0.5); p],
             reml_log_likelihood: vec![Some(-1.0); p],
             n_groups: vec![2; p],
             n_observations: vec![4; p],
-            grid_local_minima: vec![1; p],
+            reml_candidates: vec![1; p],
             bisection_iterations: vec![50; p],
-            status: vec![0; p],
+            status: vec![status; p],
             sd_ci_chi_square: vec![[Some(0.5), Some(2.0)]; p],
-            icc_ci_exact_f: vec![[None, None]; p],
+            icc_ci_exact_f: vec![[Some(0.1), Some(0.9)]; p],
             sd_ci_bootstrap: vec![[Some(0.6), Some(1.5)]; p],
             icc_ci_bootstrap: vec![[Some(0.2), Some(0.8)]; p],
             n_valid_replicates: vec![r.n_bootstrap; p],
+            interval_status: vec![0; p],
             backend_version: "spy".into(),
         })
     }
@@ -345,6 +355,230 @@ fn balanced_sensitivity_subsamples_to_min_count_without_dropping_samples() {
     }
 }
 
+/// 40 physical objects x 3 rescans, `n_individuals` individuals (round robin).
+fn linked_design(n_individuals: usize) -> QualificationInput {
+    let mut input = design();
+    let source = &mut input.sources[0];
+    source.observation_ids.clear();
+    source.sample_ids.clear();
+    source.x.clear();
+    source.repetition_types = Some(vec![]);
+    input.samples.clear();
+    for i in 0..40 {
+        let id = format!("o{i}");
+        let mut s = sample(&id, "a");
+        if n_individuals > 0 {
+            s.individual_id = Some(format!("ind{}", i % n_individuals));
+        }
+        input.samples.push(s);
+        for d in [-0.01, 0.0, 0.01] {
+            source.observation_ids.push(format!("x{}", source.x.len()));
+            source.sample_ids.push(id.clone());
+            source.x.push(vec![Some(0.1 * i as f64 + d), Some(2.0 + d)]);
+            source
+                .repetition_types
+                .as_mut()
+                .unwrap()
+                .push(RepetitionType::Rescan);
+        }
+    }
+    input.options.independence_unit = IndependenceUnit::Sample;
+    input
+}
+
+/// P0-2: physical objects sharing individuals are not independent groups,
+/// so the Searle F interval is not exact; it becomes unsupported.
+#[test]
+fn exact_f_interval_requires_one_independence_unit_per_group() {
+    let report = analyze(&linked_design(4), &Spy::default());
+    let f = find(&report, "measurement.icc_1_1_ci_exact_f", "a");
+    assert_eq!(status(f), "unsupported");
+    assert_eq!(
+        f.reason_code.as_deref(),
+        Some("GROUPS_SHARE_INDEPENDENCE_UNIT")
+    );
+    assert_eq!(
+        f.parameters["groups_share_independence_unit_per_band"],
+        serde_json::json!([true, true])
+    );
+    let boot = find(&report, "measurement.icc_1_reml_ci_cluster_bootstrap", "a");
+    assert_eq!(
+        boot.reason_code.as_deref(),
+        Some("FEWER_THAN_20_RESAMPLING_UNITS")
+    );
+    // Without links every object is its own unit and the interval is kept.
+    let independent = analyze(&linked_design(0), &Spy::default());
+    assert_eq!(
+        status(find(&independent, "measurement.icc_1_1_ci_exact_f", "a")),
+        "computed"
+    );
+}
+
+/// P0-3: a reference-group unit without reference identities is refused,
+/// never replaced by physical objects.
+#[test]
+fn reference_group_unit_requires_reference_identities() {
+    let mut input = design();
+    input.options.independence_unit = IndependenceUnit::ReferenceGroup;
+    let spy = Spy::default();
+    let report = analyze(&input, &spy);
+    assert!(spy
+        .variance
+        .borrow()
+        .iter()
+        .all(|r| r.n_bootstrap == 0 && r.cluster_ids.is_none()));
+    for id in [
+        "measurement.icc_1_1_ci_exact_f",
+        "measurement.repeatability_sd_ci_cluster_bootstrap",
+        "measurement.icc_1_reml_ci_cluster_bootstrap",
+    ] {
+        let m = find(&report, id, "a");
+        assert_eq!(status(m), "not_identifiable", "{id}");
+        assert_eq!(m.reason_code.as_deref(), Some("MISSING_REFERENCE_GROUP"));
+    }
+}
+
+/// P1-4: units are counted per band after the masks; a band where only ten
+/// units contribute is not published even though the context has 40.
+#[test]
+fn bootstrap_threshold_applies_to_units_contributing_per_band() {
+    let mut input = linked_design(0);
+    let source = &mut input.sources[0];
+    let mut mask = vec![vec![true, true]; source.x.len()];
+    for (row, id) in source.sample_ids.iter().enumerate() {
+        let i: usize = id[1..].parse().unwrap();
+        if i >= 10 {
+            mask[row][1] = false;
+        }
+    }
+    source.valid_mask = Some(mask);
+    let report = analyze(&input, &Spy::default());
+    for id in [
+        "measurement.repeatability_sd_ci_cluster_bootstrap",
+        "measurement.icc_1_reml_ci_cluster_bootstrap",
+    ] {
+        let m = find(&report, id, "a");
+        assert_eq!(status(m), "computed", "{id}");
+        assert_eq!(
+            m.parameters["band_reason"],
+            serde_json::json!([null, "FEWER_THAN_20_RESAMPLING_UNITS"])
+        );
+        assert!(m.value.as_ref().unwrap()["lower"][1].is_null());
+        let plan = &m.parameters["bootstrap_plan"];
+        assert_eq!(
+            plan["n_units_with_valid_value_per_band"],
+            serde_json::json!([40, 10])
+        );
+        assert_eq!(
+            plan["n_units_with_within_df_per_band"],
+            serde_json::json!([40, 10])
+        );
+    }
+}
+
+/// P1-7: non-convergence and numerical failures are errors, not data
+/// shortages or missing capabilities; per-band reasons are kept.
+#[test]
+fn convergence_and_numerical_failures_are_reported_as_errors() {
+    let input = linked_design(0);
+    let spy = Spy {
+        reml_status: Some(5),
+        ..Spy::default()
+    };
+    let report = analyze(&input, &spy);
+    let reml = find(&report, "measurement.icc_1_reml", "a");
+    assert_eq!(status(reml), "error");
+    assert_eq!(reml.reason_code.as_deref(), Some("REML_NOT_CONVERGED"));
+    assert_eq!(
+        reml.parameters["band_reason"],
+        serde_json::json!(["REML_NOT_CONVERGED", "REML_NOT_CONVERGED"])
+    );
+    let spy = Spy {
+        reml_status: Some(6),
+        ..Spy::default()
+    };
+    let report = analyze(&input, &spy);
+    let reml = find(&report, "measurement.icc_1_reml", "a");
+    assert_eq!(
+        (status(reml).as_str(), reml.reason_code.as_deref()),
+        ("error", Some("VALUE_NOT_REPRESENTABLE"))
+    );
+    let spy = Spy {
+        error: Some(ProviderError::numerical("METHODS_STATUS_NUMERICAL_FAILURE")),
+        ..Spy::default()
+    };
+    let report = analyze(&input, &spy);
+    for id in [
+        "measurement.icc_1_reml",
+        "measurement.repeatability_sd_ci_chi_square",
+        "measurement.icc_1_reml_ci_cluster_bootstrap",
+    ] {
+        assert_eq!(status(find(&report, id, "a")), "error", "{id}");
+    }
+    let spy = Spy {
+        error: Some(ProviderError::unsupported(
+            "VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED",
+        )),
+        ..Spy::default()
+    };
+    let report = analyze(&input, &spy);
+    assert_eq!(
+        status(find(&report, "measurement.icc_1_reml", "a")),
+        "unsupported"
+    );
+}
+
+/// Robustness sweep of the balanced-sensitivity means (engine side): every
+/// object has three rescans and o0 a fourth, so r* = 3 and each balanced mean
+/// averages three values. The matrix sent to PCA scales exactly with 2^k and
+/// stays finite next to 1.7e308, where a plain sum would overflow.
+#[test]
+fn balanced_sensitivity_means_are_scale_and_offset_robust() {
+    let balanced = |input: &QualificationInput| {
+        let spy = Spy::default();
+        analyze(input, &spy);
+        let pca = spy.pca.borrow();
+        pca[1].matrix.clone()
+    };
+    let uneven = || {
+        let mut input = linked_design(0);
+        let source = &mut input.sources[0];
+        source.observation_ids.push("extra".into());
+        source.sample_ids.push("o0".into());
+        source.x.push(vec![Some(0.02), Some(2.02)]);
+        source
+            .repetition_types
+            .as_mut()
+            .unwrap()
+            .push(RepetitionType::Rescan);
+        input
+    };
+    let reference = balanced(&uneven());
+    let pow2 = |k: i32| 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+    for k in [-1000, -500, -100, 100, 500, 1000] {
+        let mut scaled = uneven();
+        for row in &mut scaled.sources[0].x {
+            for v in row.iter_mut().flatten() {
+                *v *= pow2(k);
+            }
+        }
+        let got = balanced(&scaled);
+        for (a, b) in got.iter().flatten().zip(reference.iter().flatten()) {
+            assert!(a.is_finite() && *a == b * pow2(k), "{k}: {a} {b}");
+        }
+    }
+    let mut far = uneven();
+    for row in &mut far.sources[0].x {
+        for v in row.iter_mut().flatten() {
+            *v = 1.7e308 - *v * 1e292;
+        }
+    }
+    assert!(balanced(&far)
+        .iter()
+        .flatten()
+        .all(|v| v.is_finite() && *v > 1.6e308));
+}
+
 fn native() -> Option<NativeMethodsProvider> {
     let path = std::env::var("N4M_LIBRARY_PATH").ok()?;
     Some(NativeMethodsProvider::load(path).expect("compatible Methods ABI"))
@@ -438,17 +672,29 @@ fn native_engine_reports_reml_boundaries_and_balanced_equivalence() {
     assert_eq!(icc[1].as_f64(), Some(0.0));
     let chi = find(&report, "measurement.repeatability_sd_ci_chi_square", "a");
     assert_eq!(chi.parameters["df_per_band"], serde_json::json!([36, 36]));
-    for id in [
+    // 24 units contribute to the ICC; only the 18 repeated objects carry
+    // within df, below the 20-unit minimum for the SD bootstrap.
+    let icc_boot = find(&report, "measurement.icc_1_reml_ci_cluster_bootstrap", "a");
+    assert_eq!(status(icc_boot), "computed");
+    let plan = &icc_boot.parameters["bootstrap_plan"];
+    assert_eq!(
+        plan["n_valid_replicates_per_band"],
+        serde_json::json!([999, 999])
+    );
+    assert_eq!(
+        plan["n_units_with_within_df_per_band"],
+        serde_json::json!([18, 18])
+    );
+    let sd_boot = find(
+        &report,
         "measurement.repeatability_sd_ci_cluster_bootstrap",
-        "measurement.icc_1_reml_ci_cluster_bootstrap",
-    ] {
-        let m = find(&report, id, "a");
-        assert_eq!(status(m), "computed", "{id}");
-        assert_eq!(
-            m.parameters["bootstrap_plan"]["n_valid_replicates_per_band"],
-            serde_json::json!([999, 999])
-        );
-    }
+        "a",
+    );
+    assert_eq!(status(sd_boot), "insufficient_data");
+    assert_eq!(
+        sd_boot.reason_code.as_deref(),
+        Some("FEWER_THAN_20_UNITS_WITH_WITHIN_DF")
+    );
     assert_eq!(
         status(find(&report, "measurement.icc_1_1_ci_exact_f", "a")),
         "unsupported"
@@ -475,4 +721,28 @@ fn native_engine_reports_reml_boundaries_and_balanced_equivalence() {
         0.9968006295172774,
         1e-10
     ));
+}
+
+/// Robustness through the actual kernel: at 2^1000 the variances overflow a
+/// double, which the engine reports as a numerical error per band (never a
+/// value), while the ICC-free chi-square SD interval stays representable.
+#[test]
+fn native_unrepresentable_variances_are_errors() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let mut input = linked_design(0);
+    for row in &mut input.sources[0].x {
+        for v in row.iter_mut().flatten() {
+            *v *= 2f64.powi(500) * 2f64.powi(500);
+        }
+    }
+    let report = analyze(&input, &provider);
+    let reml = find(&report, "measurement.icc_1_reml", "a");
+    assert_eq!(status(reml), "error");
+    assert_eq!(reml.reason_code.as_deref(), Some("VALUE_NOT_REPRESENTABLE"));
+    assert_eq!(reml.parameters["band_status"], serde_json::json!([6, 6]));
+    let chi = find(&report, "measurement.repeatability_sd_ci_chi_square", "a");
+    assert_eq!(status(chi), "computed");
+    assert!(chi.value.as_ref().unwrap()["lower"][0].as_f64().unwrap() > 1e297);
 }

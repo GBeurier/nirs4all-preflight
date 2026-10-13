@@ -14,15 +14,20 @@ pub(crate) const CONFIDENCE: f64 = 0.95;
 pub(crate) const BOOTSTRAP_REPLICATES: usize = 999;
 /// Fewer resampling units leave the bootstrap uncertainty insufficient.
 pub(crate) const MIN_BOOTSTRAP_UNITS: usize = 20;
-/// Methods refuses bootstraps above B x bands x (groups + 512) = 2.5e9.
+/// Methods refuses bootstraps above B x bands x (groups + 1024) = 2.5e9.
 const BOOTSTRAP_WORK_BUDGET: f64 = 2.5e9;
+/// Measured coverage of the percentile cluster bootstrap (not calibrated).
+const COVERAGE_NOTE: &str =
+    "not_qualified_percentile_interval_measured_coverage_in_docs_REUSE_ENGINE";
+/// Numerical domain of the Methods kernel, published with the REML metric.
+const NUMERICAL_DOMAIN: &str = "exact_power_of_two_scaling_from_centred_variation_translation_and_scale_invariant_unrepresentable_variance_gives_status_6";
 const COUNTS_ID: &str = "measurement.repeat_counts";
 const REML_ID: &str = "measurement.icc_1_reml";
 const SD_CHI2_ID: &str = "measurement.repeatability_sd_ci_chi_square";
 const ICC_F_ID: &str = "measurement.icc_1_1_ci_exact_f";
 const SD_BOOT_ID: &str = "measurement.repeatability_sd_ci_cluster_bootstrap";
 const ICC_BOOT_ID: &str = "measurement.icc_1_reml_ci_cluster_bootstrap";
-const REML_STATUS: &str = "0_interior_1_insufficient_2_between_variance_zero_3_zero_total_4_within_variance_zero_5_not_converged";
+const REML_STATUS: &str = "0_interior_1_insufficient_2_between_variance_zero_3_zero_total_4_within_variance_zero_5_not_converged_6_not_representable";
 
 /// Repeat type, instrument and campaign of one technical context.
 type Context<'a> = (&'a str, &'a str, &'a str);
@@ -312,6 +317,56 @@ struct Uncertainty<'a> {
 /// Why the cluster bootstrap did not run, when it did not.
 type Gate = Option<(Availability, &'static str)>;
 
+/// Per-band reason codes of the protocol.
+const INSUFFICIENT: &str = "INSUFFICIENT_GROUPS_OR_REPEATS";
+const ZERO_TOTAL: &str = "ZERO_TOTAL_VARIANCE";
+const NOT_CONVERGED: &str = "REML_NOT_CONVERGED";
+const NOT_REPRESENTABLE: &str = "VALUE_NOT_REPRESENTABLE";
+const SHARED_UNIT: &str = "GROUPS_SHARE_INDEPENDENCE_UNIT";
+const UNBALANCED: &str = "UNBALANCED_BAND";
+const NO_WITHIN_DF: &str = "NO_WITHIN_GROUP_DF";
+const FEW_UNITS: &str = "FEWER_THAN_20_RESAMPLING_UNITS";
+const FEW_WITHIN_UNITS: &str = "FEWER_THAN_20_UNITS_WITH_WITHIN_DF";
+const REPLICATES: &str = "BOOTSTRAP_REPLICATES_NOT_ESTIMABLE";
+
+/// Status of a metric without any computed band, from its band reasons:
+/// numerical failures first, then the most specific data shortage.
+fn summary_status(
+    reasons: &[Option<&'static str>],
+    fallback: &'static str,
+) -> (Availability, &'static str) {
+    let has = |code: &str| reasons.iter().flatten().any(|r| *r == code);
+    if has(NOT_CONVERGED) {
+        (Availability::Error, NOT_CONVERGED)
+    } else if has(NOT_REPRESENTABLE) {
+        (Availability::Error, NOT_REPRESENTABLE)
+    } else if !reasons.is_empty() && reasons.iter().all(|r| *r == Some(ZERO_TOTAL)) {
+        (Availability::Undefined, ZERO_TOTAL)
+    } else if has(SHARED_UNIT) {
+        (Availability::Unsupported, SHARED_UNIT)
+    } else if has(REPLICATES) {
+        (Availability::InsufficientData, REPLICATES)
+    } else if has(FEW_WITHIN_UNITS) && !has(FEW_UNITS) {
+        (Availability::InsufficientData, FEW_WITHIN_UNITS)
+    } else if has(FEW_UNITS) {
+        (Availability::InsufficientData, FEW_UNITS)
+    } else if !reasons.is_empty() && reasons.iter().all(|r| *r == Some(UNBALANCED)) {
+        (Availability::Unsupported, "NO_BALANCED_BAND")
+    } else {
+        (Availability::InsufficientData, fallback)
+    }
+}
+
+/// Per-band resampling-unit counts after the band masks.
+struct BandUnits {
+    /// Units with at least one valid value in the band.
+    present: Vec<usize>,
+    /// Units holding a group with at least two valid values (within df).
+    within: Vec<usize>,
+    /// Some unit holds two or more physical groups present in the band.
+    shared: Vec<bool>,
+}
+
 impl Uncertainty<'_> {
     fn metric(&self, m: Metric) -> Metric {
         let mut m = with_context(m, self.context);
@@ -332,85 +387,109 @@ impl Uncertainty<'_> {
         ))
     }
 
-    /// Resampling unit of each row: the declared independence unit, linking
-    /// physical samples that share an individual, a declared group (unit
-    /// `group`) or a reference group (unit `reference_group`). IDs follow the
-    /// first row of each unit, so Methods orders units by appearance.
+    /// Independence unit of each row: the identity component of its sample
+    /// (physical sample, individual, augmentation parent, declared group when
+    /// the unit is `group`, reference groups of every target), as shared with
+    /// association and confounding. The declared unit must be resolvable for
+    /// every participating sample: `group` needs `independence_group` and
+    /// `reference_group` needs a `reference_group_id`; nothing falls back to
+    /// physical samples silently.
     fn resampling_units(&self) -> Result<Vec<i64>, (Availability, &'static str)> {
         let unit = self.input.options.independence_unit;
         if unit == IndependenceUnit::Unknown {
             return Err((Availability::NotIdentifiable, "INDEPENDENCE_UNIT_UNKNOWN"));
         }
-        let mut references = HashMap::<&str, Vec<&str>>::new();
-        if unit == IndependenceUnit::ReferenceGroup {
-            for target in &self.input.targets {
-                for v in &target.values {
-                    if let Some(group) = &v.reference_group_id {
-                        references.entry(&v.sample_id).or_default().push(group);
-                    }
+        let mut referenced = std::collections::HashSet::<&str>::new();
+        for target in &self.input.targets {
+            for v in &target.values {
+                if v.reference_group_id.is_some() {
+                    referenced.insert(&v.sample_id);
                 }
             }
         }
-        let n = self.rows.len();
-        let mut parent: Vec<usize> = (0..n).collect();
-        fn root(parent: &mut [usize], mut i: usize) -> usize {
-            while parent[i] != i {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            i
-        }
-        let mut first = BTreeMap::<String, usize>::new();
-        for (i, &r) in self.rows.iter().enumerate() {
+        let targets: Vec<&Target> = self.input.targets.iter().collect();
+        let component = independence_components(self.input, &targets);
+        let index: HashMap<&str, usize> = self
+            .input
+            .samples
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.sample_id.as_str(), i))
+            .collect();
+        let mut out = Vec::with_capacity(self.rows.len());
+        for &r in self.rows {
             let s = self.samples[self.source.sample_ids[r].as_str()];
-            let physical = s.physical_sample_id.as_ref().unwrap_or(&s.sample_id);
-            let mut keys = vec![format!("physical:{physical}")];
-            if let Some(individual) = &s.individual_id {
-                keys.push(format!("individual:{individual}"));
-            }
-            if unit == IndependenceUnit::Group {
-                match &s.independence_group {
-                    Some(group) => keys.push(format!("group:{group}")),
-                    None => {
-                        return Err((Availability::NotIdentifiable, "MISSING_INDEPENDENCE_GROUP"))
-                    }
+            match unit {
+                IndependenceUnit::Group if s.independence_group.is_none() => {
+                    return Err((Availability::NotIdentifiable, "MISSING_INDEPENDENCE_GROUP"))
                 }
-            }
-            for group in references.get(s.sample_id.as_str()).into_iter().flatten() {
-                keys.push(format!("reference:{group}"));
-            }
-            for key in keys {
-                if let Some(&j) = first.get(&key) {
-                    let (a, b) = (root(&mut parent, i), root(&mut parent, j));
-                    parent[a.max(b)] = a.min(b);
-                } else {
-                    first.insert(key, i);
+                IndependenceUnit::ReferenceGroup if !referenced.contains(s.sample_id.as_str()) => {
+                    return Err((Availability::NotIdentifiable, "MISSING_REFERENCE_GROUP"))
                 }
+                _ => {}
             }
+            out.push(component[index[s.sample_id.as_str()]] as i64);
         }
-        Ok((0..n).map(|i| root(&mut parent, i) as i64).collect())
+        Ok(out)
     }
 
-    fn bootstrap_plan(&self, units: usize, gate: Gate, valid: Option<&[usize]>) -> Value {
+    fn band_units(&self, request: &VarianceComponentsRequest, units: &[i64]) -> BandUnits {
+        let p = self.source.axis.len();
+        let mut out = BandUnits {
+            present: vec![0; p],
+            within: vec![0; p],
+            shared: vec![false; p],
+        };
+        for j in 0..p {
+            let mut per_group = BTreeMap::<i64, (i64, usize)>::new();
+            for (i, &g) in request.group_ids.iter().enumerate() {
+                if request.valid_mask[i][j] {
+                    per_group.entry(g).or_insert((units[i], 0)).1 += 1;
+                }
+            }
+            let mut present = std::collections::BTreeSet::new();
+            let mut within = std::collections::BTreeSet::new();
+            for &(unit, count) in per_group.values() {
+                present.insert(unit);
+                if count >= 2 {
+                    within.insert(unit);
+                }
+            }
+            out.present[j] = present.len();
+            out.within[j] = within.len();
+            out.shared[j] = present.len() < per_group.len();
+        }
+        out
+    }
+
+    fn bootstrap_plan(
+        &self,
+        units: usize,
+        gate: &Gate,
+        bands: Option<(&BandUnits, &[usize])>,
+    ) -> Value {
         let domain = self.seed_domain();
         json!({
-            "plan_version": "bootstrap_plan.v1",
+            "plan_version": "bootstrap_plan.v2",
             "resampling_unit": self.input.options.independence_unit,
-            "unit_linking": "physical_sample_individual_and_declared_group_or_reference_group",
+            "unit_linking": "shared_independence_components",
             "n_resampling_units": units,
-            "min_resampling_units": MIN_BOOTSTRAP_UNITS,
+            "min_resampling_units_per_band": MIN_BOOTSTRAP_UNITS,
+            "n_units_with_valid_value_per_band": bands.map(|b| &b.0.present),
+            "n_units_with_within_df_per_band": bands.map(|b| &b.0.within),
             "n_replicates_requested": BOOTSTRAP_REPLICATES,
             "executed": gate.is_none(),
-            "reason_code": gate.map(|g| g.1),
+            "reason_code": gate.as_ref().map(|g| g.1),
             "draw_method": "units_with_replacement_each_drawn_unit_contributes_all_its_groups",
             "rng_algorithm": "methods_pcg64_numpy_default_rng_integers_0_U_size_B_by_U",
             "seed": derive_seed(self.input.options.seed, &domain).to_string(),
             "seed_derivation": format!("splitmix64_finalizer(options.seed XOR fnv1a64({domain:?}))"),
             "same_draws_for_every_band": true,
             "interval": "percentile_type7",
+            "coverage": COVERAGE_NOTE,
             "replicate_validity": "reml_status_0_2_or_4_in_the_band",
             "band_reported_only_if_all_replicates_valid": true,
-            "n_valid_replicates_per_band": valid,
+            "n_valid_replicates_per_band": bands.map(|b| b.1),
         })
     }
 
@@ -420,6 +499,43 @@ impl Uncertainty<'_> {
             "nirs4all-preflight\0methods\0{PROTOCOL}\0{}\0{kind}\0{instrument}\0{campaign}",
             self.source.source_id
         )
+    }
+
+    /// Interval metric from per-band intervals and reasons (null bands carry
+    /// their reason; a metric without band gets `summary_status`).
+    fn interval_metric(
+        &self,
+        id: &str,
+        bands: &[Interval],
+        reasons: &[Option<&'static str>],
+        fallback: &'static str,
+        backend: &str,
+    ) -> Metric {
+        let src = Some(self.source.source_id.as_str());
+        let kept: Vec<Interval> = bands
+            .iter()
+            .zip(reasons)
+            .map(|(b, r)| if r.is_none() { *b } else { [None, None] })
+            .collect();
+        let mut m = if reasons.iter().any(Option::is_none) {
+            Metric::computed(
+                id,
+                json!({
+                    "lower": kept.iter().map(|b| b[0]).collect::<Vec<_>>(),
+                    "upper": kept.iter().map(|b| b[1]).collect::<Vec<_>>(),
+                }),
+                src,
+                None,
+            )
+        } else {
+            let (status, reason) = summary_status(reasons, fallback);
+            Metric::unavailable(id, status, reason, src, None)
+        };
+        m.parameters.insert("confidence".into(), json!(CONFIDENCE));
+        m.parameters.insert("band_reason".into(), json!(reasons));
+        m.parameters
+            .insert("backend_version".into(), json!(backend));
+        self.metric(m)
     }
 
     fn analyze(
@@ -433,31 +549,31 @@ impl Uncertainty<'_> {
         let n_units = units.as_ref().map_or(0, |u| {
             u.iter().collect::<std::collections::BTreeSet<_>>().len()
         });
-        let work = BOOTSTRAP_REPLICATES as f64 * p as f64 * (self.n_groups as f64 + 512.0);
-        let gate: Gate = match &units {
-            Err(e) => Some(e.clone()),
-            Ok(_) if n_units < MIN_BOOTSTRAP_UNITS => Some((
-                Availability::InsufficientData,
-                "FEWER_THAN_20_RESAMPLING_UNITS",
-            )),
-            Ok(_) if work > BOOTSTRAP_WORK_BUDGET => {
-                Some((Availability::Unsupported, "BOOTSTRAP_WORK_BUDGET_EXCEEDED"))
-            }
-            Ok(_) => None,
-        };
-        let vc_request = VarianceComponentsRequest {
+        let mut vc_request = VarianceComponentsRequest {
             matrix: request.matrix,
             group_ids: request.group_ids,
-            cluster_ids: units.as_ref().ok().filter(|_| gate.is_none()).cloned(),
+            cluster_ids: None,
             valid_mask: request.valid_mask,
             confidence: CONFIDENCE,
-            n_bootstrap: if gate.is_none() {
-                BOOTSTRAP_REPLICATES
-            } else {
-                0
-            },
+            n_bootstrap: 0,
             seed: derive_seed(self.input.options.seed, &self.seed_domain()),
         };
+        let bands = units.as_ref().ok().map(|u| self.band_units(&vc_request, u));
+        let work = BOOTSTRAP_REPLICATES as f64 * p as f64 * (self.n_groups as f64 + 1024.0);
+        let gate: Gate = match (&units, &bands) {
+            (Err(e), _) => Some(e.clone()),
+            (Ok(_), Some(b)) if b.present.iter().all(|&u| u < MIN_BOOTSTRAP_UNITS) => {
+                Some((Availability::InsufficientData, FEW_UNITS))
+            }
+            _ if work > BOOTSTRAP_WORK_BUDGET => {
+                Some((Availability::Unsupported, "BOOTSTRAP_WORK_BUDGET_EXCEEDED"))
+            }
+            _ => None,
+        };
+        if gate.is_none() {
+            vc_request.cluster_ids = units.as_ref().ok().cloned();
+            vc_request.n_bootstrap = BOOTSTRAP_REPLICATES;
+        }
         let ids = [REML_ID, SD_CHI2_ID, ICC_F_ID, SD_BOOT_ID, ICC_BOOT_ID];
         let d = match provider.variance_components(&vc_request) {
             Ok(d) if valid_result(&d, p, vc_request.n_bootstrap) => d,
@@ -483,31 +599,28 @@ impl Uncertainty<'_> {
         let src = Some(self.source.source_id.as_str());
         let signal_unit =
             (!self.source.signal_unit.trim().is_empty()).then(|| self.source.signal_unit.clone());
-        let usable = |s: i32| matches!(s, 0 | 2 | 4);
+        let reml_reason: Vec<Option<&'static str>> = d
+            .status
+            .iter()
+            .map(|s| match s {
+                0 | 2 | 4 => None,
+                1 => Some(INSUFFICIENT),
+                3 => Some(ZERO_TOTAL),
+                5 => Some(NOT_CONVERGED),
+                _ => Some(NOT_REPRESENTABLE),
+            })
+            .collect();
         let icc: Vec<Option<f64>> = d
             .icc
             .iter()
-            .zip(&d.status)
-            .map(|(v, &s)| v.filter(|_| usable(s)))
+            .zip(&reml_reason)
+            .map(|(v, r)| v.filter(|_| r.is_none()))
             .collect();
-        let mut reml = if icc.iter().any(Option::is_some) {
+        let mut reml = if reml_reason.iter().any(Option::is_none) {
             Metric::computed(REML_ID, json!(icc), src, None)
-        } else if d.status.iter().all(|&s| s == 3) {
-            Metric::unavailable(
-                REML_ID,
-                Availability::Undefined,
-                "ZERO_TOTAL_VARIANCE",
-                src,
-                None,
-            )
         } else {
-            Metric::unavailable(
-                REML_ID,
-                Availability::InsufficientData,
-                "NO_BAND_WITH_ESTIMABLE_REML",
-                src,
-                None,
-            )
+            let (status, reason) = summary_status(&reml_reason, "NO_BAND_WITH_ESTIMABLE_REML");
+            Metric::unavailable(REML_ID, status, reason, src, None)
         };
         let count_status = |code: i32| d.status.iter().filter(|&&s| s == code).count();
         for (key, value) in [
@@ -517,7 +630,7 @@ impl Uncertainty<'_> {
             ),
             (
                 "estimator",
-                json!("reml_profiled_grid_then_derivative_bisection"),
+                json!("reml_profiled_grid_every_local_maximum_refined_largest_likelihood_kept"),
             ),
             (
                 "icc_definition",
@@ -540,54 +653,51 @@ impl Uncertainty<'_> {
             ),
             ("band_status", json!(d.status)),
             ("band_status_codes", json!(REML_STATUS)),
+            ("band_reason", json!(reml_reason)),
             ("n_bands_between_variance_zero", json!(count_status(2))),
             ("n_bands_within_variance_zero", json!(count_status(4))),
             ("n_bands_not_converged", json!(count_status(5))),
+            ("n_bands_not_representable", json!(count_status(6))),
             ("n_groups_per_band", json!(d.n_groups)),
             ("n_observations_per_band", json!(d.n_observations)),
-            ("grid_local_minima_per_band", json!(d.grid_local_minima)),
+            ("reml_candidates_per_band", json!(d.reml_candidates)),
             (
                 "bisection_iterations_per_band",
                 json!(d.bisection_iterations),
             ),
+            ("numerical_domain", json!(NUMERICAL_DOMAIN)),
             ("backend_version", json!(d.backend_version)),
         ] {
             reml.parameters.insert(key.into(), value);
         }
         report.metrics.push(self.metric(reml));
 
+        let unrepresentable = |j: usize, b: &Interval| {
+            d.interval_status[j] == 6 && (b[0].is_none() || b[1].is_none())
+        };
         let df: Vec<usize> = d
             .n_observations
             .iter()
             .zip(&d.n_groups)
             .map(|(n, g)| n.saturating_sub(*g))
             .collect();
-        let interval_metric = |id: &str, bands: &[Interval], empty: (Availability, &str)| {
-            let mut m = if bands.iter().any(|b| b[0].is_some() && b[1].is_some()) {
-                Metric::computed(
-                    id,
-                    json!({
-                        "lower": bands.iter().map(|b| b[0]).collect::<Vec<_>>(),
-                        "upper": bands.iter().map(|b| b[1]).collect::<Vec<_>>(),
-                    }),
-                    src,
-                    None,
-                )
-            } else {
-                Metric::unavailable(id, empty.0, empty.1, src, None)
-            };
-            m.parameters.insert("confidence".into(), json!(CONFIDENCE));
-            m.parameters
-                .insert("backend_version".into(), json!(d.backend_version));
-            m
-        };
-        let mut chi = interval_metric(
+        let chi_reason: Vec<Option<&'static str>> = (0..p)
+            .map(|j| {
+                if df[j] == 0 {
+                    Some(NO_WITHIN_DF)
+                } else if unrepresentable(j, &d.sd_ci_chi_square[j]) {
+                    Some(NOT_REPRESENTABLE)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut chi = self.interval_metric(
             SD_CHI2_ID,
             &d.sd_ci_chi_square,
-            (
-                Availability::InsufficientData,
-                "NO_BAND_WITH_WITHIN_GROUP_DF",
-            ),
+            &chi_reason,
+            "NO_BAND_WITH_WITHIN_GROUP_DF",
+            &d.backend_version,
         );
         chi.unit = signal_unit.clone();
         chi.parameters.insert(
@@ -601,67 +711,90 @@ impl Uncertainty<'_> {
                 "normal_homoscedastic_within_group_errors_independent_of_between_group_dependence"
             ),
         );
-        report.metrics.push(self.metric(chi));
+        report.metrics.push(chi);
 
-        let mut exact = if self.input.options.independence_unit == IndependenceUnit::Unknown {
-            self.unavailable(
-                ICC_F_ID,
-                Availability::NotIdentifiable,
-                "INDEPENDENCE_UNIT_UNKNOWN",
-            )
-        } else {
-            self.metric(interval_metric(
-                ICC_F_ID,
-                &d.icc_ci_exact_f,
-                (Availability::Unsupported, "NO_BALANCED_BAND"),
-            ))
+        let mut exact = match (&units, &bands) {
+            (Err(e), _) => self.unavailable(ICC_F_ID, e.0.clone(), e.1),
+            (Ok(_), Some(b)) => {
+                let reasons: Vec<Option<&'static str>> = (0..p)
+                    .map(|j| {
+                        if b.shared[j] {
+                            Some(SHARED_UNIT)
+                        } else if unrepresentable(j, &d.icc_ci_exact_f[j]) {
+                            Some(NOT_REPRESENTABLE)
+                        } else if d.icc_ci_exact_f[j][0].is_none() {
+                            Some(UNBALANCED)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let mut m = self.interval_metric(
+                    ICC_F_ID,
+                    &d.icc_ci_exact_f,
+                    &reasons,
+                    "NO_BALANCED_BAND",
+                    &d.backend_version,
+                );
+                m.parameters.insert(
+                    "groups_share_independence_unit_per_band".into(),
+                    json!(b.shared),
+                );
+                m
+            }
+            (Ok(_), None) => unreachable!("band units exist for resolved units"),
         };
         exact.parameters.insert(
             "method".into(),
             json!("searle_exact_f: F=MSB/MSW, FL=F/F_{1-a/2}(g-1,N-g), FU=F*F_{1-a/2}(N-g,g-1), (F*-1)/(F*+r-1)"),
         );
+        exact.parameters.insert(
+            "eligibility".into(),
+            json!("balanced_band_and_every_physical_group_its_own_independence_unit"),
+        );
         exact
             .parameters
             .insert("truncation".into(), json!("none_bounds_may_be_negative"));
-        exact.parameters.insert(
-            "applies_to".into(),
-            json!("measurement.icc_1_1 bands with equal r >= 2 after the band mask"),
-        );
         report.metrics.push(exact);
 
         let valid = d.n_valid_replicates.as_slice();
-        let complete = |bands: &[Interval]| -> Vec<Interval> {
-            bands
-                .iter()
-                .zip(valid)
-                .map(|(b, &v)| {
-                    if v == BOOTSTRAP_REPLICATES {
-                        *b
-                    } else {
-                        [None, None]
-                    }
-                })
-                .collect()
-        };
-        for (id, bands, unit) in [
+        for (id, intervals, unit) in [
             (SD_BOOT_ID, &d.sd_ci_bootstrap, signal_unit.clone()),
             (ICC_BOOT_ID, &d.icc_ci_bootstrap, None),
         ] {
-            let mut m = match &gate {
-                Some((status, reason)) => self.unavailable(id, status.clone(), reason),
-                None => self.metric(interval_metric(
-                    id,
-                    &complete(bands),
-                    (
-                        Availability::InsufficientData,
-                        "BOOTSTRAP_REPLICATES_NOT_ESTIMABLE",
-                    ),
-                )),
+            let mut m = match (&gate, &bands) {
+                (Some((status, reason)), _) => self.unavailable(id, status.clone(), reason),
+                (None, Some(b)) => {
+                    let reasons: Vec<Option<&'static str>> = (0..p)
+                        .map(|j| {
+                            if b.present[j] < MIN_BOOTSTRAP_UNITS {
+                                Some(FEW_UNITS)
+                            } else if id == SD_BOOT_ID && b.within[j] < MIN_BOOTSTRAP_UNITS {
+                                Some(FEW_WITHIN_UNITS)
+                            } else if valid[j] < BOOTSTRAP_REPLICATES {
+                                Some(REPLICATES)
+                            } else if unrepresentable(j, &intervals[j]) {
+                                Some(NOT_REPRESENTABLE)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    self.interval_metric(id, intervals, &reasons, REPLICATES, &d.backend_version)
+                }
+                (None, None) => unreachable!("an executed bootstrap has resolved units"),
             };
             m.unit = unit;
             m.parameters.insert(
                 "bootstrap_plan".into(),
-                self.bootstrap_plan(n_units, gate.clone(), gate.is_none().then_some(valid)),
+                self.bootstrap_plan(
+                    n_units,
+                    &gate,
+                    bands
+                        .as_ref()
+                        .filter(|_| gate.is_none())
+                        .map(|b| (b, valid)),
+                ),
             );
             report.metrics.push(m);
         }
@@ -679,11 +812,11 @@ fn valid_result(d: &VarianceComponentsDiagnostics, p: usize, b: usize) -> bool {
         && d.icc.iter().flatten().all(|v| (0.0..=1.0).contains(v))
         && d.reml_log_likelihood.len() == p
         && d.status.len() == p
-        && d.status.iter().all(|s| (0..=5).contains(s))
+        && d.status.iter().all(|s| (0..=6).contains(s))
         && [
             &d.n_groups,
             &d.n_observations,
-            &d.grid_local_minima,
+            &d.reml_candidates,
             &d.bisection_iterations,
         ]
         .iter()
@@ -694,6 +827,28 @@ fn valid_result(d: &VarianceComponentsDiagnostics, p: usize, b: usize) -> bool {
         && intervals(&d.icc_ci_bootstrap)
         && d.n_valid_replicates.len() == p
         && d.n_valid_replicates.iter().all(|&v| v <= b)
+        && d.interval_status.len() == p
+        && d.interval_status.iter().all(|s| matches!(s, 0 | 6))
+}
+
+/// Mean without overflow or loss to a large common offset: values are
+/// divided by an exact power of two bounding max|x| (so the sum stays below
+/// the number of values), averaged, corrected by the residual mean, then
+/// scaled back exactly. A single value is returned unchanged.
+fn scaled_mean(values: &[f64]) -> f64 {
+    let largest = values.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    if values.len() == 1 || largest == 0.0 {
+        return values.first().copied().unwrap_or(0.0);
+    }
+    // frexp-like exponent: largest * 2^-e in [1/2, 1).
+    let e = largest.log2().floor() as i32 + 1;
+    // Exact power-of-two scaling in two halves, each within +-600.
+    let scale = |v: f64, k: i32| v * 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+    let n = values.len() as f64;
+    let y: Vec<f64> = values.iter().map(|&v| scale(v, -e)).collect();
+    let mean = y.iter().sum::<f64>() / n;
+    let mean = mean + y.iter().map(|v| v - mean).sum::<f64>() / n;
+    scale(mean, e)
 }
 
 /// Structure sensitivity to unequal repeat counts: each aggregated sample
@@ -769,11 +924,11 @@ pub(crate) fn balanced_repeat_sensitivity(
             chosen.truncate(r_star);
             (0..p)
                 .map(|c| {
-                    chosen
+                    let values: Vec<f64> = chosen
                         .iter()
                         .filter_map(|&r| valid_cell(source, r, c))
-                        .sum::<f64>()
-                        / r_star as f64
+                        .collect();
+                    scaled_mean(&values)
                 })
                 .collect()
         })

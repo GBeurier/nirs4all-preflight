@@ -238,7 +238,9 @@ test('WASM repeatability uncertainty matches the native engine',async()=>{
  assert.deepEqual(boot.parameters.bootstrap_plan.n_valid_replicates_per_band,[999,999]);
  near(boot.value.lower[0],0.9992022453402624);
  near(boot.value.upper[0],0.9996809447785994);
- near(find('measurement.repeatability_sd_ci_cluster_bootstrap','a').value.upper[0],0.016711762165560706);
+ // Only 18 of the 24 units carry within-group df: below the 20-unit minimum.
+ assert.equal(find('measurement.repeatability_sd_ci_cluster_bootstrap','a').reason_code,'FEWER_THAN_20_UNITS_WITH_WITHIN_DF');
+ assert.deepEqual(boot.parameters.bootstrap_plan.n_units_with_valid_value_per_band,[24,24]);
  // Balanced context b: REML equals the ANOVA ICC(1,1); SciPy 1.18.1 exact F bounds.
  near(find('measurement.icc_1_reml','b').value[0],0.9547872340425532);
  const exact=find('measurement.icc_1_1_ci_exact_f','b').value;
@@ -246,4 +248,16 @@ test('WASM repeatability uncertainty matches the native engine',async()=>{
  assert.ok(Math.abs(exact.upper[0]-0.9968006295172774)<1e-10);
  assert.equal(find('measurement.repeat_counts','a').value.n_repeated_groups,18);
  assert.ok(runtime.capabilities().some(c=>c.capability_id==='repeatability_uncertainty'&&c.available&&!c.qualified));
+});
+// Robustness: at 2^1000 the variances overflow a double; the bridge must carry
+// the native per-band status 6 and the error reason, never a value.
+test('WASM reports unrepresentable REML variances as errors',async()=>{
+ const fixture=JSON.parse(await readFile(new URL('../../../examples/repeatability_uncertainty.json',import.meta.url),'utf8'));
+ for(const row of fixture.sources[0].x) for(let c=0;c<row.length;c++) row[c]*=2**500*2**500;
+ const report=runtime.analyze(fixture);
+ const reml=report.metrics.find(m=>m.metric_id==='measurement.icc_1_reml'&&m.parameters.instrument==='a');
+ assert.equal(reml.status,'error');
+ assert.equal(reml.reason_code,'VALUE_NOT_REPRESENTABLE');
+ assert.deepEqual(reml.parameters.band_status,[6,6]);
+ assert.equal(reml.value,null);
 });
