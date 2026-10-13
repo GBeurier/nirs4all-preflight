@@ -143,6 +143,12 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
         self.invoke("permanova_freedman_lane", r)
     }
+    fn variance_components(
+        &self,
+        r: &VarianceComponentsRequest,
+    ) -> Result<VarianceComponentsDiagnostics, ProviderError> {
+        self.invoke("variance_components", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {

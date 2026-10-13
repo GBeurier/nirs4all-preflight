@@ -26,11 +26,7 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
         },
     ];
     out.extend(provider.capabilities());
-    for id in [
-        "validation_probe",
-        "domain_shift",
-        "repeatability_uncertainty",
-    ] {
+    for id in ["validation_probe", "domain_shift"] {
         out.push(Capability {
             capability_id: id.into(),
             available: false,
@@ -90,6 +86,11 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
                 "methods.holm_adjust",
             ]),
             "PERMANOVA_PROVIDER_NOT_CONFIGURED",
+        ),
+        (
+            "repeatability_uncertainty",
+            provided(&["methods.variance_components", "methods.summary"]),
+            "VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED",
         ),
     ];
     for (id, available, missing) in protocols {
@@ -576,7 +577,7 @@ fn analyze_source(
             Availability::InsufficientData,
             "FEWER_THAN_THREE_COMPLETE_SAMPLES",
         ));
-        analyze_snv(source, &group_rows, 0, canonical, input, provider, report);
+        structure_sensitivities(source, &group_rows, 0, canonical, input, provider, report);
         clustering::unavailable(
             report,
             &source.source_id,
@@ -736,7 +737,15 @@ fn analyze_source(
                     json!("methods_full_covariance_moments"),
                 );
                 report.metrics.push(dm);
-                analyze_snv(source, &group_rows, k, Ok(&result), input, provider, report);
+                structure_sensitivities(
+                    source,
+                    &group_rows,
+                    k,
+                    Ok(&result),
+                    input,
+                    provider,
+                    report,
+                );
             }
             Ok(_) => {
                 report.metrics.push(Metric::unavailable(
@@ -759,7 +768,7 @@ fn analyze_source(
                     "INVALID_PROVIDER_RESULT",
                 );
                 let canonical = Err((Availability::Error, "CANONICAL_PCA_UNAVAILABLE"));
-                analyze_snv(source, &group_rows, k, canonical, input, provider, report);
+                structure_sensitivities(source, &group_rows, k, canonical, input, provider, report);
             }
             Err(e) => {
                 report.metrics.push(Metric::unavailable(
@@ -772,11 +781,11 @@ fn analyze_source(
                 clustering::unavailable(report, &source.source_id, e.availability(), &e.reason);
                 confounding::unavailable(report, &source.source_id, e.availability(), &e.reason);
                 let canonical = Err((e.availability(), "CANONICAL_PCA_UNAVAILABLE"));
-                analyze_snv(source, &group_rows, k, canonical, input, provider, report);
+                structure_sensitivities(source, &group_rows, k, canonical, input, provider, report);
             }
         }
     }
-    repeatability::analyze_repeats(source, samples, &dev_rows, provider, report);
+    repeatability::analyze_repeats(source, input, samples, &dev_rows, provider, report);
     analyze_noise_proxy(source, samples, &dev_rows, input, provider, report);
 }
 
@@ -1111,6 +1120,29 @@ fn analyze_local(
             report.metrics.push(m);
         }
     }
+}
+
+/// Labelled sensitivities of the canonical structure: SNV view and
+/// balanced repeat counts.
+fn structure_sensitivities(
+    source: &SpectralSource,
+    group_rows: &[Vec<usize>],
+    k: usize,
+    canonical: Result<&PcaDiagnostics, (Availability, &str)>,
+    input: &QualificationInput,
+    provider: &impl MethodsProvider,
+    report: &mut QualificationReport,
+) {
+    repeatability::balanced_repeat_sensitivity(
+        source,
+        group_rows,
+        k,
+        canonical.clone(),
+        input,
+        provider,
+        report,
+    );
+    analyze_snv(source, group_rows, k, canonical, input, provider, report);
 }
 
 /// Labelled unsupervised SNV view of the same aggregated samples as the canonical PCA.

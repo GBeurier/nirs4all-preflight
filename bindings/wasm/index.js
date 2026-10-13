@@ -52,7 +52,7 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane', 'variance_components'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -176,6 +176,27 @@ export async function createQualificationRuntime(options = {}) {
       }
       case 'bh_adjust': {
         result = { adjusted: Array.from(methods.statsBhAdjust(Float64Array.from(request.p_values))), backend_version };
+        break;
+      }
+      case 'variance_components': {
+        // Seeds travel as decimal strings so no u64 is rounded by JSON.
+        const x = matrix(request.matrix);
+        const validMask = Uint8Array.from(request.valid_mask.flat(), Boolean);
+        const point = methods.statsVarianceComponentsReml(x, request.group_ids, validMask);
+        const ci = methods.statsVarianceComponentsIntervals(x, request.group_ids, {
+          confidence: request.confidence, nBootstrap: request.n_bootstrap, seed: BigInt(request.seed),
+          clusterIds: request.cluster_ids ?? undefined, validMask,
+        });
+        const pairs = values => Array.from({ length: x.cols }, (_, j) => [nullable(values[2 * j]), nullable(values[2 * j + 1])]);
+        result = {
+          sigma2_between: Array.from(point.sigma2Between, nullable), sigma2_within: Array.from(point.sigma2Within, nullable),
+          icc: Array.from(point.icc, nullable), reml_log_likelihood: Array.from(point.logLikelihood, nullable),
+          n_groups: point.nGroups, n_observations: point.nObservations, grid_local_minima: point.gridLocalMinima,
+          bisection_iterations: point.bisectionIterations, status: Array.from(point.status),
+          sd_ci_chi_square: pairs(ci.sdChiSquare), icc_ci_exact_f: pairs(ci.iccExactF),
+          sd_ci_bootstrap: pairs(ci.sdBootstrap), icc_ci_bootstrap: pairs(ci.iccBootstrap),
+          n_valid_replicates: ci.nValidReplicates, backend_version,
+        };
         break;
       }
       default: throw limit('METHODS_OPERATION_UNSUPPORTED');

@@ -19,6 +19,17 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
 - Confounding supported numerical domain (rule 13): the Methods PERMANOVA, Freedman–Lane and PERMDISP kernels refuse unit coordinates outside D (nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^64); the refusal is reported as `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` through the shared `ProviderError::from_methods_error` (native context message, WASM `N4mError` status and message forwarded in the structured callback reply). `numerical_domain` is now the structured object shared with the association metrics. Native and WASM tests cover both sides of D.
 - Provider errors are structured (`ProviderError { kind, reason }`, kinds `unsupported`, `numerical`, `internal`). Only absent capabilities and declared limits are reported `unsupported`; numerical and internal provider failures are now `error`, with stable `METHODS_<STATUS>` reasons identical in the native and WASM adapters (previously every failure was `unsupported`, with `METHODS_STATUS_<n>` natively and `METHODS_CALLBACK_FAILED` in WASM). The WASM callback replies `{ok}` or `{provider_error}`.
 
+- `repeatability_uncertainty` (PF-10) changes from `PROTOCOL_NOT_IMPLEMENTED` to available but unqualified (exploratory). It requires Methods ABI 2.20 (`n4m_stats_variance_components_reml`, `n4m_stats_variance_components_intervals`); the native and WASM providers now require ABI 2.20 and expose `methods.variance_components`.
+- New metrics per technical context:
+  - `measurement.repeat_counts`: r_i dispersion and histogram.
+  - `measurement.icc_1_reml`: REML ICC(1) for unbalanced designs, singletons included. It carries s2_between, s2_within, the REML log-likelihood and band status, with the boundaries s2_between = 0 / s2_within = 0 and non-convergence flagged and counted.
+  - `measurement.repeatability_sd_ci_chi_square`: exact chi-square interval of the within-group SD.
+  - `measurement.icc_1_1_ci_exact_f`: Searle exact F interval of the balanced ICC(1,1).
+  - `measurement.repeatability_sd_ci_cluster_bootstrap` and `measurement.icc_1_reml_ci_cluster_bootstrap`: percentile intervals with a versioned `bootstrap_plan`, 999 replicates over the declared independence unit, NumPy-parity PCG64 draws and a derived seed.
+- Reason codes: `FEWER_THAN_20_RESAMPLING_UNITS`, `BOOTSTRAP_WORK_BUDGET_EXCEEDED`, `BOOTSTRAP_REPLICATES_NOT_ESTIMABLE`, `NO_BAND_WITH_ESTIMABLE_REML`, `NO_BAND_WITH_WITHIN_GROUP_DF`, `NO_BALANCED_BAND`, `REPEAT_COUNTS_ALREADY_EQUAL`, `ZERO_BALANCED_TOTAL_VARIANCE` and `VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED`. `INDEPENDENCE_UNIT_UNKNOWN` and `MISSING_INDEPENDENCE_GROUP` are reused.
+- New structure metric `structure.balanced_repeat_sensitivity`: the canonical PCA structure versus a seeded subsample of every aggregated sample to r* = min r_i acquisitions. No sample is removed.
+- No new input option. The independence unit (`options.independence_unit`) and the root seed (`options.seed`) drive the new intervals. The example `examples/repeatability_uncertainty.json` exercises the protocol.
+
 ## 0.1.0-alpha.3 — 2026-10-13
 
 Engine, crates, Python and npm binding move together to 0.1.0-alpha.3 and require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.
