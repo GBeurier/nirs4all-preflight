@@ -44,8 +44,8 @@ fn native_clustering_matches_the_independent_python_golden() {
     };
     let provider = NativeMethodsProvider::load(path).expect("compatible Methods ABI");
     let golden: Value =
-        serde_json::from_str(include_str!("fixtures/clustering_v2_golden.json")).unwrap();
-    assert_eq!(golden["protocol"], "clustering.v2");
+        serde_json::from_str(include_str!("fixtures/clustering_v3_golden.json")).unwrap();
+    assert_eq!(golden["protocol"], "clustering.v3");
     let mut assessments = Vec::new();
     for case in golden["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -136,6 +136,16 @@ fn native_clustering_matches_the_independent_python_golden() {
                 }
             }
             let appearance_id = id.replace("subsample_stability", "cluster_appearance_frequency");
+            if expected["cluster_count"] == 0 {
+                let m = report
+                    .metrics
+                    .iter()
+                    .find(|m| m.metric_id == appearance_id)
+                    .unwrap();
+                assert!(matches!(m.status, Availability::NotApplicable));
+                assert_eq!(m.reason_code.as_deref(), Some("NO_REFERENCE_CLUSTERS"));
+                continue;
+            }
             let appearance = get(&appearance_id).value.as_ref().unwrap();
             for cluster in appearance["clusters"].as_array().unwrap() {
                 let golden_label = map[&cluster["label"].as_i64().unwrap()];
@@ -167,11 +177,28 @@ fn native_clustering_matches_the_independent_python_golden() {
             assert_eq!(g["cluster_count"], w["cluster_count"], "{name} null");
             assert!(near(&g["noise_fraction"], &w["noise_fraction"]));
             assert!(near(&g["median_ari"], &w["median_ari"]), "{name} null ari");
+            assert!(near(
+                &g["coverage_weighted_stability"],
+                &w["coverage_weighted_stability"]
+            ));
         }
+        let golden_null = &expected["null"];
         assert!(near(
-            &null["comparison"]["joint_dominance"]["upper_tail_fraction"],
-            &expected["null"]["joint_dominance_upper_tail_fraction"]
+            &null["observed"]["coverage_weighted_stability"],
+            &golden_null["observed_statistic"]
         ));
+        assert!(near(
+            &null["observed"]["frozen_projection_median_ari"],
+            &golden_null["observed_frozen_median_ari"]
+        ));
+        assert!(
+            near(&null["test"]["p_value"], &golden_null["p_value"]),
+            "{name}"
+        );
+        assert_eq!(
+            null["test"]["decisional"], golden_null["decisional"],
+            "{name}"
+        );
         let assessment = get("clustering.partition_assessment")
             .value
             .as_ref()
@@ -185,7 +212,10 @@ fn native_clustering_matches_the_independent_python_golden() {
             "uncertain_partition",
             "uncertain_partition",
             "stable_candidate_partition",
-            "compatible_with_continuous_structure"
+            "compatible_with_continuous_structure",
+            "uncertain_partition",
+            "no_density_separated_groups",
+            "stable_candidate_partition",
         ]
     );
 }

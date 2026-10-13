@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-2.1 OR AGPL-3.0-or-later
-"""Generate crates/nirs4all-preflight/tests/fixtures/clustering_v2_golden.json.
+"""Generate crates/nirs4all-preflight/tests/fixtures/clustering_v3_golden.json.
 
-Test-only, independent Python implementation of the Preflight `clustering.v2`
-protocol, used as the full-chain golden for the native and WASM engines. It
+Test-only, independent Python implementation of the Preflight `clustering.v3`
+protocol `clustering.v3`, used as the full-chain golden for the native and WASM engines. It
 pins numpy==2.4.6, scipy==1.18.1 and scikit-learn==1.9.1 (BSD-3-Clause); none
 of them is a runtime dependency.
 
@@ -13,7 +13,9 @@ the stable MST edge order of Methods (`stable_single_linkage`) -> 50 subsample
 plans from numpy default_rng(seed).permutation(U) with the Preflight seed
 derivation -> refit, ARI (scikit-learn adjusted_rand_score), Jaccard matching
 with scipy linear_sum_assignment -> 99 Gaussian null replicates drawn by
-numpy multivariate_normal(method="cholesky"). Summaries use numpy type-7
+numpy multivariate_normal(method="cholesky") in the frozen canonical score
+space, compared with the observed frozen-projection subsamples through the
+coverage-weighted stability and its Monte Carlo p-value. Summaries use numpy type-7
 quantiles. The stock scikit-learn partition is recorded for information.
 
 Usage: python scripts/generate_clustering_golden.py [output.json]
@@ -35,7 +37,7 @@ from sklearn.cluster import HDBSCAN
 from sklearn.metrics import adjusted_rand_score
 
 PINNED = {"numpy": "2.4.6", "scipy": "1.18.1", "scikit-learn": "1.9.1"}
-PROTOCOL = "clustering.v2"
+PROTOCOL = "clustering.v3"
 MASK = (1 << 64) - 1
 N_SUBSAMPLES, N_NULL, MIN_ARI, GRID_BITS = 50, 99, 10, 24
 
@@ -173,30 +175,32 @@ def protocol(x: np.ndarray, spec: dict, root: int, source_id: str) -> dict:
             "assigned_in_both_fraction_of_eligible": summary([c["assigned_in_both_size"] / n for c in comparisons]),
             "appearance": appearance(full, k, plans, partitions) if k else None,
         }
-    obs_ari = (out["variants"]["scaled"]["ari_assigned_in_both"] or {}).get("median")
+    def frozen(points: np.ndarray, reference: np.ndarray) -> tuple[float, float | None]:
+        weighted, aris = [], []
+        for rows in plans:
+            c = compare(reference, rows, hdbscan(points[rows], *scaled))
+            weighted.append(0.0 if c["ari"] is None else c["ari"] * c["assigned_in_both_size"] / len(rows))
+            if c["ari"] is not None:
+                aris.append(c["ari"])
+        return float(np.median(weighted)), (float(np.median(aris)) if aris else None)
+
+    observed_statistic, observed_ari = frozen(scores, full)
     ridge = 1e-6 * eig.mean()
     cov = np.diag(eig + ridge)
     replicates = []
     for b in range(N_NULL):
         seed = derive_seed(root, f"nirs4all-preflight\0methods\0{PROTOCOL}\0gaussian_null\0{source_id}\0{b}")
         draw = np.random.default_rng(seed).multivariate_normal(np.zeros(len(eig)), cov, size=n, method="cholesky")
-        null_full = hdbscan(refit(draw, list(range(n))), mcs, mcs)
-        aris = []
-        for rows in plans:
-            c = compare(null_full, rows, hdbscan(refit(draw, rows), *scaled))
-            if c["ari"] is not None:
-                aris.append(c["ari"])
+        null_full = hdbscan(draw, mcs, mcs)
+        statistic, median_ari = frozen(draw, null_full)
         replicates.append({"cluster_count": int(null_full.max() + 1) if (null_full >= 0).any() else 0,
                            "noise_fraction": float((null_full < 0).sum() / n),
-                           "median_ari": float(np.median(aris)) if aris else None})
-    out["null"] = {"per_replicate": replicates}
-    if obs_ari is not None:
-        ge = sum(r["median_ari"] is not None and r["median_ari"] >= obs_ari for r in replicates)
-        out["null"]["median_ari_upper_tail_fraction"] = (1 + ge) / (1 + N_NULL)
-        noise = out["noise"] / n
-        joint = sum(r["cluster_count"] >= k and r["noise_fraction"] <= noise and r["median_ari"] is not None
-                    and r["median_ari"] >= obs_ari for r in replicates)
-        out["null"]["joint_dominance_upper_tail_fraction"] = (1 + joint) / (1 + N_NULL)
+                           "coverage_weighted_stability": statistic, "median_ari": median_ari})
+    ge = sum(r["coverage_weighted_stability"] >= observed_statistic for r in replicates)
+    decisional = spec["unit"] in ("sample", "group", "reference_group") and all(len(u) == 1 for u in units)
+    out["null"] = {"per_replicate": replicates, "observed_statistic": observed_statistic,
+                   "observed_frozen_median_ari": observed_ari, "p_value": (1 + ge) / (1 + N_NULL),
+                   "decisional": decisional}
     return out
 
 
@@ -227,6 +231,16 @@ def datasets() -> list[tuple[str, np.ndarray, dict, int]]:
     ties = np.vstack([grid, np.repeat(grid[:4], 5, axis=0)])
     blobs = np.vstack([rng.normal(c, 0.35, (20, 4)) for c in ([0, 0, 0, 0], [6, 0, 1, 0], [0, 6, 0, 1])])
     continuum = rng.multivariate_normal(np.zeros(3), np.diag([4.0, 1.0, 0.25]), size=60)
+    # Review 2026-10-13: 12 unit centres from one Gaussian, 5 near-identical
+    # rows each, declared as groups. Independent simulated rows would erase the
+    # within-unit dependence, so the null must not decide here.
+    centres = np.random.default_rng(5).normal(0, 1, (12, 2))
+    grouped = np.repeat(centres, 5, axis=0) + np.random.default_rng(6).normal(0, 1e-4, (60, 2))
+    # p > 10: 20 directions of similar variance, of which PCA keeps 10.
+    wide = rng.normal(0, 1, (60, 20)) * np.sqrt(np.linspace(1.0, 0.8, 20))
+    centres15 = np.zeros((3, 15))
+    centres15[1, 0], centres15[2, 1] = 6.0, 6.0
+    wide_blobs = np.vstack([c + rng.normal(0, 0.5, (20, 15)) for c in centres15])
     # The `duplicates_ties` case of Methods parity/generators/hdbscan_v1.py (same
     # draw sequence from default_rng(20261013)), on which the 2026-10-13 review
     # found 7 CPU and 8 WASM groups with undeclared units and seed 7.
@@ -242,9 +256,13 @@ def datasets() -> list[tuple[str, np.ndarray, dict, int]]:
     return [
         ("review_duplicates_ties", review_ties, {"unit": "unknown"}, 7),
         ("duplicates_ties", ties, {"unit": "sample"}, 7),
-        ("separated_blobs", blobs, {"unit": "group", "group_of": [f"g{i // 2:02d}" for i in range(60)]}, 11),
+        ("separated_blobs", blobs, {"unit": "sample"}, 11),
         ("gaussian_continuum", continuum,
-         {"unit": "reference_group", "group_of": [f"r{i // 3:02d}" for i in range(60)]}, 13),
+         {"unit": "reference_group", "group_of": [f"r{i:02d}" for i in range(60)]}, 13),
+        ("grouped_gaussian_units", grouped,
+         {"unit": "group", "group_of": [f"g{i // 5:02d}" for i in range(60)]}, 7),
+        ("twenty_similar_bands", wide, {"unit": "sample"}, 17),
+        ("blobs_in_fifteen_bands", wide_blobs, {"unit": "sample"}, 19),
     ]
 
 
@@ -260,13 +278,13 @@ def main() -> None:
         e = cases[-1]["expected"]
         print(f"{name}: clusters={e['cluster_count']} noise={e['noise']} stock_ari={e['stock_sklearn_ari']:.3f}"
               f" scaled_median_ari={(e['variants']['scaled']['ari_assigned_in_both'] or {}).get('median')}"
-              f" null_joint_tail={e['null'].get('joint_dominance_upper_tail_fraction')}")
-    body = {"format": "n4pf_clustering_v2_golden", "protocol": PROTOCOL,
+              f" T={e['null']['observed_statistic']:.3f} p={e['null']['p_value']} decisional={e['null']['decisional']}")
+    body = {"format": "n4pf_clustering_v3_golden", "protocol": PROTOCOL,
             "reference": {**versions, "python": sys.version.split()[0],
                           "hdbscan": "scikit-learn 1.9.1 internals with a stable MST edge sort (Methods tie rule)"},
             "cases": cases}
     out = (Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-           / "crates" / "nirs4all-preflight" / "tests" / "fixtures" / "clustering_v2_golden.json")
+           / "crates" / "nirs4all-preflight" / "tests" / "fixtures" / "clustering_v3_golden.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(body, separators=(",", ":")) + "\n")
 

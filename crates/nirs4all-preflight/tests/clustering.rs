@@ -248,8 +248,9 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     let mut x = input(40);
     x.options.independence_unit = IndependenceUnit::Sample;
     let report = analyze(&x, &mock);
-    // Full partition, 2 x 50 subsamples, 99 null replicates x (1 + 50).
-    assert_eq!(mock.hdbscan_calls.get(), 1 + 2 * 50 + 99 * 51);
+    // Full partition, 2 x 50 refit subsamples, 50 observed frozen-projection
+    // subsamples, 99 null replicates x (1 + 50).
+    assert_eq!(mock.hdbscan_calls.get(), 1 + 2 * 50 + 50 + 99 * 51);
     let partition = metric(&report, "clustering.partition");
     assert!(matches!(partition.status, Availability::Computed));
     assert_eq!(partition.view_id, "canonical:centered");
@@ -257,7 +258,7 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     assert_eq!(value["sample_ids"][0], "s000");
     assert_eq!(value["labels"].as_array().unwrap().len(), 40);
     assert_eq!(partition.parameters["min_cluster_size"], 5);
-    assert_eq!(partition.parameters["protocol"], "clustering.v2");
+    assert_eq!(partition.parameters["protocol"], "clustering.v3");
     assert_eq!(
         partition.parameters["membership_semantics"],
         "relative_strength_not_probability"
@@ -299,15 +300,19 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     assert_eq!(null.denominators["n_replicates"], 99);
     let nv = null.value.as_ref().unwrap();
     assert_eq!(nv["null"]["fraction_with_at_least_two_clusters"], 1.0);
-    // Every mock replicate equals the observation: joint tail (1+99)/100.
+    // Every mock replicate equals the observation: p = (1 + 99) / 100.
+    assert_eq!(nv["test"]["statistic"], "coverage_weighted_stability");
+    assert_eq!(nv["observed"]["coverage_weighted_stability"], 1.0);
+    assert_eq!(nv["test"]["p_value"], 1.0);
+    assert_eq!(nv["test"]["decisional"], true);
     assert_eq!(
-        nv["comparison"]["joint_dominance"]["upper_tail_fraction"],
-        1.0
+        nv["description"]["joint_dominance"]["n_null_dominating"],
+        99
     );
-    assert!(null.parameters["limitations"]
+    assert!(null.parameters["decisional_scope"]
         .as_str()
         .unwrap()
-        .contains("not a calibrated test"));
+        .contains("descriptive only"));
     let assessment = metric(&report, "clustering.partition_assessment");
     assert_eq!(
         assessment.value.as_ref().unwrap()["assessment"],
@@ -335,11 +340,26 @@ fn subsampling_is_seeded_and_respects_independence_groups() {
     assert_eq!(a.denominators["n_independent_units"], 20);
     assert_eq!(a.denominators["n_units_per_subsample"], 16);
     assert_eq!(a.value.as_ref().unwrap()["intersection_size"]["max"], 32.0);
+    // Two-row units: independent simulated rows would erase the within-unit
+    // dependence, so the null is descriptive and cannot decide (review P1).
+    let null = metric(&first, "clustering.gaussian_null_model");
+    let test = &null.value.as_ref().unwrap()["test"];
+    assert_eq!(test["decisional"], false);
+    assert_eq!(test["decisional_reason"], "MULTI_ROW_RESAMPLING_UNITS");
+    let assessment = metric(&first, "clustering.partition_assessment")
+        .value
+        .as_ref()
+        .unwrap();
+    assert_eq!(assessment["assessment"], "uncertain_partition");
+    assert_eq!(
+        assessment["criteria"]["null_monte_carlo_p_value"]["passed"],
+        serde_json::Value::Null
+    );
     // The plans are drawn once and reused by both variants and the null.
     let seeds = mock.permutation_seeds.borrow().clone();
     assert_eq!(seeds.len(), 1);
     // splitmix64_finalizer(7 XOR fnv1a64(domain)), recomputed independently.
-    let domain = "nirs4all-preflight\0methods\0clustering.v2\0subsample_plans\0x";
+    let domain = "nirs4all-preflight\0methods\0clustering.v3\0subsample_plans\0x";
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in domain.bytes() {
         hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);

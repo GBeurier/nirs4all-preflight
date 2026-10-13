@@ -63,7 +63,7 @@ test('WASM clustering uses Methods HDBSCAN on canonical PCA scores',()=>{
 // match the independent NumPy/SciPy/scikit-learn golden that the native test
 // also checks (crates/nirs4all-preflight/tests/clustering_golden.rs).
 test('WASM clustering matches the full-chain Python golden',async()=>{
- const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/clustering_v2_golden.json',import.meta.url),'utf8'));
+ const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/clustering_v3_golden.json',import.meta.url),'utf8'));
  const near=(a,b)=>a===null||b===null?a===b:Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(b));
  const assessments=[];
  for(const c of golden.cases){
@@ -89,14 +89,19 @@ test('WASM clustering matches the full-chain Python golden',async()=>{
     assert.ok(near(g.ari,w.ari),`${c.name} ${variant} ari ${i}`);
    });
   }
-  m['clustering.gaussian_null_model'].value.per_replicate.forEach((g,i)=>{
+  const nullModel=m['clustering.gaussian_null_model'].value;
+  nullModel.per_replicate.forEach((g,i)=>{
    const w=e.null.per_replicate[i];
    assert.equal(g.cluster_count,w.cluster_count,`${c.name} null ${i}`);
    assert.ok(near(g.median_ari,w.median_ari),`${c.name} null ari ${i}`);
+   assert.ok(near(g.coverage_weighted_stability,w.coverage_weighted_stability),`${c.name} null T ${i}`);
   });
+  assert.ok(near(nullModel.observed.coverage_weighted_stability,e.null.observed_statistic),c.name);
+  assert.ok(near(nullModel.test.p_value,e.null.p_value),c.name);
+  assert.equal(nullModel.test.decisional,e.null.decisional,c.name);
   assessments.push(m['clustering.partition_assessment'].value.assessment);
  }
- assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_partition','compatible_with_continuous_structure']);
+ assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_partition','compatible_with_continuous_structure','uncertain_partition','no_density_separated_groups','stable_candidate_partition']);
 });
 test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  // SG window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.

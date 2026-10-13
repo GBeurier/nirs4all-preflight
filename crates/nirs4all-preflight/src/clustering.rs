@@ -1,12 +1,12 @@
 //! Exploratory HDBSCAN partition, subsample stability, cluster matching and a
-//! unimodal Gaussian null model on the canonical PCA scores (`clustering.v2`).
+//! unimodal Gaussian null model on the canonical PCA scores (`clustering.v3`).
 //! Methods owns PCA, HDBSCAN, ARI, Jaccard, assignment, PCG64 draws and
 //! summaries; this module owns eligibility, resampling units, plans, seed
 //! derivation, the score-grid policy, comparisons, statuses and rules.
 use crate::*;
 use serde_json::{json, Value};
 
-pub(crate) const PROTOCOL: &str = "clustering.v2";
+pub(crate) const PROTOCOL: &str = "clustering.v3";
 const MATCHING_PROTOCOL: &str = "cluster_matching.v1";
 const N_SUBSAMPLES: usize = 50;
 const N_NULL_REPLICATES: usize = 99;
@@ -21,7 +21,7 @@ const SCORE_GRID_BITS: i32 = 24;
 const APPEARANCE_JACCARD: f64 = 0.5;
 /// Null covariance: diag(eigenvalues) + RIDGE x mean(eigenvalues) x I.
 const NULL_RIDGE: f64 = 1e-6;
-/// Exploratory assessment thresholds (assessment rule v1, not calibrated).
+/// Exploratory assessment thresholds (assessment rule v2, not validated).
 const STABLE_MEDIAN_ARI: f64 = 0.8;
 const STABLE_APPEARANCE: f64 = 0.8;
 const STABLE_ASSIGNED_FRACTION: f64 = 0.5;
@@ -864,7 +864,7 @@ pub(crate) fn analyze(
     let observed = Observed {
         clusters,
         noise_fraction: noise as f64 / n as f64,
-        median_ari: variants[0].as_ref().and_then(|v| v.stability.median_ari),
+        labels: &full.labels,
     };
     let null = gaussian_null(
         provider,
@@ -1075,14 +1075,16 @@ fn matching_parameters(metric: &mut Metric) {
     }
 }
 
-struct Observed {
+struct Observed<'a> {
     clusters: usize,
     noise_fraction: f64,
-    median_ari: Option<f64>,
+    labels: &'a [i64],
 }
 
 struct NullSummary {
-    joint_tail: Option<f64>,
+    /// Monte Carlo p-value of the coverage-weighted stability, when decisional.
+    p_value: Option<f64>,
+    decisional: bool,
     fraction_two_or_more: f64,
 }
 
@@ -1102,6 +1104,33 @@ fn tail(null: &[Option<f64>], observed: f64, b: usize) -> Value {
         "upper_tail_fraction": (1 + ge) as f64 / (1 + b) as f64,
         "lower_tail_fraction": (1 + le) as f64 / (1 + b) as f64,
     })
+}
+
+/// Frozen-projection stability: subsamples of a fixed score matrix (no PCA
+/// refit) clustered with the scaled parameters and compared with `full`.
+/// Returns the coverage-weighted stability, the median over subsamples of
+/// ARI x (assigned in both / drawn), with 0 for a subsample without
+/// evaluable ARI, and the median of the evaluable ARIs.
+fn frozen_stability(
+    provider: &impl MethodsProvider,
+    scores: &[Vec<f64>],
+    full: &[i64],
+    plans: &[Vec<usize>],
+    params: (usize, usize),
+) -> Result<(f64, Option<f64>), Failure> {
+    let (mut weighted, mut aris) = (Vec::new(), Vec::new());
+    for rows in plans {
+        let sub: Vec<Vec<f64>> = rows.iter().map(|&r| scores[r].clone()).collect();
+        let labels = hdbscan(provider, &sub, params.0, params.1)?.labels;
+        let c = compare(provider, full, rows, &labels)?;
+        weighted.push(
+            c.ari
+                .map_or(0.0, |a| a * c.assigned_in_both as f64 / c.drawn as f64),
+        );
+        aris.extend(c.ari);
+    }
+    let statistic = median_of(provider, &weighted)?.ok_or_else(invalid)?;
+    Ok((statistic, median_of(provider, &aris)?))
 }
 
 fn gaussian_null(
@@ -1124,6 +1153,28 @@ fn gaussian_null(
     }
     let with_stability =
         resampling.filter(|_| full_work * (1 + N_SUBSAMPLES) as f64 <= WORK_BUDGET);
+    // Simulated rows are independent, so the comparison decides only when
+    // every resampling unit is one declared-independent row.
+    let decisional_reason = match resampling {
+        None => Some("RESAMPLING_UNAVAILABLE"),
+        Some(r) if !r.units.independent => Some("INDEPENDENCE_UNIT_UNDECLARED"),
+        Some(r) if r.units.members.iter().any(|m| m.len() > 1) => {
+            Some("MULTI_ROW_RESAMPLING_UNITS")
+        }
+        Some(_) if with_stability.is_none() => Some("NULL_STABILITY_WORK_BUDGET_EXCEEDED"),
+        Some(_) => None,
+    };
+    let sub_params = (2.max(four_fifths(min_size)), 1.max(four_fifths(min_size)));
+    let observed_frozen = match with_stability {
+        Some(r) => Some(frozen_stability(
+            provider,
+            geometry.scores,
+            observed.labels,
+            &r.plans,
+            sub_params,
+        )?),
+        None => None,
+    };
     let mean_eigenvalue = geometry.eigenvalues.iter().sum::<f64>() / d as f64;
     let ridge = NULL_RIDGE * mean_eigenvalue;
     let covariance: Vec<Vec<f64>> = (0..d)
@@ -1139,9 +1190,8 @@ fn gaussian_null(
                 .collect()
         })
         .collect();
-    let ids: Vec<String> = (0..n).map(|i| format!("null:{i}")).collect();
-    let sub_params = (2.max(four_fifths(min_size)), 1.max(four_fifths(min_size)));
-    let (mut counts, mut noises, mut aris) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut counts, mut noises, mut statistics, mut aris) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut backend = String::new();
     for b in 0..N_NULL_REPLICATES {
         let draw = provider
@@ -1161,61 +1211,58 @@ fn gaussian_null(
             return Err(invalid());
         }
         backend.clone_from(&draw.backend_version);
-        let all: Vec<usize> = (0..n).collect();
-        let scores = refit_scores(provider, source_id, &draw.samples, &ids, &all)?;
-        let full = hdbscan(provider, &scores, min_size, min_size)?;
+        // The draws are already in the frozen canonical score space.
+        let full = hdbscan(provider, &draw.samples, min_size, min_size)?;
         counts.push(full.persistence.len());
         noises.push(full.labels.iter().filter(|&&l| l < 0).count() as f64 / n as f64);
         if let Some(r) = with_stability {
-            let block = Block {
-                matrix: &draw.samples,
-                sample_ids: &ids,
-            };
-            let partitions =
-                subsample_partitions(provider, source_id, &block, &r.plans, sub_params)?;
-            let replicate_ari: Vec<f64> = r
-                .plans
-                .iter()
-                .zip(&partitions)
-                .map(|(rows, sub)| compare(provider, &full.labels, rows, sub).map(|c| c.ari))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
-            aris.push(median_of(provider, &replicate_ari)?);
+            let (statistic, median_ari) =
+                frozen_stability(provider, &draw.samples, &full.labels, &r.plans, sub_params)?;
+            statistics.push(statistic);
+            aris.push(median_ari);
         }
     }
     let count_f: Vec<f64> = counts.iter().map(|&c| c as f64).collect();
     let two_or_more = counts.iter().filter(|&&c| c >= 2).count() as f64 / N_NULL_REPLICATES as f64;
     let somes = |v: &[f64]| v.iter().map(|&x| Some(x)).collect::<Vec<_>>();
-    let ari_comparison = match (with_stability, observed.median_ari) {
-        (Some(_), Some(obs)) => tail(&aris, obs, N_NULL_REPLICATES),
-        _ => Value::Null,
+    let test = match observed_frozen {
+        Some((obs, _)) => {
+            let ge = statistics.iter().filter(|&&t| t >= obs).count();
+            json!({
+                "statistic": "coverage_weighted_stability",
+                "observed": obs,
+                "n_null_greater_or_equal": ge,
+                "p_value": (1 + ge) as f64 / (1 + N_NULL_REPLICATES) as f64,
+                "threshold": NULL_TAIL,
+                "decisional": decisional_reason.is_none(),
+                "decisional_reason": decisional_reason,
+            })
+        }
+        None => Value::Null,
     };
-    // Joint dominance: a replicate at least as structured on all three axes.
-    let joint = match (with_stability, observed.median_ari) {
-        (Some(_), Some(obs)) => {
+    let p_value = test["p_value"]
+        .as_f64()
+        .filter(|_| decisional_reason.is_none());
+    // Joint dominance stays descriptive: it is not a calibrated tail.
+    let joint = match observed_frozen {
+        Some((obs, _)) => {
             let count = (0..N_NULL_REPLICATES)
                 .filter(|&b| {
                     counts[b] >= observed.clusters
                         && noises[b] <= observed.noise_fraction
-                        && aris[b].is_some_and(|a| a >= obs)
+                        && statistics[b] >= obs
                 })
                 .count();
-            json!({
-                "n_null_dominating": count,
-                "upper_tail_fraction": (1 + count) as f64 / (1 + N_NULL_REPLICATES) as f64,
-            })
+            json!({"n_null_dominating": count})
         }
-        _ => Value::Null,
+        None => Value::Null,
     };
-    let joint_tail = joint["upper_tail_fraction"].as_f64();
-    let observed_ari: Vec<f64> = aris.iter().flatten().copied().collect();
     let per_replicate: Vec<Value> = (0..N_NULL_REPLICATES)
         .map(|b| {
             json!({
                 "cluster_count": counts[b],
                 "noise_fraction": noises[b],
+                "coverage_weighted_stability": statistics.get(b),
                 "median_ari": aris.get(b).copied().flatten(),
             })
         })
@@ -1224,18 +1271,19 @@ fn gaussian_null(
         "observed": {
             "cluster_count": observed.clusters,
             "noise_fraction": observed.noise_fraction,
-            "median_ari": observed.median_ari,
+            "coverage_weighted_stability": observed_frozen.map(|o| o.0),
+            "frozen_projection_median_ari": observed_frozen.and_then(|o| o.1),
         },
         "null": {
             "cluster_count": summarize(provider, &count_f)?,
             "noise_fraction": summarize(provider, &noises)?,
-            "median_ari": if with_stability.is_some() { summarize(provider, &observed_ari)? } else { Value::Null },
+            "coverage_weighted_stability": summarize(provider, &statistics)?,
             "fraction_with_at_least_two_clusters": two_or_more,
         },
-        "comparison": {
+        "test": test,
+        "description": {
             "cluster_count": tail(&somes(&count_f), observed.clusters as f64, N_NULL_REPLICATES),
             "noise_fraction": tail(&somes(&noises), observed.noise_fraction, N_NULL_REPLICATES),
-            "median_ari": ari_comparison,
             "joint_dominance": joint,
         },
         "per_replicate": per_replicate,
@@ -1244,13 +1292,10 @@ fn gaussian_null(
     metric
         .denominators
         .insert("n_replicates".into(), N_NULL_REPLICATES);
-    metric
-        .denominators
-        .insert("n_null_ari_evaluable_replicates".into(), observed_ari.len());
     for (key, value) in [
         ("protocol", json!(PROTOCOL)),
-        ("model", json!("unimodal_gaussian")),
-        ("space", json!("canonical_pca_scores")),
+        ("model", json!("unimodal_gaussian_independent_rows")),
+        ("space", json!("canonical_pca_scores (frozen full-sample projection)")),
         (
             "fit",
             json!("zero mean and diag(Methods PCA eigenvalues, ddof 1) of the eligible rows: the canonical scores are centered and uncorrelated"),
@@ -1273,29 +1318,32 @@ fn gaussian_null(
             )),
         ),
         (
-            "replicate_protocol",
-            json!("pca (min(10, n-2, d) components), score grid, hdbscan with the full-sample parameters; stability on the same 50 plans with scaled parameters"),
-        ),
-        ("stability_in_null", json!(with_stability.is_some())),
-        (
-            "stability_reason",
-            json!(match (resampling.is_some(), with_stability.is_some()) {
-                (_, true) => Value::Null,
-                (false, _) => json!("RESAMPLING_UNAVAILABLE"),
-                (true, false) => json!("NULL_STABILITY_WORK_BUDGET_EXCEEDED"),
-            }),
+            "comparison_protocol",
+            json!("frozen projection on both sides: observed canonical scores and simulated scores are subsampled with the same 50 plans without PCA refit, score grid, hdbscan with scaled parameters; full partitions use the full-sample parameters. The refit stability metrics are not compared with this null."),
         ),
         (
-            "tail_fraction",
-            json!("(1 + #null >= observed) / (1 + B) and (1 + #null <= observed) / (1 + B); a replicate without evaluable ARI counts below any observed ARI"),
+            "statistic",
+            json!("coverage_weighted_stability = median over the 50 subsamples of ARI x (assigned in both / drawn), 0 when ARI is not evaluable; pre-specified"),
         ),
         (
-            "joint_dominance",
-            json!("replicate cluster_count >= observed, noise_fraction <= observed and median_ari >= observed; upper tail (1 + count) / (1 + B)"),
+            "p_value",
+            json!("Monte Carlo (1 + #null >= observed) / (1 + B), B = 99; ties count against the observation"),
+        ),
+        (
+            "decision_rule",
+            json!("p_value > 0.05: compatible with this Gaussian null; threshold declared and not validated"),
+        ),
+        (
+            "decisional_scope",
+            json!("simulated rows are independent: the test is decisional only when every resampling unit is one declared-independent row; with multi-row units it would erase within-unit dependence and is descriptive only"),
+        ),
+        (
+            "description",
+            json!("marginal tails (1 + #null >= observed) / (1 + B) and (1 + #null <= observed) / (1 + B), and the count of replicates dominating on cluster count, noise and statistic, are descriptive and not calibrated"),
         ),
         (
             "limitations",
-            json!("exploratory comparison with one unimodal Gaussian only; it does not represent curved or branched manifolds, gradients, heavy tails or heteroscedastic continua, and is not a calibrated test"),
+            json!("exploratory comparison with one unimodal Gaussian only; it does not represent curved or branched manifolds, gradients, heavy tails or heteroscedastic continua"),
         ),
         ("backend_version", json!(backend)),
     ] {
@@ -1304,7 +1352,8 @@ fn gaussian_null(
     Ok((
         metric,
         NullSummary {
-            joint_tail,
+            p_value,
+            decisional: decisional_reason.is_none(),
             fraction_two_or_more: two_or_more,
         },
     ))
@@ -1317,7 +1366,7 @@ fn assess(
     observed: &Observed,
     units: Option<&Units>,
     variants: &[Option<Variant>],
-    null: Option<&NullSummary>,
+    null_summary: Option<&NullSummary>,
 ) {
     let scaled = variants[0].as_ref();
     let constant = variants[1].as_ref();
@@ -1334,12 +1383,13 @@ fn assess(
         "median_ari_constant": criterion(constant.and_then(|v| v.stability.median_ari), STABLE_MEDIAN_ARI, true),
         "lowest_appearance_frequency_scaled": criterion(scaled.and_then(|v| v.lowest_appearance), STABLE_APPEARANCE, true),
         "median_assigned_in_both_fraction_of_eligible_scaled": criterion(scaled.and_then(|v| v.stability.median_assigned_fraction), STABLE_ASSIGNED_FRACTION, true),
-        "null_joint_dominance_upper_tail_fraction": criterion(null.and_then(|s| s.joint_tail), NULL_TAIL, false),
+        "null_decisional": {"value": null_summary.map(|s| s.decisional), "passed": null_summary.map(|s| s.decisional)},
+        "null_monte_carlo_p_value": criterion(null_summary.and_then(|s| s.p_value), NULL_TAIL, false),
     });
     let passed = |key: &str| criteria[key]["passed"].as_bool();
     let assessment = if observed.clusters < 2 {
         "no_density_separated_groups"
-    } else if passed("null_joint_dominance_upper_tail_fraction") == Some(false) {
+    } else if passed("null_monte_carlo_p_value") == Some(false) {
         "compatible_with_continuous_structure"
     } else if criteria
         .as_object()
@@ -1358,11 +1408,11 @@ fn assess(
         n,
     );
     for (key, value) in [
-        ("rule_version", json!("clustering_assessment.v1")),
+        ("rule_version", json!("clustering_assessment.v2")),
         ("status", json!("exploratory_uncalibrated")),
         (
             "rule",
-            json!("fewer than 2 clusters: no_density_separated_groups; else null joint-dominance upper tail > 0.05: compatible_with_continuous_structure; else every criterion passed: stable_candidate_partition; otherwise uncertain_partition"),
+            json!("fewer than 2 clusters: no_density_separated_groups; else decisional null Monte Carlo p-value > 0.05: compatible_with_continuous_structure; else every criterion passed: stable_candidate_partition; otherwise uncertain_partition. Thresholds are declared and not validated."),
         ),
         ("confidence", json!("unknown")),
         (
@@ -1388,7 +1438,7 @@ fn assess(
         "clustering.partition_assessment".into(),
     ];
     let clusters = observed.clusters;
-    let null_two = null.map_or("unavailable".to_string(), |s| {
+    let null_two = null_summary.map_or("unavailable".to_string(), |s| {
         format!("{:.0} %", 100.0 * s.fraction_two_or_more)
     });
     let (rule_id, message, action) = match assessment {
@@ -1399,7 +1449,7 @@ fn assess(
         ),
         "compatible_with_continuous_structure" => (
             "structure.clustering.continuous_structure.v2",
-            format!("HDBSCAN proposes {clusters} candidate groups in {source_id}, but a unimodal Gaussian null with the same size and protocol often gives as many groups, as little noise and partitions at least as stable; the data are compatible with a continuous structure (exploratory, uncalibrated; null replicates with at least two groups: {null_two})"),
+            format!("HDBSCAN proposes {clusters} candidate groups in {source_id}, but a unimodal Gaussian null with the same size and frozen-projection protocol gives a coverage-weighted stability at least as high in more than 5 % of replicates; the data are compatible with a continuous structure (exploratory, uncalibrated; null replicates with at least two groups: {null_two})"),
             "Do not derive group-based splits from clustering; inspect PCA scores and metadata",
         ),
         "stable_candidate_partition" => (
@@ -1421,4 +1471,53 @@ fn assess(
         message,
         action: action.into(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review 2026-10-13: the residual cross-host risk of the score grid is a
+    /// value within one ulp of a grid midpoint. This pins the outcome: one ulp
+    /// below a midpoint rounds down, the midpoint and one ulp above round up
+    /// (half away from zero, symmetric in sign), so a one-ulp host difference
+    /// there moves the score by exactly one grid step (2^-24 of the scale
+    /// exponent). One ulp away from any other point leaves it unchanged.
+    #[test]
+    fn grid_rounding_at_one_ulp_of_a_midpoint() {
+        // max|score| = 1.5 lies in [2^0, 2^1): e = 1, step = 2^-23.
+        let step = pow2(1 - SCORE_GRID_BITS);
+        let up = |v: f64| f64::from_bits(v.to_bits() + 1);
+        let down = |v: f64| f64::from_bits(v.to_bits() - 1);
+        let mid = 1000.5 * step;
+        let off = 1000.3 * step;
+        let row = vec![
+            1.5,
+            mid,
+            down(mid),
+            up(mid),
+            -mid,
+            -down(mid),
+            -up(mid),
+            down(off),
+            up(off),
+        ];
+        let q = quantize(&[row]);
+        assert_eq!(q[0][0], 1.5);
+        assert_eq!(q[0][1], 1001.0 * step);
+        assert_eq!(q[0][2], 1000.0 * step);
+        assert_eq!(q[0][3], 1001.0 * step);
+        assert_eq!(q[0][4], -1001.0 * step);
+        assert_eq!(q[0][5], -1000.0 * step);
+        assert_eq!(q[0][6], -1001.0 * step);
+        assert_eq!(q[0][7], 1000.0 * step);
+        assert_eq!(q[0][8], 1000.0 * step);
+        // The step follows the exponent of max|score|: doubling the scale by
+        // one ulp across a power of two doubles the step.
+        let q = quantize(&[vec![2.0, mid]]);
+        assert_eq!(pow2(2 - SCORE_GRID_BITS), 2.0 * step);
+        assert_eq!(q[0][1], 500.0 * pow2(2 - SCORE_GRID_BITS));
+        let q = quantize(&[vec![down(2.0), mid]]);
+        assert_eq!(q[0][1], 1001.0 * step);
+    }
 }
