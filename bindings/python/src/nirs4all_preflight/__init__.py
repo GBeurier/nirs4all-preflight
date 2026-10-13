@@ -68,7 +68,7 @@ def analyze(dataset: dict[str, Any], *, methods_library: str | os.PathLike[str] 
     """Qualify development data. No inputs leave the local process.
 
     Bundled Methods is used by default. Set N4M_LIBRARY_PATH or pass an explicit
-    ABI >=2.18 library. Advanced protocols remain explicitly unavailable.
+    ABI >=2.19 library. Advanced protocols remain explicitly unavailable.
     """
     bundled = Path(__file__).parent / "_native" / ("n4m.dll" if sys.platform == "win32" else "libn4m.dylib" if sys.platform == "darwin" else "libn4m.so.2")
     selected = os.fspath(methods_library) if methods_library is not None else os.environ.get("N4M_LIBRARY_PATH")

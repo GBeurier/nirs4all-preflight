@@ -12,7 +12,7 @@ n4pf validate dataset.json
 n4pf analyze dataset.json --methods-library /path/to/libn4m.so.2 --html report.html
 ```
 
-The input is a canonical JSON dataset already assembled by its host. See [first_run.json](examples/first_run.json). Vendor decoding and dataset assembly remain in Formats and IO; this package adds neither parsers nor implicit joins. Without a Methods provider, the report explicitly marks dependent diagnostics unavailable. Native Methods ABI 2.18 or later is required.
+The input is a canonical JSON dataset already assembled by its host. See [first_run.json](examples/first_run.json). Vendor decoding and dataset assembly remain in Formats and IO; this package adds neither parsers nor implicit joins. Without a Methods provider, the report explicitly marks dependent diagnostics unavailable. Native Methods ABI 2.19 or later is required.
 
 ```js
 import { createQualificationRuntime } from '@nirs4all/preflight';

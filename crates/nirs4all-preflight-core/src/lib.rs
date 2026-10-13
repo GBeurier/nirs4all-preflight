@@ -148,6 +148,10 @@ pub struct Options {
     pub independence_unit: IndependenceUnit,
     #[serde(default)]
     pub assume_one_observation_per_sample: bool,
+    /// Declares that independence units are exchangeable under the null of
+    /// no metadata-target association. Required for permutation tests.
+    #[serde(default)]
+    pub exchangeable_units: bool,
     #[serde(default)]
     pub seed: u64,
     #[serde(default = "default_max_cells")]
@@ -161,6 +165,7 @@ impl Default for Options {
         Self {
             independence_unit: IndependenceUnit::Unknown,
             assume_one_observation_per_sample: false,
+            exchangeable_units: false,
             seed: 0,
             max_cells: default_max_cells(),
             max_samples: default_max_samples(),
@@ -764,6 +769,93 @@ pub struct LocalContrastDiagnostics {
     pub backend_version: String,
 }
 
+/// Decimal-string transport for u64 seeds, so JSON hosts never round them.
+pub mod u64_decimal {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+pub const PERMUTATION_PLAN_VERSION: &str = "permutation_plan.v1";
+
+/// Versioned description of one permutation test, carried with its metric so
+/// later protocols (for example confounding) reuse the same contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermutationPlan {
+    pub plan_version: String,
+    pub null_hypothesis: String,
+    pub tested_effect: String,
+    pub statistic: String,
+    /// Independence unit whose labels are permuted (never acquisitions).
+    pub exchangeable_unit: IndependenceUnit,
+    pub exchangeability_declared: bool,
+    /// `none_single_block` is the only executable MVP plan.
+    pub restrictions: String,
+    pub block_sizes: Vec<usize>,
+    pub reduced_model: Option<String>,
+    pub draw_method: String,
+    pub rng_algorithm: String,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+    pub seed_derivation: String,
+    /// log10 upper bound on distinct permutation outcomes of the statistic.
+    pub log10_distinct_admissible_permutations: Option<f64>,
+    pub n_permutations_requested: usize,
+    pub n_permutations_executed: usize,
+    /// max(1/(B+1), 1/distinct): smallest p-value the plan can support.
+    pub resolution: Option<f64>,
+    pub p_value_convention: String,
+    pub tie_tolerance: f64,
+    pub executed: bool,
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssociationRequest {
+    /// One row per exchangeable unit.
+    pub factor_codes: Vec<i64>,
+    /// Exact continuous targets, or nonnegative integer class codes as f64.
+    pub targets: Vec<f64>,
+    pub categorical: bool,
+    pub n_permutations: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssociationDiagnostics {
+    /// eta^2 (continuous) or Cramer's V (categorical).
+    pub effect_size: Option<f64>,
+    /// One-way ANOVA F or Pearson chi-square.
+    pub statistic: Option<f64>,
+    pub df1: Option<f64>,
+    pub df2: Option<f64>,
+    pub n_levels: usize,
+    pub n_target_values: usize,
+    pub log10_distinct_permutations: f64,
+    pub p_value: Option<f64>,
+    pub n_at_least_observed: usize,
+    pub n_permutations_executed: usize,
+    pub backend_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HolmRequest {
+    pub p_values: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HolmDiagnostics {
+    pub adjusted: Vec<f64>,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -787,6 +879,15 @@ pub trait MethodsProvider {
         Err(ProviderError(
             "LOCAL_CONTRAST_PROVIDER_NOT_CONFIGURED".into(),
         ))
+    }
+    fn association(
+        &self,
+        _request: &AssociationRequest,
+    ) -> Result<AssociationDiagnostics, ProviderError> {
+        Err(ProviderError("ASSOCIATION_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn holm_adjust(&self, _request: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
+        Err(ProviderError("HOLM_PROVIDER_NOT_CONFIGURED".into()))
     }
 }
 
@@ -820,6 +921,18 @@ impl MethodsProvider for UnavailableMethodsProvider {
             },
             Capability {
                 capability_id: "methods.local_contrast".into(),
+                available: false,
+                qualified: false,
+                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
+            },
+            Capability {
+                capability_id: "methods.association".into(),
+                available: false,
+                qualified: false,
+                reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),
+            },
+            Capability {
+                capability_id: "methods.holm_adjust".into(),
                 available: false,
                 qualified: false,
                 reason: Some("METHODS_PROVIDER_NOT_CONFIGURED".into()),

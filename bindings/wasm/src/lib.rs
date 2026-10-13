@@ -64,6 +64,12 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<LocalContrastDiagnostics, ProviderError> {
         self.invoke("local_contrast", r)
     }
+    fn association(&self, r: &AssociationRequest) -> Result<AssociationDiagnostics, ProviderError> {
+        self.invoke("association", r)
+    }
+    fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
+        self.invoke("holm_adjust", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {

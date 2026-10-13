@@ -72,6 +72,18 @@ type Knn = unsafe extern "C" fn(
     *mut i64,
     *mut f64,
 ) -> i32;
+type Association = unsafe extern "C" fn(
+    *mut c_void,
+    *const i64,
+    *const f64,
+    i64,
+    i32,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+) -> i32;
+type Holm = unsafe extern "C" fn(*mut c_void, *const f64, i64, *mut f64) -> i32;
 
 /// Each provider owns one context, and stays on its creating thread.
 pub struct NativeMethodsProvider {
@@ -84,6 +96,8 @@ pub struct NativeMethodsProvider {
     summary_fn: Summary,
     knn_fn: Knn,
     local_fn: LocalContrast,
+    association_fn: Association,
+    holm_fn: Holm,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -98,8 +112,8 @@ impl NativeMethodsProvider {
             let compat = *library
                 .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
                 .map_err(err)?;
-            if compat(2, 18) != 0 {
-                return Err(ProviderError("METHODS_ABI_2_18_REQUIRED".into()));
+            if compat(2, 19) != 0 {
+                return Err(ProviderError("METHODS_ABI_2_19_REQUIRED".into()));
             }
             let create = *library
                 .get::<Create>(b"n4m_context_create\0")
@@ -125,6 +139,12 @@ impl NativeMethodsProvider {
             let local_fn = *library
                 .get::<LocalContrast>(b"n4m_preflight_local_contrast\0")
                 .map_err(err)?;
+            let association_fn = *library
+                .get::<Association>(b"n4m_preflight_factor_association\0")
+                .map_err(err)?;
+            let holm_fn = *library
+                .get::<Holm>(b"n4m_preflight_holm_adjust\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -148,6 +168,8 @@ impl NativeMethodsProvider {
                 summary_fn,
                 knn_fn,
                 local_fn,
+                association_fn,
+                holm_fn,
                 version,
                 _thread_bound: PhantomData,
             })
@@ -203,13 +225,15 @@ impl MethodsProvider for NativeMethodsProvider {
             "methods.summary",
             "methods.nearest_neighbors",
             "methods.local_contrast",
+            "methods.association",
+            "methods.holm_adjust",
         ]
         .iter()
         .map(|id| Capability {
             capability_id: (*id).into(),
             available: true,
             qualified: false,
-            reason: Some(format!("Methods {} ABI 2.18; alpha protocol", self.version)),
+            reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
         })
         .collect()
     }
@@ -398,6 +422,65 @@ impl MethodsProvider for NativeMethodsProvider {
             fraction_rows_with_neighbors: out[1],
             observed_same_class_fraction: out[2].is_finite().then_some(out[2]),
             expected_same_class_fraction: out[3].is_finite().then_some(out[3]),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn association(&self, r: &AssociationRequest) -> Result<AssociationDiagnostics, ProviderError> {
+        let n = r.targets.len();
+        if n < 2
+            || r.factor_codes.len() != n
+            || r.n_permutations > 1_000_000
+            || r.targets.iter().any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("INVALID_ASSOCIATION_REQUEST".into()));
+        }
+        let mut out = [f64::NAN; 8];
+        let mut counts = [0i64; 2];
+        // SAFETY: input slices have n elements; outputs are owned fixed arrays.
+        self.check(unsafe {
+            (self.association_fn)(
+                self.context,
+                r.factor_codes.as_ptr(),
+                r.targets.as_ptr(),
+                n as i64,
+                i32::from(r.categorical),
+                r.n_permutations as i32,
+                r.seed,
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        Ok(AssociationDiagnostics {
+            effect_size: finite(out[0]),
+            statistic: finite(out[1]),
+            df1: finite(out[2]),
+            df2: finite(out[3]),
+            n_levels: out[4] as usize,
+            n_target_values: out[5] as usize,
+            log10_distinct_permutations: out[6],
+            p_value: finite(out[7]),
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
+        if r.p_values.is_empty() || r.p_values.iter().any(|p| !(0.0..=1.0).contains(p)) {
+            return Err(ProviderError("INVALID_HOLM_REQUEST".into()));
+        }
+        let mut adjusted = vec![f64::NAN; r.p_values.len()];
+        // SAFETY: input and output buffers both hold m elements.
+        self.check(unsafe {
+            (self.holm_fn)(
+                self.context,
+                r.p_values.as_ptr(),
+                r.p_values.len() as i64,
+                adjusted.as_mut_ptr(),
+            )
+        })?;
+        Ok(HolmDiagnostics {
+            adjusted,
             backend_version: self.version.clone(),
         })
     }

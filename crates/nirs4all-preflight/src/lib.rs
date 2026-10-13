@@ -1,6 +1,7 @@
 //! Safe Rust facade for the preflight qualification protocols.
 
 pub use nirs4all_preflight_core::*;
+mod association;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 use serde_json::json;
@@ -31,7 +32,6 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
         "repeatability_uncertainty",
         "snv_sensitivity",
         "quasi_duplicates",
-        "metadata_association_tests",
     ] {
         out.push(Capability {
             capability_id: id.into(),
@@ -40,6 +40,26 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
             reason: Some("PROTOCOL_NOT_IMPLEMENTED".into()),
         });
     }
+    let association_available = [
+        "methods.association",
+        "methods.holm_adjust",
+        "methods.summary",
+    ]
+    .iter()
+    .all(|id| out.iter().any(|c| c.capability_id == *id && c.available));
+    out.push(Capability {
+        capability_id: "metadata_association_tests".into(),
+        available: association_available,
+        qualified: false,
+        reason: Some(
+            if association_available {
+                "ALPHA_PROTOCOL_UNQUALIFIED"
+            } else {
+                "ASSOCIATION_PROVIDER_NOT_CONFIGURED"
+            }
+            .into(),
+        ),
+    });
     let knn_available = [
         "methods.pca",
         "methods.nearest_neighbors",
@@ -144,6 +164,7 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
     for target in &input.targets {
         analyze_target(target, &samples, input, provider, &mut report);
     }
+    association::analyze_metadata_associations(input, &samples, provider, &mut report);
     report
 }
 
@@ -1128,33 +1149,43 @@ fn analyze_repeats(
     }
 }
 
-fn analyze_target(
-    target: &Target,
+/// Exact, internally consistent references of real development samples.
+/// Retained-test, prediction and augmented rows are counted, never read.
+pub(crate) struct ExactReferences<'a> {
+    pub eligible: Vec<&'a TargetValue>,
+    pub excluded_censored: usize,
+    pub excluded_composite: usize,
+    pub excluded_retained_prediction_or_augmented: usize,
+    pub inconsistent: usize,
+    pub referenced_development: BTreeSet<&'a str>,
+}
+
+pub(crate) fn exact_development_references<'a>(
+    target: &'a Target,
     samples: &HashMap<&str, &Sample>,
-    input: &QualificationInput,
-    provider: &impl MethodsProvider,
-    report: &mut QualificationReport,
-) {
-    let mut eligible = Vec::new();
-    let mut excluded_censored = 0;
-    let mut excluded_composite = 0;
-    let mut excluded_retained_prediction_or_augmented = 0;
-    let mut referenced_development = BTreeSet::new();
+) -> ExactReferences<'a> {
+    let mut out = ExactReferences {
+        eligible: Vec::new(),
+        excluded_censored: 0,
+        excluded_composite: 0,
+        excluded_retained_prediction_or_augmented: 0,
+        inconsistent: 0,
+        referenced_development: BTreeSet::new(),
+    };
     let mut by_sample: BTreeMap<&str, Vec<&TargetValue>> = BTreeMap::new();
     for v in &target.values {
         let s = samples[v.sample_id.as_str()];
         if s.partition != Partition::Development || s.augmentation_parent_id.is_some() {
-            excluded_retained_prediction_or_augmented += 1;
+            out.excluded_retained_prediction_or_augmented += 1;
             continue;
         }
-        referenced_development.insert(v.sample_id.as_str());
+        out.referenced_development.insert(v.sample_id.as_str());
         match v.status {
             ReferenceStatus::Exact => by_sample.entry(&v.sample_id).or_default().push(v),
-            ReferenceStatus::Censored => excluded_censored += 1,
-            ReferenceStatus::Composite => excluded_composite += 1,
+            ReferenceStatus::Censored => out.excluded_censored += 1,
+            ReferenceStatus::Composite => out.excluded_composite += 1,
         }
     }
-    let mut inconsistent = 0;
     for values in by_sample.values() {
         let unique: BTreeSet<String> = values
             .iter()
@@ -1164,11 +1195,29 @@ fn analyze_target(
             })
             .collect();
         if unique.len() == 1 {
-            eligible.push(values[0]);
+            out.eligible.push(values[0]);
         } else {
-            inconsistent += 1;
+            out.inconsistent += 1;
         }
     }
+    out
+}
+
+fn analyze_target(
+    target: &Target,
+    samples: &HashMap<&str, &Sample>,
+    input: &QualificationInput,
+    provider: &impl MethodsProvider,
+    report: &mut QualificationReport,
+) {
+    let ExactReferences {
+        eligible,
+        excluded_censored,
+        excluded_composite,
+        excluded_retained_prediction_or_augmented,
+        inconsistent,
+        referenced_development,
+    } = exact_development_references(target, samples);
     let mut m = Metric::computed(
         "target.exact_eligible_samples",
         json!(eligible.len()),
