@@ -12,6 +12,10 @@ const invalid = reason => Object.assign(new TypeError(reason), { providerKind: '
 /** Methods exceptions keep their status, mapped to kind and reason by the
  * Rust engine exactly as the native adapter maps n4m_status_t. */
 function providerError(error) {
+  // A Methods refusal of the supported numerical domain keeps its reason.
+  if (error instanceof methods.N4mError && error.status === 10 && String(error.message).includes('input outside the supported numerical domain')) {
+    return { kind: 'unsupported', reason: 'NUMERICAL_DOMAIN_EXCEEDED' };
+  }
   if (error instanceof methods.N4mError) return { methods_status: error.status };
   if (error?.providerKind) return { kind: error.providerKind, reason: error.message };
   return { kind: 'internal', reason: 'METHODS_CALLBACK_FAILED' };
@@ -160,7 +164,7 @@ export async function createQualificationRuntime(options = {}) {
         const pairs = n * (n - 1) / 2;
         if (pairs > 20_000_000 || g * g > 10_000_000 || pairs * ((request.matrix[0]?.length ?? 0) + request.n_permutations + 1) > 2.5e9) throw limit('ENERGY_DISTANCE_WORK_BUDGET');
         const output = methods.statsEnergyDistance(matrix(request.matrix), request.group_codes, g, request.n_permutations, BigInt(request.seed));
-        result = { energy: nested(output.energy, g), mean_distances: nested(output.meanDistances, g), statistic: output.statistic, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        result = { energy: nested(output.energy, g), energy_bounds: nested(output.energyBounds, g), mean_distances: nested(output.meanDistances, g), statistic: output.statistic, statistic_bound: output.statisticBound, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
         break;
       }
       case 'pca_monitor': {
@@ -168,7 +172,7 @@ export async function createQualificationRuntime(options = {}) {
         if ((reference.rows + monitored.rows) * reference.cols > 10_000_000) throw limit('PCA_MONITOR_WORK_BUDGET');
         const output = methods.statsPcaMonitor(reference, monitored, request.max_components, request.n_folds, request.alpha);
         const k = output.effectiveComponents;
-        result = { effective_components: k, eigenvalues: Array.from(output.eigenvalues.slice(0, k)), reference_t2: Array.from(output.referenceT2, nullable), reference_q: Array.from(output.referenceQ), monitored_t2: Array.from(output.monitoredT2, nullable), monitored_q: Array.from(output.monitoredQ), t2_limit: nullable(output.t2Limit), q_limit: output.qLimit, n_beyond_t2: output.nBeyondT2, n_beyond_q: output.nBeyondQ, n_beyond_either: output.nBeyondEither, reference_total_variance: output.referenceTotalVariance, monitored_total_variance: nullable(output.monitoredTotalVariance), centroid_distance: output.centroidDistance, centroid_subspace_distance: output.centroidSubspaceDistance, centroid_residual_distance: output.centroidResidualDistance, centroid_t2: nullable(output.centroidT2), retained_fraction: nullable(output.retainedFraction), backend_version };
+        result = { effective_components: k, eigenvalues: Array.from(output.eigenvalues.slice(0, k)), reference_t2: Array.from(output.referenceT2, nullable), reference_q: Array.from(output.referenceQ), monitored_t2: Array.from(output.monitoredT2, nullable), monitored_q: Array.from(output.monitoredQ), t2_limit: nullable(output.t2Limit), q_limit: output.qLimit, t2_limit_interval: k > 0 ? output.t2LimitInterval : null, q_limit_interval: output.qLimitInterval, n_beyond_t2: output.nBeyondT2, n_beyond_q: output.nBeyondQ, n_beyond_either: output.nBeyondEither, n_undetermined_t2: output.nUndeterminedT2, n_undetermined_q: output.nUndeterminedQ, n_undetermined_either: output.nUndeterminedEither, reference_total_variance: output.referenceTotalVariance, monitored_total_variance: nullable(output.monitoredTotalVariance), centroid_distance: output.centroidDistance, centroid_subspace_distance: output.centroidSubspaceDistance, centroid_residual_distance: output.centroidResidualDistance, centroid_t2: nullable(output.centroidT2), retained_fraction: nullable(output.retainedFraction), backend_version };
         break;
       }
       case 'holm_adjust': {

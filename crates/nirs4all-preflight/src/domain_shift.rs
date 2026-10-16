@@ -181,6 +181,9 @@ fn tag(metric: &mut Metric, scope: &str, factor: &str) {
     metric.parameters.insert("protocol".into(), json!(PROTOCOL));
     metric.parameters.insert("factor".into(), json!(factor));
     metric.parameters.insert("estimand".into(), json!(ESTIMAND));
+    metric
+        .parameters
+        .insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
 }
 
 fn unavailable_metric(
@@ -318,11 +321,13 @@ fn compare(
     };
     match energy(provider, &energy_request) {
         Ok(d) => {
-            let e = d.energy[0][1];
+            let (e, bound) = (d.energy[0][1], d.energy_bounds[0][1]);
             let mut m = comparison.metric(
                 "domain_shift.distribution_distance",
                 json!({
                     "energy_e": e,
+                    "energy_e_error_bound": bound,
+                    "energy_e_interval": [(e - bound).max(0.0), e + bound],
                     "scipy_energy_distance": e.sqrt(),
                     "mean_between_distance": d.mean_distances[0][1],
                     "mean_within_reference_distance": d.mean_distances[0][0],
@@ -333,7 +338,8 @@ fn compare(
             m.parameters.insert(
                 "value_units".into(),
                 json!({
-                    "energy_e": unit, "scipy_energy_distance": root,
+                    "energy_e": unit, "energy_e_error_bound": unit, "energy_e_interval": unit,
+                    "scipy_energy_distance": root,
                     "mean_between_distance": unit, "mean_within_reference_distance": unit,
                     "mean_within_target_distance": unit,
                 }),
@@ -344,7 +350,7 @@ fn compare(
             );
             m.parameters.insert(
                 "definition".into(),
-                json!("energy_e = 2 E|X-Y| - E|X-X'| - E|Y-Y'| over unit means (V-statistic, self-pairs included; unit of the signal); scipy_energy_distance = sqrt(energy_e), as scipy.stats.energy_distance in one dimension"),
+                json!("energy_e = 2 E|X-Y| - E|X-X'| - E|Y-Y'| over unit means (V-statistic, self-pairs included; unit of the signal), from local pairwise differences with double-double sums; energy_e_error_bound = (8u + 2^-80)(2 E|X-Y| + E|X-X'| + E|Y-Y'|) bounds the rounding, and a computed value in [-bound, 0) is published as 0; scipy_energy_distance = sqrt(energy_e), as scipy.stats.energy_distance in one dimension"),
             );
             m.parameters
                 .insert("backend_version".into(), json!(d.backend_version));
@@ -418,7 +424,7 @@ fn compare(
     );
     center.parameters.insert(
         "definition".into(),
-        json!("target unit-mean centroid minus reference centroid: Euclidean norm, its norm inside the reference PCA subspace, its residual norm (0 below 2^-26 of the full norm), and its T² with the reference eigenvalues"),
+        json!("target unit-mean centroid minus reference centroid (double-double means): Euclidean norm, its norm inside the reference PCA subspace, its explicit residual norm, and its T² with the reference eigenvalues"),
     );
     report.metrics.push(center);
 
@@ -447,7 +453,7 @@ fn compare(
     };
     dispersion.parameters.insert(
         "definition".into(),
-        json!("trace of each domain's covariance of unit means about its own centroid, ddof 1, complete canonical spectra; ratio target / reference"),
+        json!("trace of each domain's covariance of unit means about its own double-double centroid, from the input values, ddof 1, complete canonical spectra; ratio target / reference"),
     );
     dispersion.parameters.insert(
         "value_units".into(),
@@ -466,9 +472,14 @@ fn compare(
         json!({
             "t2_limit": d.t2_limit,
             "q_limit": d.q_limit,
+            "t2_limit_interval": d.t2_limit_interval,
+            "q_limit_interval": d.q_limit_interval,
             "n_target_beyond_t2_limit": t2.then_some(d.n_beyond_t2),
             "n_target_beyond_q_limit": d.n_beyond_q,
             "n_target_beyond_either_limit": t2.then_some(d.n_beyond_either),
+            "n_target_undetermined_t2": t2.then_some(d.n_undetermined_t2),
+            "n_target_undetermined_q": d.n_undetermined_q,
+            "n_target_undetermined_either": t2.then_some(d.n_undetermined_either),
             "fraction_target_beyond_t2_limit": t2.then(|| fraction(d.n_beyond_t2)),
             "fraction_target_beyond_q_limit": fraction(d.n_beyond_q),
             "fraction_target_beyond_either_limit": t2.then(|| fraction(d.n_beyond_either)),
@@ -495,7 +506,7 @@ fn compare(
     );
     coverage.parameters.insert(
         "statistics".into(),
-        json!("T² = sum_a t_a² / lambda_a over the effective components; Q = squared norm of the explicit residual outside the reference subspace, 0 when its norm is at most 2^-26 of the centred row norm (rounding); exceedance is strictly above the limit, decided by Methods in its scaled unit"),
+        json!("T² = sum_a t_a² / lambda_a over the effective components; Q = squared norm of the explicit residual outside the reference subspace (compensated); each value carries a rounding interval (score and residual-norm errors from the operations and the measured orthonormality defect of the components; eigenvalue rounding not propagated); a target unit is beyond a limit when its interval lies above the limit interval, undetermined when they overlap, decided by Methods"),
     );
     coverage.parameters.insert(
         "interpretation".into(),
@@ -504,7 +515,7 @@ fn compare(
     coverage.parameters.insert(
         "value_units".into(),
         json!({
-            "t2_limit": "dimensionless", "q_limit": squared,
+            "t2_limit": "dimensionless", "q_limit": squared, "q_limit_interval": squared,
             "reference_eigenvalues": squared, "fractions": "dimensionless",
         }),
     );
@@ -525,7 +536,11 @@ fn energy(
     };
     let d = provider.energy_distance(request)?;
     if square(&d.energy)
+        && square(&d.energy_bounds)
         && square(&d.mean_distances)
+        && (0..g).all(|a| (0..g).all(|b| d.energy[a][b] == d.energy[b][a]))
+        && d.statistic_bound.is_finite()
+        && d.statistic_bound >= 0.0
         && (0..g).all(|a| d.energy[a][a] == 0.0)
         && d.statistic.is_finite()
         && d.statistic >= 0.0
@@ -571,7 +586,21 @@ fn monitor(
         && d.n_beyond_either <= n_m
         && d.n_beyond_either >= d.n_beyond_q
         && d.n_beyond_either >= d.n_beyond_t2
-        && (k > 0 || d.n_beyond_t2 == 0)
+        && d.n_beyond_q + d.n_undetermined_q <= n_m
+        && d.n_beyond_t2 + d.n_undetermined_t2 <= n_m
+        && d.n_beyond_either + d.n_undetermined_either <= n_m
+        && (k > 0 || d.n_beyond_t2 + d.n_undetermined_t2 == 0)
+        && d.t2_limit_interval.is_some() == (k > 0)
+        && d.t2_limit_interval.is_none_or(|[lo, hi]| {
+            nonnegative(lo)
+                && lo <= hi
+                && hi.is_finite()
+                && d.t2_limit.is_some_and(|t| lo <= t && t <= hi)
+        })
+        && nonnegative(d.q_limit_interval[0])
+        && d.q_limit_interval[1].is_finite()
+        && d.q_limit_interval[0] <= d.q_limit
+        && d.q_limit <= d.q_limit_interval[1]
         && nonnegative(d.reference_total_variance)
         && d.monitored_total_variance.is_some() == (n_m >= 2)
         && d.monitored_total_variance.is_none_or(nonnegative)
@@ -930,6 +959,10 @@ fn test_candidate(
     metric
         .parameters
         .insert("energy_statistic".into(), json!(descriptive.statistic));
+    metric.parameters.insert(
+        "energy_statistic_error_bound".into(),
+        json!(descriptive.statistic_bound),
+    );
     metric
         .parameters
         .insert("backend_version".into(), json!(descriptive.backend_version));
@@ -1023,6 +1056,9 @@ fn run_family(
     family_metric
         .parameters
         .insert("protocol".into(), json!(PROTOCOL));
+    family_metric
+        .parameters
+        .insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
     family_metric
         .parameters
         .insert("family".into(), json!(family));
@@ -1445,6 +1481,18 @@ fn analyze_audit(
                 .insert("crossing_sample_ids".into(), json!(crossing));
             report.metrics.push(m);
         }
+        return;
+    }
+    if dev.units.is_empty() {
+        let mut m = unavailable_metric(
+            "domain_shift.energy_test",
+            Availability::InsufficientData,
+            "NO_DEVELOPMENT_UNITS",
+            source_id,
+            PARTITION,
+        );
+        m.denominators = base.clone();
+        report.metrics.push(m);
         return;
     }
     let test = population(source, samples, input, component, Partition::RetainedTest);

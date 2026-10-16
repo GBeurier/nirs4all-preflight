@@ -130,6 +130,7 @@ type Energy = unsafe extern "C" fn(
     *mut f64,
     *mut f64,
     *mut f64,
+    *mut f64,
     *mut i64,
 ) -> i32;
 type PcaMonitor = unsafe extern "C" fn(
@@ -383,7 +384,7 @@ impl NativeMethodsProvider {
             return Ok(());
         }
         // SAFETY: live provider context; error string copied before next call.
-        let _message = unsafe {
+        let message = unsafe {
             let p = (self.last_error)(self.context);
             if p.is_null() {
                 String::new()
@@ -391,7 +392,7 @@ impl NativeMethodsProvider {
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
-        Err(ProviderError::from_methods_status(status))
+        Err(ProviderError::from_methods(status, &message))
     }
 }
 impl NativeMethodsProvider {
@@ -1226,11 +1227,12 @@ impl MethodsProvider for NativeMethodsProvider {
         let (mut x, _, _) = flatten(&r.matrix)?;
         let xv = MatrixView::new(&mut x, n, p);
         let mut energy = vec![f64::NAN; g * g];
+        let mut bounds = vec![f64::NAN; g * g];
         let mut mean = vec![f64::NAN; g * g];
-        let mut out = [f64::NAN; 3];
+        let mut out = [f64::NAN; 4];
         let mut counts = [0i64; 2];
         // SAFETY: X is an owned n x p buffer, codes hold n elements and the
-        // outputs hold g x g, 3 and 2 elements as documented.
+        // outputs hold g x g (three), 4 and 2 elements as documented.
         self.check(unsafe {
             (self.energy_fn)(
                 self.context,
@@ -1240,6 +1242,7 @@ impl MethodsProvider for NativeMethodsProvider {
                 r.n_permutations as i32,
                 r.seed,
                 energy.as_mut_ptr(),
+                bounds.as_mut_ptr(),
                 mean.as_mut_ptr(),
                 out.as_mut_ptr(),
                 counts.as_mut_ptr(),
@@ -1248,10 +1251,12 @@ impl MethodsProvider for NativeMethodsProvider {
         let rows = |v: &[f64]| v.chunks(g).map(<[f64]>::to_vec).collect();
         Ok(EnergyDistanceDiagnostics {
             energy: rows(&energy),
+            energy_bounds: rows(&bounds),
             mean_distances: rows(&mean),
             statistic: out[0],
-            log10_distinct_permutations: out[1],
-            p_value: out[2].is_finite().then_some(out[2]),
+            statistic_bound: out[1],
+            log10_distinct_permutations: out[2],
+            p_value: out[3].is_finite().then_some(out[3]),
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
             backend_version: self.version.clone(),
@@ -1279,10 +1284,10 @@ impl MethodsProvider for NativeMethodsProvider {
         let (mut rt, mut rq) = (vec![f64::NAN; n_r], vec![f64::NAN; n_r]);
         let (mut mt, mut mq) = (vec![f64::NAN; n_m], vec![f64::NAN; n_m]);
         let mut effective = 0i32;
-        let mut counts = [0i64; 3];
-        let mut out = [f64::NAN; 9];
-        // SAFETY: both views own their buffers; outputs hold k, n_r, n_m, 1, 3
-        // and 9 elements as documented.
+        let mut counts = [0i64; 6];
+        let mut out = [f64::NAN; 13];
+        // SAFETY: both views own their buffers; outputs hold k, n_r, n_m, 1, 6
+        // and 13 elements as documented.
         self.check(unsafe {
             (self.monitor_fn)(
                 self.context,
@@ -1313,9 +1318,15 @@ impl MethodsProvider for NativeMethodsProvider {
             monitored_q: mq,
             t2_limit: finite(out[0]),
             q_limit: out[1],
+            t2_limit_interval: (out[9].is_finite() && out[10].is_finite())
+                .then_some([out[9], out[10]]),
+            q_limit_interval: [out[11], out[12]],
             n_beyond_t2: counts[0].max(0) as usize,
             n_beyond_q: counts[1].max(0) as usize,
             n_beyond_either: counts[2].max(0) as usize,
+            n_undetermined_t2: counts[3].max(0) as usize,
+            n_undetermined_q: counts[4].max(0) as usize,
+            n_undetermined_either: counts[5].max(0) as usize,
             reference_total_variance: out[2],
             monitored_total_variance: finite(out[3]),
             centroid_distance: out[4],

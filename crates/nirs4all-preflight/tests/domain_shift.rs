@@ -762,11 +762,14 @@ fn residual_outside_a_residual_free_reference_is_counted_and_k_follows_rank() {
         &provider,
     );
     let coverage = find(&report, "domain_shift.coverage", "instrument", Some("B"));
-    assert_eq!(status(&coverage), "computed");
+    assert_eq!(status(coverage), "computed");
     assert_eq!(coverage.parameters["n_components_requested"], 2);
     assert_eq!(coverage.parameters["n_components_effective"], 1);
     assert_eq!(value(coverage, "q_limit"), 0.0);
+    // (0, 100) and (1, 100) are certainly beyond; (2, 0) lies in the
+    // subspace and cannot be certified against a limit of 0: undetermined.
     assert_eq!(value(coverage, "n_target_beyond_q_limit"), 2);
+    assert_eq!(value(coverage, "n_target_undetermined_q"), 1);
     assert!(
         value(coverage, "n_target_beyond_either_limit")
             .as_u64()
@@ -796,7 +799,10 @@ fn residual_outside_a_residual_free_reference_is_counted_and_k_follows_rank() {
         value(coverage, "either_reason_code"),
         "T2_UNAVAILABLE_COMBINED_COVERAGE_INCOMPLETE"
     );
+    // (1, 3) is beyond; (1, 2) equals every reference unit: its residual is
+    // exactly 0 with a zero interval, so it is certainly not beyond.
     assert_eq!(value(coverage, "n_target_beyond_q_limit"), 1);
+    assert_eq!(value(coverage, "n_target_undetermined_q"), 0);
     let dispersion = find(&report, "domain_shift.dispersion", "instrument", Some("B"));
     assert_eq!(
         dispersion.reason_code.as_deref(),
@@ -818,6 +824,10 @@ fn every_value_carries_its_unit() {
     );
     let units = &distance.parameters["value_units"];
     assert_eq!(units["energy_e"], "abs");
+    assert_eq!(units["energy_e_error_bound"], "abs");
+    let e = value(distance, "energy_e").as_f64().unwrap();
+    let interval = value(distance, "energy_e_interval");
+    assert!(interval[0].as_f64().unwrap() <= e && e <= interval[1].as_f64().unwrap());
     assert_eq!(units["scipy_energy_distance"], "(abs)^(1/2)");
     assert!(distance.unit.is_none());
     let coverage = find(&report, "domain_shift.coverage", "instrument", Some("A"));
@@ -993,14 +1003,13 @@ fn provider_budgets_refuse_before_allocation() {
 }
 
 #[test]
-fn magnitude_sweep_gives_equivariant_results_or_explicit_errors() {
+fn magnitude_sweep_is_equivariant_inside_the_domain_and_refused_outside() {
     let Some(provider) = native() else {
         return;
     };
+    // Rule 13: nonzero |x| in [2^-256, 2^256], spread <= 2^64. The data
+    // span about 2^-4 .. 2^0.2, so shifts beyond about ±250 leave the domain.
     let reference = analyze(&dataset(0), &provider);
-    let pick = |r: &QualificationReport, id: &str, factor: &str, level: Option<&str>| {
-        find(r, id, factor, level).clone()
-    };
     for shift in [-1062, -1022, -500, -100, 100, 500, 1000] {
         let mut input = dataset(0);
         for row in &mut input.sources[0].x {
@@ -1015,48 +1024,95 @@ fn magnitude_sweep_gives_equivariant_results_or_explicit_errors() {
             .iter()
             .filter(|m| m.metric_id.starts_with("domain_shift."))
         {
-            // Never a value-less success, never NaN (JSON has none).
+            // Never a value-less success.
             assert_eq!(
                 m.value.is_some(),
                 status(m) == "computed",
                 "{}",
                 m.metric_id
             );
-            if status(m) == "error" {
-                assert!(m.reason_code.is_some());
+            assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN);
+        }
+        let test = find(&report, "domain_shift.energy_test", "instrument", None);
+        let base = find(&reference, "domain_shift.energy_test", "instrument", None);
+        let c = find(&report, "domain_shift.coverage", "instrument", Some("A"));
+        let c0 = find(&reference, "domain_shift.coverage", "instrument", Some("A"));
+        if shift.abs() > 250 {
+            for m in [test, c] {
+                assert_eq!(status(m), "unsupported", "shift {shift}");
+                assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
             }
+            continue;
         }
-        let test = pick(&report, "domain_shift.energy_test", "instrument", None);
-        let base = pick(&reference, "domain_shift.energy_test", "instrument", None);
-        if status(&test) == "computed" {
-            assert_eq!(
-                value(&test, "n_at_least_observed"),
-                value(&base, "n_at_least_observed")
-            );
-            assert_eq!(value(&test, "p_value_holm"), value(&base, "p_value_holm"));
-        } else {
-            assert_eq!(status(&test), "error", "shift {shift}");
+        assert_eq!(status(test), "computed");
+        assert_eq!(
+            value(test, "n_at_least_observed"),
+            value(base, "n_at_least_observed")
+        );
+        assert_eq!(value(test, "p_value_holm"), value(base, "p_value_holm"));
+        assert_eq!(status(c), "computed");
+        for key in [
+            "n_target_beyond_t2_limit",
+            "n_target_beyond_q_limit",
+            "n_target_undetermined_q",
+            "t2_limit",
+        ] {
+            assert_eq!(value(c, key), value(c0, key), "{key} at shift {shift}");
         }
-        let c = pick(&report, "domain_shift.coverage", "instrument", Some("A"));
-        let c0 = pick(&reference, "domain_shift.coverage", "instrument", Some("A"));
-        if status(&c) == "computed" {
-            for key in [
-                "n_target_beyond_t2_limit",
-                "n_target_beyond_q_limit",
-                "t2_limit",
-            ] {
-                assert_eq!(value(&c, key), value(&c0, key), "{key} at shift {shift}");
-            }
-            assert_eq!(
-                c.parameters["n_components_effective"],
-                c0.parameters["n_components_effective"]
-            );
-        } else {
-            assert_eq!(status(&c), "error", "shift {shift}");
-        }
-        if (-500..=500).contains(&shift) {
-            assert_eq!(status(&test), "computed");
-            assert_eq!(status(&c), "computed");
-        }
+        assert_eq!(
+            c.parameters["n_components_effective"],
+            c0.parameters["n_components_effective"]
+        );
     }
+}
+
+#[test]
+fn audit_without_development_units_is_refused_before_indexing() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Astra b10fix: only retained-test acquisitions in the source.
+    let mut input = dataset(4);
+    input.options.domain_shift.external_domain_audit = true;
+    let source = &mut input.sources[0];
+    source.observation_ids.drain(..14);
+    source.sample_ids.drain(..14);
+    source.x.drain(..14);
+    let report = analyze(&input, &provider);
+    let audit = find(&report, "domain_shift.energy_test", "partition", None);
+    assert_eq!(status(audit), "insufficient_data");
+    assert_eq!(audit.reason_code.as_deref(), Some("NO_DEVELOPMENT_UNITS"));
+}
+
+#[test]
+fn tiny_real_residual_and_huge_level_are_resolved_inside_the_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Astra b10fix (1): (1, 2^-27) leaves the residual-free line by Q = 2^-54.
+    let a: Vec<[f64; 2]> = (-5..=5).map(|i| [f64::from(i), 0.0]).collect();
+    let report = analyze(
+        &line_dataset(&a, &[[1.0, 2f64.powi(-27)], [3.0, 0.0]]),
+        &provider,
+    );
+    let coverage = find(&report, "domain_shift.coverage", "instrument", Some("B"));
+    assert_eq!(value(coverage, "n_target_beyond_q_limit"), 1);
+    assert_eq!(value(coverage, "n_target_undetermined_q"), 1);
+    // Astra b10fix (2, 4): a 2^60 reference level does not erase the unit
+    // differences of the targets [0], [1]: dispersion 0.5, energy computed
+    // from local differences.
+    let huge: Vec<[f64; 2]> = (-5..=5)
+        .map(|i| [2f64.powi(60) + 256.0 * f64::from(i), 1.0])
+        .collect();
+    let report = analyze(&line_dataset(&huge, &[[0.0, 1.0], [1.0, 1.0]]), &provider);
+    let dispersion = find(&report, "domain_shift.dispersion", "instrument", Some("B"));
+    assert_eq!(value(dispersion, "target_total_variance"), 0.5);
+    let distance = find(
+        &report,
+        "domain_shift.distribution_distance",
+        "instrument",
+        Some("B"),
+    );
+    assert_eq!(status(distance), "computed");
+    assert!(value(distance, "energy_e").as_f64().unwrap() > 0.0);
 }

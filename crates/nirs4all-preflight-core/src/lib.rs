@@ -1295,6 +1295,14 @@ pub enum ProviderErrorKind {
     Internal,
 }
 
+/// Context-message prefix of a Methods refusal outside the supported
+/// numerical domain (finite values, nonzero |x| in [2^-256, 2^256], spread
+/// <= 2^64).
+pub const NUMERICAL_DOMAIN_MESSAGE_PREFIX: &str = "input outside the supported numerical domain";
+/// The supported numerical domain published with the metrics that use it.
+pub const NUMERICAL_DOMAIN: &str =
+    "finite values, every nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^64";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderError {
@@ -1332,6 +1340,14 @@ impl ProviderError {
     /// and convergence failures are numerical; unsupported, not implemented,
     /// ABI, version and backend refusals are unsupported; anything else
     /// (argument, shape, memory, internal) is internal.
+    /// Methods status with its context message: a refusal of the supported
+    /// numerical domain (lead rule 13) becomes `NUMERICAL_DOMAIN_EXCEEDED`.
+    pub fn from_methods(status: i32, message: &str) -> Self {
+        if status == 10 && message.starts_with(NUMERICAL_DOMAIN_MESSAGE_PREFIX) {
+            return Self::unsupported("NUMERICAL_DOMAIN_EXCEEDED");
+        }
+        Self::from_methods_status(status)
+    }
     pub fn from_methods_status(status: i32) -> Self {
         let name = match status {
             1 => "INVALID_ARGUMENT",
@@ -1872,10 +1888,13 @@ pub struct EnergyDistanceRequest {
 pub struct EnergyDistanceDiagnostics {
     /// Energy distances E = 2M_ab - M_aa - M_bb (zero diagonal), unit of X.
     pub energy: Vec<Vec<f64>>,
+    /// Absolute rounding bounds of the energies.
+    pub energy_bounds: Vec<Vec<f64>>,
     /// Mean Euclidean distances over all ordered pairs (V-statistic).
     pub mean_distances: Vec<Vec<f64>>,
-    /// sum_{a<b} n_a n_b / (n_a + n_b) energy[a][b].
+    /// sum_{a<b} n_a n_b / (n_a + n_b) energy[a][b], and its bound.
     pub statistic: f64,
+    pub statistic_bound: f64,
     /// log10(n! / prod n_a!).
     pub log10_distinct_permutations: f64,
     pub p_value: Option<f64>,
@@ -1911,10 +1930,17 @@ pub struct PcaMonitorDiagnostics {
     /// Type-7 (1 - alpha) quantiles of the out-of-fold reference values.
     pub t2_limit: Option<f64>,
     pub q_limit: f64,
-    /// Monitored rows strictly above the limits, decided in the scaled unit.
+    /// Limit intervals (quantiles of the out-of-fold interval ends).
+    pub t2_limit_interval: Option<[f64; 2]>,
+    pub q_limit_interval: [f64; 2],
+    /// Monitored rows certainly beyond the limits (interval above the limit
+    /// interval), and rows the rounding intervals cannot decide.
     pub n_beyond_t2: usize,
     pub n_beyond_q: usize,
     pub n_beyond_either: usize,
+    pub n_undetermined_t2: usize,
+    pub n_undetermined_q: usize,
+    pub n_undetermined_either: usize,
     pub reference_total_variance: f64,
     pub monitored_total_variance: Option<f64>,
     pub centroid_distance: f64,
