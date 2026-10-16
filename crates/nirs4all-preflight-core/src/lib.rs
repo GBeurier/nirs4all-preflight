@@ -1869,7 +1869,8 @@ pub struct PermdispDiagnostics {
 }
 
 /// Provider reason for a Methods refusal of inputs outside the supported
-/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^64).
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32 where
+/// differences matter).
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Prefix of the Methods context message for that refusal.
 pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
@@ -2142,7 +2143,7 @@ pub const VALIDATION_CAPABILITY_ID: &str = "validation.nested_grouped_probe";
 
 /// Declared numerical domain of the Methods kernels used by the probe
 /// (lead rule 13); outside it they refuse with `NUMERICAL_DOMAIN_EXCEEDED`.
-pub const PROBE_NUMERICAL_DOMAIN: &str = "finite values, every nonzero |x| in [2^-256, 2^256], spread max|x|/min nonzero |x| <= 2^64 per input array (aggregated X, targets, predictions); outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; means and scores from double-double sums of explicit residuals";
+pub const PROBE_NUMERICAL_DOMAIN: &str = "finite values, every nonzero |x| in [2^-256, 2^256] (spectra aggregation, a summary); targets and predictions also spread max|x|/min nonzero |x| <= 2^32 per array (rule 15); outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; means and scores from double-double sums of explicit residuals, error of order n eps; the Methods NIPALS PLS estimator may refuse strongly scaled data with NumericalFailure (reported as error)";
 
 /// Explicitly unavailable validation, with the host-specific reason.
 pub struct UnavailableValidationProvider(pub &'static str);
