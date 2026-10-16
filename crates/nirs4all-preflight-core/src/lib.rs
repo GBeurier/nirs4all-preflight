@@ -1714,7 +1714,7 @@ pub struct BhDiagnostics {
 }
 
 /// Provider reason for a Methods refusal of inputs outside the supported
-/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^64).
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32).
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Prefix of the Methods context message for that refusal.
 pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
@@ -1754,6 +1754,13 @@ pub struct PermanovaDiagnostics {
     /// log10 of the distinct within-strata level assignments.
     pub log10_distinct_permutations: f64,
     pub p_value: Option<f64>,
+    /// Error estimate of the residual SS divided by it (Methods resolution
+    /// ratio); None when it is infinite (zero residual SS) or the statistic
+    /// has no df.
+    pub residual_resolution: Option<f64>,
+    /// The statistic is published but its residual SS is not resolved above
+    /// rounding (ratio >= 1, or a zero residual SS).
+    pub f_numerically_unresolved: bool,
     pub n_at_least_observed: usize,
     pub n_permutations_executed: usize,
     pub backend_version: String,
@@ -1793,6 +1800,13 @@ pub struct FreedmanLaneDiagnostics {
     /// log10(n!), bound on distinct residual permutations.
     pub log10_distinct_permutations: f64,
     pub p_value: Option<f64>,
+    /// Error estimate of the residual SS divided by it (Methods resolution
+    /// ratio); None when it is infinite (zero residual SS) or the statistic
+    /// has no df.
+    pub residual_resolution: Option<f64>,
+    /// The statistic is published but its residual SS is not resolved above
+    /// rounding (ratio >= 1, or a zero residual SS).
+    pub f_numerically_unresolved: bool,
     pub n_at_least_observed: usize,
     pub n_permutations_executed: usize,
     pub backend_version: String,
@@ -1824,6 +1838,13 @@ pub struct PermdispDiagnostics {
     /// log10(n! / prod n_g!).
     pub log10_distinct_permutations: f64,
     pub p_value: Option<f64>,
+    /// Error estimate of the residual SS divided by it (Methods resolution
+    /// ratio); None when it is infinite (zero residual SS) or the statistic
+    /// has no df.
+    pub residual_resolution: Option<f64>,
+    /// The statistic is published but its residual SS is not resolved above
+    /// rounding (ratio >= 1, or a zero residual SS).
+    pub f_numerically_unresolved: bool,
     pub n_at_least_observed: usize,
     pub n_permutations_executed: usize,
     pub backend_version: String,

@@ -16,18 +16,26 @@ const FAMILY_ALPHA: f64 = 0.05;
 /// sqrt(f64::EPSILON), applied by Methods on the F scale: F_perm >= F_obs - tolerance (vegan).
 const TIE_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 const VIEW: &str = "canonical:centered";
-/// Supported numerical domain of the Methods kernels (rule 13), published
-/// with each metric; same bounds and keys as the association metrics.
+/// Supported numerical domain of the Methods kernels (rules 13 and 15),
+/// published with each metric; same bounds and keys as the association
+/// metrics.
 fn numerical_domain() -> Value {
     json!({"supported_domain": {
                "nonzero_abs_min": "2^-256", "nonzero_abs_max": "2^256",
-               "max_over_min_nonzero_abs_per_array": "2^64",
+               "max_over_min_nonzero_abs_per_array": "2^32",
                "zeros": "allowed",
                "checked_arrays": "unit coordinate matrix (canonical PCA scores averaged per unit), one array"},
            "outside_domain": "unsupported_NUMERICAL_DOMAIN_EXCEEDED",
            "invariance": "scale_2k_translation_and_constant_columns_inside_domain",
            "sums_of_squares": "explicit residuals; published as value x 2^binary_exponent, exponent 0 when every positive value is a normal double",
-           "unresolved_residual": "pseudo_f_undefined_when_residual_ss_at_or_below_rounding_resolution"})
+           "centring_rounding": "about n x f64 epsilon times the range of each coordinate",
+           "f_resolution": "an F is undefined only for an exactly zero residual SS; otherwise it is published with residual_ss_resolution_ratio (Methods error estimate of the residual SS divided by it, a conservative first-order estimate) and numerically_unresolved = true when that ratio is >= 1"})
+}
+
+/// Resolution of a published F: the Methods ratio (error estimate of the
+/// residual SS over it) and whether the F is numerically unresolved.
+fn f_resolution(unresolved: bool, ratio: Option<f64>) -> Value {
+    json!({"numerically_unresolved": unresolved, "residual_ss_resolution_ratio": ratio})
 }
 
 /// Categorical metadata factors in report order: `instrument`, `campaign`,
@@ -266,7 +274,9 @@ fn permanova(
                 && d.n_at_least_observed <= d.n_permutations_executed
                 && (d.n_permutations_executed == n_permutations
                     || (d.n_permutations_executed == 0 && d.pseudo_f.is_none()))
-                && d.p_value.is_some() == (d.n_permutations_executed > 0) =>
+                && d.p_value.is_some() == (d.n_permutations_executed > 0)
+                && d.residual_resolution
+                    .is_none_or(|v| v.is_finite() && v >= 0.0) =>
         {
             Ok(d)
         }
@@ -300,7 +310,9 @@ fn permdisp(
                 && d.n_at_least_observed <= d.n_permutations_executed
                 && (d.n_permutations_executed == n_permutations
                     || (d.n_permutations_executed == 0 && d.f.is_none()))
-                && d.p_value.is_some() == (d.n_permutations_executed > 0) =>
+                && d.p_value.is_some() == (d.n_permutations_executed > 0)
+                && d.residual_resolution
+                    .is_none_or(|v| v.is_finite() && v >= 0.0) =>
         {
             Ok(d)
         }
@@ -336,7 +348,9 @@ fn freedman_lane_call(
                 && d.n_at_least_observed <= d.n_permutations_executed
                 && (d.n_permutations_executed == n_permutations
                     || (d.n_permutations_executed == 0 && d.pseudo_f.is_none()))
-                && d.p_value.is_some() == (d.n_permutations_executed > 0) =>
+                && d.p_value.is_some() == (d.n_permutations_executed > 0)
+                && d.residual_resolution
+                    .is_none_or(|v| v.is_finite() && v >= 0.0) =>
         {
             Ok(d)
         }
@@ -405,6 +419,8 @@ struct Candidate<'a> {
     metric: Metric,
     /// Effect reported with the test (PERMANOVA pseudo-F or PERMDISP F).
     effect: (&'static str, f64),
+    /// Its numerical resolution (`f_resolution`).
+    effect_resolution: Value,
 }
 
 enum Request {
@@ -415,7 +431,7 @@ enum Request {
 
 /// Descriptive call result of a test: request, log10 distinct outcomes,
 /// observed statistic and block sizes, or the reason it cannot be tested.
-type Outcome = Result<(Request, f64, Option<f64>, Vec<usize>), (Availability, String)>;
+type Outcome = Result<(Request, f64, Option<f64>, Value, Vec<usize>), (Availability, String)>;
 
 struct PlanSpec<'a, 'b> {
     kind: TestKind,
@@ -820,20 +836,24 @@ pub(crate) fn analyze(
             "factor": factor,
             "r2_marginal": m.and_then(|d| d.r2),
             "pseudo_f_marginal": m.and_then(|d| d.pseudo_f),
+            "pseudo_f_marginal_resolution": m.map(|d| f_resolution(d.f_numerically_unresolved, d.residual_resolution)),
             "df_marginal": m.map(|d| d.df_term),
             "r2_unique_given_other_factors": c.and_then(|d| d.r2),
             "partial_r2_given_other_factors": c.and_then(|d| d.partial_r2),
             "pseudo_f_given_other_factors": c.and_then(|d| d.pseudo_f),
+            "pseudo_f_given_other_factors_resolution": c.map(|d| f_resolution(d.f_numerically_unresolved, d.residual_resolution)),
             "df_given_other_factors": c.map(|d| d.df_term),
             "r2_unique_given_other_main_effects": fl.and_then(|d| d.r2),
             "partial_r2_given_other_main_effects": fl.and_then(|d| d.partial_r2),
             "pseudo_f_given_other_main_effects": fl.and_then(|d| d.pseudo_f),
+            "pseudo_f_given_other_main_effects_resolution": fl.map(|d| f_resolution(d.f_numerically_unresolved, d.residual_resolution)),
             "df_given_other_main_effects": fl.map(|d| d.df_term),
             "reason_code": marginal[factor].1.as_ref().err().map(|e| e.1.clone()),
         }));
     }
     let joint_value = joint.as_ref().map(|r| match r {
         Ok(d) => json!({"r2_all_factor_cells": d.r2, "pseudo_f": d.pseudo_f,
+                        "pseudo_f_resolution": f_resolution(d.f_numerically_unresolved, d.residual_resolution),
                         "df": d.df_term, "n_cells": d.n_levels}),
         Err((_, reason)) => json!({"reason_code": reason}),
     });
@@ -926,6 +946,7 @@ pub(crate) fn analyze(
                         "levels": levels,
                         "distance_binary_exponent": d.distance_binary_exponent,
                         "anova_f": d.f,
+                        "anova_f_resolution": f_resolution(d.f_numerically_unresolved, d.residual_resolution),
                         "df1": d.df1,
                         "df2": d.df2,
                     }),
@@ -996,6 +1017,7 @@ pub(crate) fn analyze(
                         Request::Permanova(marginal[factor].0.clone()),
                         d.log10_distinct_permutations,
                         d.pseudo_f,
+                        f_resolution(d.f_numerically_unresolved, d.residual_resolution),
                         vec![n],
                     ))
                 })),
@@ -1010,6 +1032,7 @@ pub(crate) fn analyze(
                             Request::Permanova(request.clone()),
                             d.log10_distinct_permutations,
                             d.pseudo_f,
+                            f_resolution(d.f_numerically_unresolved, d.residual_resolution),
                             block_sizes(request.strata_codes.as_deref().unwrap_or_default()),
                         ))
                     })
@@ -1031,6 +1054,7 @@ pub(crate) fn analyze(
                             Request::FreedmanLane(request.clone()),
                             d.log10_distinct_permutations,
                             d.pseudo_f,
+                            f_resolution(d.f_numerically_unresolved, d.residual_resolution),
                             vec![n],
                         ))
                     })
@@ -1043,6 +1067,7 @@ pub(crate) fn analyze(
                         Request::Permdisp(dispersion[factor].0.clone()),
                         d.log10_distinct_permutations,
                         d.f,
+                        f_resolution(d.f_numerically_unresolved, d.residual_resolution),
                         vec![n],
                     )
                 })),
@@ -1075,7 +1100,7 @@ pub(crate) fn analyze(
                 ));
                 continue;
             };
-            let (request, log10_distinct, effect, blocks) = match outcome {
+            let (request, log10_distinct, effect, effect_resolution, blocks) = match outcome {
                 Ok(v) => v,
                 Err((status, reason)) => {
                     report.metrics.push(reject(&spec, status, &reason));
@@ -1125,6 +1150,7 @@ pub(crate) fn analyze(
                     },
                     effect,
                 ),
+                effect_resolution,
             };
             if kind == TestKind::Dispersion {
                 permdisp_candidates.push(candidate);
@@ -1312,6 +1338,7 @@ fn finish_family<'a>(
             "rejects_null_at_family_alpha": rejects,
             "statistic_name": c.effect.0,
             "statistic": c.effect.1,
+            "statistic_resolution": c.effect_resolution,
             "n_at_least_observed": b,
         }));
         metric

@@ -1025,7 +1025,7 @@ impl MethodsProvider for NativeMethodsProvider {
             return Err(ProviderError::internal("INVALID_PERMANOVA_REQUEST"));
         }
         let xv = MatrixView::new(&mut x, n, p);
-        let mut out = [f64::NAN; 13];
+        let mut out = [f64::NAN; 15];
         let mut counts = [0i64; 2];
         let mut exponent = 0i32;
         // SAFETY: the view owns n x p values; code arrays hold n elements;
@@ -1061,6 +1061,8 @@ impl MethodsProvider for NativeMethodsProvider {
             n_strata: out[10] as usize,
             log10_distinct_permutations: out[11],
             p_value: finite(out[12]),
+            residual_resolution: finite(out[13]),
+            f_numerically_unresolved: out[14] == 1.0,
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
             backend_version: self.version.clone(),
@@ -1074,7 +1076,7 @@ impl MethodsProvider for NativeMethodsProvider {
         let xv = MatrixView::new(&mut x, n, p);
         let mut distances = vec![f64::NAN; n];
         let mut means = vec![f64::NAN; n];
-        let mut out = [f64::NAN; 6];
+        let mut out = [f64::NAN; 8];
         let mut counts = [0i64; 2];
         let mut exponent = 0i32;
         // SAFETY: the view owns n x p values; per-row outputs hold n values.
@@ -1104,6 +1106,8 @@ impl MethodsProvider for NativeMethodsProvider {
             n_groups: groups,
             log10_distinct_permutations: out[4],
             p_value: out[5].is_finite().then_some(out[5]),
+            residual_resolution: out[6].is_finite().then_some(out[6]),
+            f_numerically_unresolved: out[7] == 1.0,
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
             backend_version: self.version.clone(),
@@ -1127,7 +1131,7 @@ impl MethodsProvider for NativeMethodsProvider {
             .flat_map(|i| r.condition_codes.iter().map(move |codes| codes[i]))
             .collect();
         let xv = MatrixView::new(&mut x, n, p);
-        let mut out = [f64::NAN; 12];
+        let mut out = [f64::NAN; 14];
         let mut counts = [0i64; 2];
         let mut exponent = 0i32;
         // SAFETY: the view owns n x p values; term codes hold n and the
@@ -1165,6 +1169,8 @@ impl MethodsProvider for NativeMethodsProvider {
             rank_reduced: out[9] as usize,
             log10_distinct_permutations: out[10],
             p_value: finite(out[11]),
+            residual_resolution: finite(out[12]),
+            f_numerically_unresolved: out[13] == 1.0,
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
             backend_version: self.version.clone(),

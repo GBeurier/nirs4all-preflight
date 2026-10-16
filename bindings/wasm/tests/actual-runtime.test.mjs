@@ -96,7 +96,7 @@ test('WASM association follows the supported numerical domain',async()=>{
       assert.equal(m.status,'unsupported');
       assert.equal(m.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
       assert.equal(m.value,null);
-      assert.equal(m.parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^64');
+      assert.equal(m.parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^32');
     }
   }
 });
@@ -133,9 +133,14 @@ test('WASM confounding matches the native engine goldens',async()=>{
   assert.equal(find('confounding.design').value.factors[0].df_identifiable_given_other_factors,1);
   assert.equal(find('confounding.design').value.factors[0].aliased_with_other_factor_cells,false);
   assert.equal(find('confounding.design').value.factors[0].identifiable_under_additive_model,true);
-  assert.equal(find('confounding.variance_partition').parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^64');
+  assert.equal(find('confounding.variance_partition').parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^32');
   assert.equal(find('confounding.variance_partition').value.ss_binary_exponent,0);
   assert.equal(find('confounding.dispersion','campaign').value.distance_binary_exponent,0);
+  // Every published F carries its numerical resolution; these are resolved.
+  assert.equal(fl.value.statistic_resolution.numerically_unresolved,false);
+  assert.ok(fl.value.statistic_resolution.residual_ss_resolution_ratio<1e-6);
+  assert.equal(partition.factors[1].pseudo_f_marginal_resolution.numerically_unresolved,false);
+  assert.equal(find('confounding.dispersion','campaign').value.anova_f_resolution.numerically_unresolved,false);
   assert.ok(runtime.capabilities().some(c=>c.capability_id==='confounding'&&c.available&&!c.qualified));
 });
 // Rule 13 (native test native_engine_partition_is_scale_invariant_inside_the_domain):

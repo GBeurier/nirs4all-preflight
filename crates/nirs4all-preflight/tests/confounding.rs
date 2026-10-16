@@ -105,6 +105,8 @@ impl MethodsProvider for Scripted {
             n_strata,
             log10_distinct_permutations: self.log10_distinct,
             p_value: (executed > 0).then(|| (1.0 + b as f64) / (1.0 + executed as f64)),
+            residual_resolution: Some(1e-20),
+            f_numerically_unresolved: false,
             n_at_least_observed: if executed > 0 { b } else { 0 },
             n_permutations_executed: executed,
             backend_version: "scripted".into(),
@@ -124,6 +126,8 @@ impl MethodsProvider for Scripted {
             n_groups: g,
             log10_distinct_permutations: self.log10_distinct,
             p_value: (executed > 0).then(|| 500.0 / (1.0 + executed as f64)),
+            residual_resolution: Some(1e-20),
+            f_numerically_unresolved: false,
             n_at_least_observed: if executed > 0 { 499 } else { 0 },
             n_permutations_executed: executed,
             backend_version: "scripted".into(),
@@ -168,6 +172,8 @@ impl MethodsProvider for Scripted {
             rank_reduced,
             log10_distinct_permutations: self.log10_distinct,
             p_value: (executed > 0).then(|| 10.0 / (1.0 + executed as f64)),
+            residual_resolution: Some(1e-20),
+            f_numerically_unresolved: false,
             n_at_least_observed: if executed > 0 { 9 } else { 0 },
             n_permutations_executed: executed,
             backend_version: "scripted".into(),
@@ -708,6 +714,17 @@ fn native_engine_partitions_balanced_crossed_design_like_closed_forms() {
     let tv = test.value.as_ref().unwrap();
     assert_eq!(tv["n_at_least_observed"], 0);
     assert!((tv["p_value"].as_f64().unwrap() - 0.001).abs() < 1e-15);
+    // Every published F carries its numerical resolution (Methods ratio of
+    // the residual SS error estimate to the residual SS).
+    for resolution in [
+        &tv["statistic_resolution"],
+        &inst["pseudo_f_marginal_resolution"],
+        &inst["pseudo_f_given_other_factors_resolution"],
+        &inst["pseudo_f_given_other_main_effects_resolution"],
+    ] {
+        assert_eq!(resolution["numerically_unresolved"], false);
+        assert!(resolution["residual_ss_resolution_ratio"].as_f64().unwrap() < 1e-6);
+    }
     assert_eq!(
         test.parameters["permutation_plan"]["block_sizes"],
         serde_json::json!([12, 12])
@@ -719,6 +736,10 @@ fn native_engine_partitions_balanced_crossed_design_like_closed_forms() {
             && f.message.contains("instrument")));
     let disp = find(&report, "confounding.dispersion", Some("instrument"));
     assert!(matches!(disp.status, Availability::Computed));
+    assert_eq!(
+        disp.value.as_ref().unwrap()["anova_f_resolution"]["numerically_unresolved"],
+        false
+    );
     assert!(capabilities(&provider)
         .iter()
         .any(|c| c.capability_id == "confounding" && c.available && !c.qualified));
@@ -1050,7 +1071,7 @@ fn provider_failures_are_errors_unless_a_declared_limit() {
     // the N4mError message "n4m error 10: <message>" (WASM); any other
     // status 10 stays METHODS_UNSUPPORTED.
     for message in [
-        "input outside the supported numerical domain (nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^64)",
+        "input outside the supported numerical domain (nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^32)",
         "n4m error 10: input outside the supported numerical domain (...)",
     ] {
         let e = ProviderError::from_methods_error(10, message);
@@ -1552,23 +1573,24 @@ fn unknown_additive_identifiability_is_not_reported_as_non_identifiable() {
 
 #[test]
 fn native_dyadic_case_on_both_sides_of_the_domain() {
-    // Astra dyadic fixture through the native adapter: columns 2^p B and
-    // 2^q (A + r). At the spread boundary (p = 33, q = -32: max/min nonzero
-    // |x| = 2^64) SS_A = SS_res = 2^-60 exactly, F = 13; with p = 34 or the
-    // round-4 columns 2^600 / 2^-500 the input is outside D and the provider
-    // returns unsupported NUMERICAL_DOMAIN_EXCEEDED instead of erasing the
-    // small column.
+    // Astra dyadic fixture through the native adapter: `per_cell` rows per
+    // (A, B) cell, columns 2^p B and 2^q (A + r). At the spread boundary
+    // (p = 16, q = -17: max/min nonzero |x| = 2^32) SS_A = SS_res = n 2^-34,
+    // F = n - 3 and the partial R^2 is 1/2 for 16, 24 and 32 rows (the
+    // Freedman-Lane denominator comes from one projection); every F is
+    // resolved. p = 17 (spread 2^33), the former 2^64 boundary (33, -32)
+    // and 2^600 / 2^-500 are outside D: unsupported NUMERICAL_DOMAIN_EXCEEDED.
     let Some(provider) = native() else {
         return;
     };
-    let fixture = |p: i32, q: i32| {
+    let fixture = |p: i32, q: i32, per_cell: usize| {
         let mut matrix = Vec::new();
         let (mut a, mut b) = (Vec::new(), Vec::new());
-        for i in 0..16 {
-            let cell = i / 4;
+        for i in 0..4 * per_cell {
+            let cell = i / per_cell;
             let ai: i64 = if cell < 2 { -1 } else { 1 };
-            let bi: i64 = if cell % 2 == 0 { -1 } else { 1 };
-            let r = if i % 2 == 0 { 1.0 } else { -1.0 };
+            let bi: i64 = if cell.is_multiple_of(2) { -1 } else { 1 };
+            let r = if i.is_multiple_of(2) { 1.0 } else { -1.0 };
             matrix.push(vec![
                 bi as f64 * 2f64.powi(p),
                 (ai as f64 + r) * 2f64.powi(q),
@@ -1592,46 +1614,55 @@ fn native_dyadic_case_on_both_sides_of_the_domain() {
         n_permutations: 0,
         seed: 1,
     };
-    let ss_a = 2f64.powi(-60);
-    let fl = provider
-        .permanova_freedman_lane(&fl_request(fixture(33, -32)))
-        .unwrap();
-    assert_eq!(fl.ss_binary_exponent, 0);
-    assert_eq!((fl.ss_term, fl.ss_residual), (ss_a, ss_a));
-    assert!((fl.pseudo_f.unwrap() - 13.0).abs() < 1e-11);
-    let cells = provider
-        .permanova(&cells_request(fixture(33, -32)))
-        .unwrap();
-    assert_eq!(cells.ss_binary_exponent, 0);
-    assert_eq!((cells.ss_term, cells.ss_residual), (ss_a, ss_a));
-    assert!((cells.partial_r2.unwrap() - 0.5).abs() < 1e-12);
-    let (matrix, _, b) = fixture(33, -32);
-    let disp = provider
-        .permdisp(&PermdispRequest {
-            matrix,
-            group_codes: b,
-            n_permutations: 0,
-            seed: 1,
-        })
-        .unwrap();
-    assert_eq!(disp.distance_binary_exponent, 0);
-    assert_eq!(disp.f, Some(0.0));
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs();
+    for per_cell in [4, 6, 8] {
+        let n = (4 * per_cell) as f64;
+        let ss_a = n * 2f64.powi(-34);
+        let fl = provider
+            .permanova_freedman_lane(&fl_request(fixture(16, -17, per_cell)))
+            .unwrap();
+        assert_eq!(fl.ss_binary_exponent, 0);
+        assert!(close(fl.ss_term, ss_a) && close(fl.ss_residual, ss_a));
+        assert!(close(fl.pseudo_f.unwrap(), n - 3.0), "{per_cell}");
+        assert!(close(fl.partial_r2.unwrap(), 0.5), "{per_cell}");
+        assert!(!fl.f_numerically_unresolved && fl.residual_resolution.unwrap() < 1e-3);
+        let cells = provider
+            .permanova(&cells_request(fixture(16, -17, per_cell)))
+            .unwrap();
+        assert_eq!(cells.ss_binary_exponent, 0);
+        assert!(close(cells.ss_term, ss_a) && close(cells.ss_residual, ss_a));
+        assert!(close(cells.pseudo_f.unwrap(), n - 3.0));
+        assert!(close(cells.partial_r2.unwrap(), 0.5));
+        assert!(!cells.f_numerically_unresolved);
+        let (matrix, _, b) = fixture(16, -17, per_cell);
+        let disp = provider
+            .permdisp(&PermdispRequest {
+                matrix,
+                group_codes: b,
+                n_permutations: 0,
+                seed: 1,
+            })
+            .unwrap();
+        assert_eq!(disp.distance_binary_exponent, 0);
+        assert_eq!(disp.f, Some(0.0));
+        assert!(!disp.f_numerically_unresolved);
+    }
     let refused = |e: ProviderError| {
         assert!(matches!(e.kind, ProviderErrorKind::Unsupported));
         assert_eq!(e.reason, "NUMERICAL_DOMAIN_EXCEEDED");
     };
-    for (p, q) in [(34, -32), (600, -500)] {
+    for (p, q) in [(17, -17), (33, -32), (600, -500)] {
         refused(
             provider
-                .permanova_freedman_lane(&fl_request(fixture(p, q)))
+                .permanova_freedman_lane(&fl_request(fixture(p, q, 4)))
                 .unwrap_err(),
         );
         refused(
             provider
-                .permanova(&cells_request(fixture(p, q)))
+                .permanova(&cells_request(fixture(p, q, 4)))
                 .unwrap_err(),
         );
-        let (matrix, _, b) = fixture(p, q);
+        let (matrix, _, b) = fixture(p, q, 4);
         refused(
             provider
                 .permdisp(&PermdispRequest {
@@ -1643,4 +1674,44 @@ fn native_dyadic_case_on_both_sides_of_the_domain() {
                 .unwrap_err(),
         );
     }
+    // Offset stratum (round 5 P0-1): [c c c c 1 2 3 4], strata by half,
+    // term alternating pairs. Rational oracle SS_A = 2, SS_res = 3,
+    // F = 10/3, partial R^2 0.4 with c = 2^31 inside D; c = 2^60 refused.
+    let offset = |c: f64| PermanovaRequest {
+        matrix: [c, c, c, c, 1.0, 2.0, 3.0, 4.0]
+            .iter()
+            .map(|v| vec![*v])
+            .collect(),
+        term_codes: vec![0, 0, 1, 1, 0, 0, 1, 1],
+        strata_codes: Some(vec![0, 0, 0, 0, 1, 1, 1, 1]),
+        n_permutations: 0,
+        seed: 1,
+    };
+    let d = provider.permanova(&offset(2f64.powi(31))).unwrap();
+    assert!(close(d.ss_term, 2.0) && close(d.ss_residual, 3.0));
+    assert!(close(d.pseudo_f.unwrap(), 10.0 / 3.0) && close(d.partial_r2.unwrap(), 0.4));
+    refused(provider.permanova(&offset(2f64.powi(60))).unwrap_err());
+    // Round 5 P0-3: a positive residual SS below its error estimate (one-ulp
+    // residuals) publishes a finite F flagged numerically unresolved; an
+    // exactly zero residual SS leaves F undefined.
+    let single = |values: &[f64], term: &[i64]| PermanovaRequest {
+        matrix: values.iter().map(|v| vec![*v]).collect(),
+        term_codes: term.to_vec(),
+        strata_codes: None,
+        n_permutations: 0,
+        seed: 1,
+    };
+    let ulp = provider
+        .permanova(&single(
+            &[1.0, 1.0 + f64::EPSILON, 1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+            &[0, 0, 0, 0, 1, 1, 1, 1],
+        ))
+        .unwrap();
+    assert!(ulp.ss_residual > 0.0 && ulp.pseudo_f.is_some_and(|f| f.is_finite() && f > 0.0));
+    assert!(ulp.f_numerically_unresolved && ulp.residual_resolution.unwrap() >= 1.0);
+    let exact = provider
+        .permanova(&single(&[1.0, 1.0, 3.0, 3.0], &[0, 0, 1, 1]))
+        .unwrap();
+    assert!(exact.pseudo_f.is_none() && exact.f_numerically_unresolved);
+    assert!(exact.residual_resolution.is_none());
 }

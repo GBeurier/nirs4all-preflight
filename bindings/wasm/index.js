@@ -140,19 +140,19 @@ export async function createQualificationRuntime(options = {}) {
       case 'permanova': {
         const x = matrix(request.matrix);
         const output = methods.statsPermanova(x, request.term_codes, request.strata_codes ?? undefined, request.n_permutations, BigInt(request.seed));
-        result = { ss_binary_exponent: output.ssExponent, ss_total: output.ssTotal, ss_strata: output.ssStrata, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, n_levels: output.nLevels, n_strata: output.nStrata, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        result = { ss_binary_exponent: output.ssExponent, ss_total: output.ssTotal, ss_strata: output.ssStrata, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, n_levels: output.nLevels, n_strata: output.nStrata, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
         break;
       }
       case 'permanova_freedman_lane': {
         const x = matrix(request.matrix);
         const output = methods.statsPermanovaFreedmanLane(x, request.term_codes, request.condition_codes, request.n_permutations, BigInt(request.seed));
-        result = { ss_binary_exponent: output.ssExponent, ss_total: output.ssTotal, ss_reduced: output.ssReduced, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, rank_reduced: output.rankReduced, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        result = { ss_binary_exponent: output.ssExponent, ss_total: output.ssTotal, ss_reduced: output.ssReduced, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, rank_reduced: output.rankReduced, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
         break;
       }
       case 'permdisp': {
         const x = matrix(request.matrix);
         const output = methods.statsPermdisp(x, request.group_codes, request.n_permutations, BigInt(request.seed));
-        result = { distance_binary_exponent: output.distanceExponent, distances: Array.from(output.distances), group_mean_distances: Array.from(output.groupMeanDistances), f: nullable(output.f), df1: output.df1, df2: output.df2, n_groups: output.nGroups, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        result = { distance_binary_exponent: output.distanceExponent, distances: Array.from(output.distances), group_mean_distances: Array.from(output.groupMeanDistances), f: nullable(output.f), df1: output.df1, df2: output.df2, n_groups: output.nGroups, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
         break;
       }
       case 'holm_adjust': {

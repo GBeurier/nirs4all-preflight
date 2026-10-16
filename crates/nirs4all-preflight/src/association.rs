@@ -252,11 +252,11 @@ fn unit_label(unit: IndependenceUnit) -> &'static str {
     }
 }
 
-/// Numerical domain published with every association metric (rule 13).
+/// Numerical domain published with every association metric (rules 13 and 15).
 fn numerical_domain() -> Value {
     json!({"supported_domain": {
                "nonzero_abs_min": "2^-256", "nonzero_abs_max": "2^256",
-               "max_over_min_nonzero_abs_per_array": "2^64",
+               "max_over_min_nonzero_abs_per_array": "2^32",
                "zeros": "allowed",
                "checked_arrays": "continuous metadata and continuous targets; categorical codes are labels"},
            "outside_domain": "unsupported_NUMERICAL_DOMAIN_EXCEEDED",
