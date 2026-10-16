@@ -1222,6 +1222,7 @@ fn finish_family<'a>(
         "family_definition".into(),
         json!("every identifiable test of this kind on this source's canonical structure"),
     );
+    let family_index = report.metrics.len();
     report.metrics.push(family);
     if m == 0 {
         return Vec::new();
@@ -1288,6 +1289,12 @@ fn finish_family<'a>(
         Ok(_) => Err((Availability::Error, "INVALID_PROVIDER_RESULT".to_string())),
         Err(e) => Err((e.availability(), e.reason)),
     };
+    // Holm availability belongs to the family; executed permutations are
+    // recorded whether or not the correction is available.
+    if let Some(value) = report.metrics[family_index].value.as_mut() {
+        value["holm_available"] = json!(holm.is_ok());
+        value["holm_reason_code"] = json!(holm.as_ref().err().map(|e| e.1.clone()));
+    }
     let mut rejected = Vec::new();
     for (i, (c, (resolution, outcome))) in candidates.into_iter().zip(outcomes).enumerate() {
         let mut plan = c.plan;
@@ -1299,10 +1306,6 @@ fn finish_family<'a>(
             json!({"method": "holm", "family": family_id, "family_alpha": FAMILY_ALPHA,
                    "family_size": m, "per_test_resolution_threshold": threshold}),
         );
-        let outcome = match (outcome, &holm) {
-            (Ok(Some(_)), Err(e)) => Err(e.clone()),
-            (outcome, _) => outcome,
-        };
         let (p, b, backend) = match outcome {
             Ok(Some(v)) => v,
             Ok(None) => {
@@ -1326,8 +1329,10 @@ fn finish_family<'a>(
                 continue;
             }
         };
-        let adjusted = holm.as_ref().map(|a| a[i]).unwrap_or(1.0);
-        let rejects = adjusted <= FAMILY_ALPHA;
+        // The permutations ran: record them even if Holm is unavailable, and
+        // then draw no adjusted conclusion.
+        let adjusted = holm.as_ref().ok().map(|a| a[i]);
+        let rejects = adjusted.map(|a| a <= FAMILY_ALPHA);
         plan.executed = true;
         plan.n_permutations_executed = PERMUTATIONS;
         metric.status = Availability::Computed;
@@ -1336,6 +1341,8 @@ fn finish_family<'a>(
             "p_value": p,
             "p_value_holm": adjusted,
             "rejects_null_at_family_alpha": rejects,
+            "multiplicity_available": adjusted.is_some(),
+            "multiplicity_reason_code": holm.as_ref().err().map(|e| e.1.clone()),
             "statistic_name": c.effect.0,
             "statistic": c.effect.1,
             "statistic_resolution": c.effect_resolution,
@@ -1348,7 +1355,7 @@ fn finish_family<'a>(
             .parameters
             .insert("permutation_plan".into(), json!(plan));
         report.metrics.push(metric);
-        if rejects {
+        if let Some(adjusted) = adjusted.filter(|a| *a <= FAMILY_ALPHA) {
             rejected.push((c.kind, c.factor, c.effect.1, adjusted));
         }
     }

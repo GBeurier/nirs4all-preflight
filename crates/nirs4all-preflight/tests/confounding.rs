@@ -1715,3 +1715,95 @@ fn native_dyadic_case_on_both_sides_of_the_domain() {
     assert!(exact.pseudo_f.is_none() && exact.f_numerically_unresolved);
     assert!(exact.residual_resolution.is_none());
 }
+
+/// Scripted provider whose permutations succeed and whose Holm call fails.
+struct NoHolm;
+impl MethodsProvider for NoHolm {
+    fn capabilities(&self) -> Vec<Capability> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .capabilities()
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .pca(r)
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
+    }
+    fn permanova(&self, r: &PermanovaRequest) -> Result<PermanovaDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .permanova(r)
+    }
+    fn permdisp(&self, r: &PermdispRequest) -> Result<PermdispDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .permdisp(r)
+    }
+    fn holm_adjust(&self, _: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
+        Err(ProviderError::from_methods_status(7))
+    }
+    fn permanova_freedman_lane(
+        &self,
+        r: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        Scripted {
+            log10_distinct: 5.0,
+        }
+        .permanova_freedman_lane(r)
+    }
+}
+
+#[test]
+fn holm_failure_keeps_the_execution_record() {
+    // Astra round 6 P0: the permutations ran, so the plan, the raw p-value
+    // and b are kept; Holm's unavailability is reported separately and no
+    // adjusted conclusion (or finding) is drawn.
+    let report = analyze(&crossed(6, false), &NoHolm);
+    for (id, family) in [
+        (
+            "confounding.permanova_freedman_lane_test",
+            "confounding.permanova_family",
+        ),
+        ("confounding.permdisp_test", "confounding.permdisp_family"),
+    ] {
+        let test = find(&report, id, Some("instrument"));
+        assert!(matches!(test.status, Availability::Computed), "{id}");
+        assert!(test.reason_code.is_none());
+        let plan = &test.parameters["permutation_plan"];
+        assert_eq!(plan["executed"], true);
+        assert_eq!(plan["n_permutations_executed"], 999);
+        let value = test.value.as_ref().unwrap();
+        assert!(value["p_value"].as_f64().unwrap() > 0.0);
+        assert!(value["n_at_least_observed"].as_u64().unwrap() > 0);
+        assert!(value["p_value_holm"].is_null());
+        assert!(value["rejects_null_at_family_alpha"].is_null());
+        assert_eq!(value["multiplicity_available"], false);
+        assert_eq!(
+            value["multiplicity_reason_code"],
+            "METHODS_NUMERICAL_FAILURE"
+        );
+        let family = find(&report, family, None);
+        assert_eq!(family.value.as_ref().unwrap()["holm_available"], false);
+        assert_eq!(
+            family.value.as_ref().unwrap()["holm_reason_code"],
+            "METHODS_NUMERICAL_FAILURE"
+        );
+    }
+    assert!(!report.findings.iter().any(|f| [
+        "confounding.marginal_structure.v1",
+        "confounding.conditional_structure.v1",
+        "confounding.main_effect_structure.v1",
+        "confounding.dispersion_heterogeneity.v1"
+    ]
+    .contains(&f.rule_id.as_str())));
+}
