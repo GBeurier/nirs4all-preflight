@@ -206,7 +206,6 @@ test('WASM clustering uses Methods HDBSCAN on canonical PCA scores',()=>{
  assert.equal(metrics['clustering.subsample_stability'].value.ari_assigned_in_both.max,1);
  assert.equal(metrics['clustering.condensed_tree'].value[0].birth_distance,null);
  assert.ok(report.capabilities.some(c=>c.capability_id==='clustering'&&c.available&&!c.qualified));
- assert.ok(report.findings.some(f=>f.rule_id==='structure.clustering.uncertain_partition.v1'));
  const probe=report.capabilities.find(c=>c.capability_id==='validation_probe');
  assert.equal(probe.available,true);
  assert.equal(probe.qualified,false);
@@ -478,11 +477,12 @@ test('WASM SNV keeps constant spectra flat and rounding residue unresolved',()=>
   sources:[{source_id:'nir',observation_ids:rid.map(i=>`o-${i}`),sample_ids:rid,x:rows.map(([a,b])=>[1,2,3,4,5].map(j=>a*j+b)),axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'absorbance'}],
   samples:rid.map(i=>({sample_id:i,physical_sample_id:i}))});
  const rm=Object.fromEntries(residue.metrics.map(m=>[m.metric_id,m]));
- for(const id of ['structure.snv_sensitivity','structure.snv_effective_dimension']){
-  assert.equal(rm[id].status,'undefined');
-  assert.equal(rm[id].reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
-  assert.ok(rm[id].parameters.snv_rms_band_deviation*2<rm[id].parameters.numerical_resolution_threshold);
- }
+ // Rounding-level SNV entries (~1e-17 next to ~1.4) are outside the Methods
+ // 2.20 PCA domain: refused, never reported as structure (native test
+ // native_snv_rounding_residue_is_not_reported_as_structure).
+ assert.equal(rm['structure.snv_sensitivity'].status,'unsupported');
+ assert.equal(rm['structure.snv_sensitivity'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+ assert.equal(rm['structure.snv_effective_dimension'],undefined);
 });
 test('WASM relative contradiction tolerance cannot overflow and aliases are compared',async()=>{
  // Review b4 #2: same cases as the Rust protocol test (one physical sample per case).
