@@ -772,3 +772,61 @@ fn native_snv_bound_covers_aggregation_of_unbalanced_repeats() {
             .unwrap()
     );
 }
+
+#[test]
+fn native_target_summary_and_local_contrast_refuse_targets_outside_the_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Continuous targets with 2^300: the Methods summary and local contrast
+    // refuse them explicitly (rule 13); 2^64 next to 1 stays inside.
+    let build = |big: f64| {
+        let mut input = input_with(
+            (0..6)
+                .map(|i| {
+                    (
+                        ["a", "b", "c", "d", "e", "f"][i],
+                        Partition::Development,
+                        vec![i as f64, (i * i) as f64, 1.0],
+                    )
+                })
+                .collect(),
+            vec![1., 2., 3.],
+        );
+        input.options.independence_unit = IndependenceUnit::Sample;
+        input.targets = vec![Target {
+            target_id: "y".into(),
+            kind: TargetKind::Continuous,
+            values: ["a", "b", "c", "d", "e", "f"]
+                .iter()
+                .zip([1.0, 2.0, big, 3.0, 4.0, 5.0])
+                .map(|(id, v)| TargetValue {
+                    sample_id: (*id).into(),
+                    value: Some(v),
+                    category: None,
+                    status: ReferenceStatus::Exact,
+                    reference_id: None,
+                    reference_group_id: None,
+                })
+                .collect(),
+            unit: None,
+        }];
+        analyze(&input, &provider)
+    };
+    let report = build(2f64.powi(300));
+    let m = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "target.continuous_distribution")
+        .unwrap();
+    assert_eq!(m.status_wire(), "unsupported");
+    assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
+    assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN);
+    let report = build(2f64.powi(64));
+    let m = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "target.continuous_distribution")
+        .unwrap();
+    assert_eq!(m.status_wire(), "computed");
+}

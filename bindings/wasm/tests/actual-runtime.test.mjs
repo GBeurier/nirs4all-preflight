@@ -225,3 +225,16 @@ test('WASM refuses inputs outside the supported numerical domain explicitly',()=
  const inside=Object.fromEntries(analyze(2**64).metrics.map(m=>[m.metric_id,m]));
  for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(inside[id].status,'computed',id);
 });
+test('WASM target summary refuses continuous targets outside the numerical domain',()=>{
+ const ids=['a','b','c','d','e','f'];
+ const run=(big)=>runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids,sample_ids:ids,x:ids.map((_,i)=>[i,i*i,1]),axis:[1,2,3],axis_unit:'nm',signal_unit:'abs'}],
+  samples:ids.map(id=>({sample_id:id,physical_sample_id:id})),
+  targets:[{target_id:'y',kind:'continuous',values:ids.map((id,i)=>({sample_id:id,value:[1,2,big,3,4,5][i],status:'exact'}))}],
+  options:{independence_unit:'sample'}}).metrics.find(m=>m.metric_id==='target.continuous_distribution');
+ const outside=run(2**300);
+ assert.equal(outside.status,'unsupported');
+ assert.equal(outside.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+ assert.ok(outside.parameters.numerical_domain.startsWith('every nonzero |x| in [2^-256, 2^256]'));
+ assert.equal(run(2**64).status,'computed');
+});
