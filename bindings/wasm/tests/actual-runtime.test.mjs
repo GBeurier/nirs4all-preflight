@@ -18,20 +18,100 @@ test('actual Rust WASM + Methods WASM computes canonical report',()=>{
   assert.equal(metrics['local.global_contrast'].status,'computed');
   assert.ok(runtime.reportHtml(report).includes('<!doctype html>'));
 });
-// b=25 and b=409 are NumPy 2.2.6 default_rng(derived seed).permutation(12) goldens.
+// Goldens: NumPy 2.2.6 default_rng(derived seed).permutation(12) counts,
+// SciPy 1.15.3 spearmanr and statsmodels 0.15.0 holm / fdr_bh on
+// p = [0.026, 0.41, 0.911, 0.001] (instrument, campaign, site, temperature).
 test('WASM metadata associations match the native engine goldens',async()=>{
   const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  assert.equal(runtime.validate(fixture).valid,true);
   const report=runtime.analyze(fixture);
   const find=(id,metadata)=>report.metrics.find(m=>m.metric_id===id&&m.parameters.metadata===metadata);
-  const test=find('association.metadata_target_test','instrument');
-  assert.equal(test.status,'computed');
-  assert.equal(test.value.n_at_least_observed,25);
-  assert.equal(test.value.p_value_holm,0.052);
-  assert.equal(test.parameters.permutation_plan.seed,'12673246378241812381');
-  assert.equal(test.parameters.permutation_plan.n_permutations_executed,999);
+  const expected={instrument:[25,0.078,0.052],campaign:[409,0.82,0.5466666666666666],site:[910,0.911,0.911],temperature:[0,0.004,0.004]};
+  for(const [name,[b,holm,bh]] of Object.entries(expected)){
+    const t=find('association.metadata_target_test',name);
+    assert.equal(t.status,'computed',name);
+    assert.equal(t.value.n_at_least_observed,b,name);
+    assert.ok(Math.abs(t.value.p_value_holm-holm)<1e-12,name);
+    assert.ok(Math.abs(t.value.p_value_bh_exploratory-bh)<1e-12,name);
+    assert.equal(t.parameters.permutation_plan.n_permutations_executed,999,name);
+  }
+  assert.equal(find('association.metadata_target_test','instrument').parameters.permutation_plan.seed,'12673246378241812381');
+  assert.equal(find('association.metadata_target_test','temperature').parameters.permutation_plan.seed,'7991542096464906966');
   assert.ok(Math.abs(find('association.metadata_target','instrument').value.effect_size-0.5318805854300557)<1e-12);
-  assert.equal(find('association.metadata_target_test','campaign').value.n_at_least_observed,409);
+  assert.ok(Math.abs(find('association.metadata_target','temperature').value.effect_size-0.9300699300699302)<1e-12);
+  assert.equal(find('association.metadata_target','temperature').parameters.metadata_unit,'degC');
+  assert.equal(find('association.metadata_target_test','site').parameters.permutation_plan.resolution_basis,'exact_enumeration');
   assert.ok(runtime.capabilities().some(c=>c.capability_id==='metadata_association_tests'&&c.available));
+});
+// Root seeds above 2^53 travel as decimal strings (bigint or string input);
+// derived seeds are independent Python FNV-1a/SplitMix64 references.
+test('WASM keeps u64 root seeds exact',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const seedOf=root=>{
+    const report=runtime.analyze({...fixture,options:{...fixture.options,seed:root}});
+    return report.metrics.find(m=>m.metric_id==='association.metadata_target_test'&&m.parameters.metadata==='instrument').parameters.permutation_plan.seed;
+  };
+  assert.equal(seedOf(9007199254740993n),'11028598969094618448');
+  assert.equal(seedOf('9007199254740993'),'11028598969094618448');
+  assert.equal(seedOf(18446744073709551615n),'15693172765536804');
+  assert.equal(seedOf('18446744073709551615'),'15693172765536804');
+  assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:9007199254740993}}),/SEED_NOT_SAFE_INTEGER/);
+  assert.throws(()=>runtime.analyze({...fixture,options:{...fixture.options,seed:'18446744073709551616'}}));
+});
+// Retained-test Y stays opaque through the JSON facade (review P0). Inputs
+// are JSON text, so tokens a typed parser rejects (1e400) reach the engine.
+test('WASM report is invariant to reserved Y content',async()=>{
+  const text=await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8');
+  const fixture=JSON.parse(text);
+  const t00=fixture.targets[0].values.find(v=>v.sample_id==='t00');
+  t00.value='__RESERVED__'; t00.category='__RESERVED__';
+  const template=JSON.stringify(fixture);
+  const outputs=['9.9','1e400','-1e400','{"x":1e400}','"do-not-read"','[1,{"n":[true]}]','null','true'].map(token=>{
+    const json=template.replaceAll('"__RESERVED__"',token);
+    assert.equal(JSON.parse(runtime.validateJson(json)).valid,true,token);
+    return runtime.analyzeJson(json);
+  });
+  assert.ok(outputs.every(o=>o===outputs[0]));
+});
+// Rule 13: inside D the covariate scaled by 2^k or shifted by 2^200 gives
+// the same Spearman rho and count; outside D the pair is unsupported with
+// NUMERICAL_DOMAIN_EXCEEDED (the Methods refusal reason crosses the bridge).
+test('WASM association follows the supported numerical domain',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const run=map=>{
+    const input=structuredClone(fixture);
+    for(const row of Object.values(input.metadata.values)) row.temperature=map(Math.round(row.temperature*10));
+    const r=runtime.analyze(input);
+    const find=id=>r.metrics.find(m=>m.metric_id===id&&m.parameters.metadata==='temperature');
+    return [find('association.metadata_target'),find('association.metadata_target_test')];
+  };
+  const [d0,t0]=run(t=>t);
+  for(const map of [t=>t*2**-240,t=>t*2**240,t=>2**200+t*2**150]){
+    const [d,t]=run(map);
+    assert.ok(Math.abs(d.value.effect_size-d0.value.effect_size)<=1e-12*Math.abs(d0.value.effect_size));
+    assert.equal(t.value.n_at_least_observed,t0.value.n_at_least_observed);
+  }
+  for(const map of [t=>t*2**-300,t=>t*2**1000,t=>1e300+t*2**944,t=>t===172?1e-30:t]){
+    for(const m of run(map)){
+      assert.equal(m.status,'unsupported');
+      assert.equal(m.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+      assert.equal(m.value,null);
+      assert.equal(m.parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^32');
+    }
+  }
+});
+// A development row, a prediction bridge and a retained-test row linked by
+// a physical sample then a reference group form one component (review P0).
+test('WASM refuses leakage through a prediction bridge',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/metadata_association.json',import.meta.url),'utf8'));
+  const input=structuredClone(fixture);
+  input.samples.push({sample_id:'bridge',physical_sample_id:'p00',partition:'prediction'});
+  input.targets[0].values.push({sample_id:'bridge',status:'censored',reference_group_id:'R'});
+  input.targets[0].values.find(v=>v.sample_id==='t00').reference_group_id='R';
+  const result=runtime.validate(input);
+  assert.equal(result.valid,false);
+  assert.ok(result.issues.some(i=>i.code==='REFERENCE_LEAKAGE'));
+  assert.equal(runtime.analyze(input).status,'failed');
 });
 test('WASM rejects identity leakage before diagnostics',()=>{
  const bad=structuredClone(input);

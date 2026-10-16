@@ -1,6 +1,9 @@
 export interface QualificationRuntime {
   analyze(input: unknown): unknown;
   validate(input: unknown): unknown;
+  /** JSON text in, report JSON text out; nothing is decoded by JavaScript. */
+  analyzeJson(input: string): string;
+  validateJson(input: string): string;
   reportHtml(report: unknown): string;
   capabilities(): unknown;
 }

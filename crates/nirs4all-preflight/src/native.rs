@@ -83,7 +83,22 @@ type Association = unsafe extern "C" fn(
     *mut f64,
     *mut i64,
 ) -> i32;
-type Holm = unsafe extern "C" fn(*mut c_void, *const f64, i64, *mut f64) -> i32;
+type PAdjust = unsafe extern "C" fn(*mut c_void, *const f64, i64, *mut f64) -> i32;
+type Correlation = unsafe extern "C" fn(
+    *mut c_void,
+    *const f64,
+    *const f64,
+    i64,
+    i32,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+) -> i32;
+type AssociationExact =
+    unsafe extern "C" fn(*mut c_void, *const i64, *const f64, i64, i32, i64, *mut f64) -> i32;
+type CorrelationExact =
+    unsafe extern "C" fn(*mut c_void, *const f64, *const f64, i64, i32, i64, *mut f64) -> i32;
 type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
 type SnvDestroy = unsafe extern "C" fn(*mut c_void);
 type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
@@ -152,7 +167,11 @@ pub struct NativeMethodsProvider {
     noise_fn: NoiseProxy,
     pairs_fn: TolerancePairs,
     association_fn: Association,
-    holm_fn: Holm,
+    holm_fn: PAdjust,
+    correlation_fn: Correlation,
+    bh_fn: PAdjust,
+    association_exact_fn: AssociationExact,
+    correlation_exact_fn: CorrelationExact,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -167,8 +186,8 @@ impl NativeMethodsProvider {
             let compat = *library
                 .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
                 .map_err(err)?;
-            if compat(2, 19) != 0 {
-                return Err(ProviderError("METHODS_ABI_2_19_REQUIRED".into()));
+            if compat(2, 20) != 0 {
+                return Err(ProviderError("METHODS_ABI_2_20_REQUIRED".into()));
             }
             let create = *library
                 .get::<Create>(b"n4m_context_create\0")
@@ -219,7 +238,19 @@ impl NativeMethodsProvider {
                 .get::<Association>(b"n4m_preflight_factor_association\0")
                 .map_err(err)?;
             let holm_fn = *library
-                .get::<Holm>(b"n4m_preflight_holm_adjust\0")
+                .get::<PAdjust>(b"n4m_preflight_holm_adjust\0")
+                .map_err(err)?;
+            let correlation_fn = *library
+                .get::<Correlation>(b"n4m_stats_correlation_test\0")
+                .map_err(err)?;
+            let bh_fn = *library
+                .get::<PAdjust>(b"n4m_stats_bh_adjust\0")
+                .map_err(err)?;
+            let association_exact_fn = *library
+                .get::<AssociationExact>(b"n4m_stats_factor_association_exact\0")
+                .map_err(err)?;
+            let correlation_exact_fn = *library
+                .get::<CorrelationExact>(b"n4m_stats_correlation_exact\0")
                 .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
@@ -246,6 +277,10 @@ impl NativeMethodsProvider {
                 local_fn,
                 association_fn,
                 holm_fn,
+                correlation_fn,
+                bh_fn,
+                association_exact_fn,
+                correlation_exact_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -263,7 +298,7 @@ impl NativeMethodsProvider {
             return Ok(());
         }
         // SAFETY: live provider context; error string copied before next call.
-        let _message = unsafe {
+        let message = unsafe {
             let p = (self.last_error)(self.context);
             if p.is_null() {
                 String::new()
@@ -271,7 +306,23 @@ impl NativeMethodsProvider {
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
+        // N4M_ERR_UNSUPPORTED (10) outside the supported numerical domain.
+        if status == 10 && message.starts_with(METHODS_DOMAIN_MESSAGE) {
+            return Err(ProviderError(NUMERICAL_DOMAIN_EXCEEDED.into()));
+        }
         Err(ProviderError(format!("METHODS_STATUS_{status}")))
+    }
+}
+impl NativeMethodsProvider {
+    fn exact(&self, out: [f64; 4]) -> ExactPermutationDiagnostics {
+        let finite = |v: f64| v.is_finite().then_some(v);
+        ExactPermutationDiagnostics {
+            n_arrangements: out[0] as usize,
+            p_value: finite(out[1]),
+            minimum_p_value: finite(out[2]),
+            maximum_statistic: finite(out[3]),
+            backend_version: self.version.clone(),
+        }
     }
 }
 fn err(_e: libloading::Error) -> ProviderError {
@@ -308,7 +359,7 @@ impl MethodsProvider for NativeMethodsProvider {
                 capability_id: (*id).into(),
                 available: true,
                 qualified: false,
-                reason: Some(format!("Methods {} ABI 2.19; alpha protocol", self.version)),
+                reason: Some(format!("Methods {} ABI 2.20; alpha protocol", self.version)),
             })
             .collect()
     }
@@ -794,6 +845,120 @@ impl MethodsProvider for NativeMethodsProvider {
             )
         })?;
         Ok(HolmDiagnostics {
+            adjusted,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn correlation(&self, r: &CorrelationRequest) -> Result<CorrelationDiagnostics, ProviderError> {
+        let n = r.x.len();
+        if n < 2
+            || r.y.len() != n
+            || r.n_permutations > 1_000_000
+            || r.x.iter().chain(&r.y).any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("INVALID_CORRELATION_REQUEST".into()));
+        }
+        let method = match r.method {
+            CorrelationMethod::Pearson => 0,
+            CorrelationMethod::Spearman => 1,
+        };
+        let mut out = [f64::NAN; 5];
+        let mut counts = [0i64; 2];
+        // SAFETY: input slices have n elements; outputs are owned fixed arrays.
+        self.check(unsafe {
+            (self.correlation_fn)(
+                self.context,
+                r.x.as_ptr(),
+                r.y.as_ptr(),
+                n as i64,
+                method,
+                r.n_permutations as i32,
+                r.seed,
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        Ok(CorrelationDiagnostics {
+            coefficient: finite(out[0]),
+            n_distinct_x: out[1] as usize,
+            n_distinct_y: out[2] as usize,
+            log10_distinct_permutations: out[3],
+            p_value: finite(out[4]),
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn association_exact(
+        &self,
+        r: &AssociationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        let n = r.targets.len();
+        if n < 2
+            || r.factor_codes.len() != n
+            || !(1..=10_000_000).contains(&r.max_arrangements)
+            || r.targets.iter().any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("INVALID_EXACT_PERMUTATION_REQUEST".into()));
+        }
+        let mut out = [f64::NAN; 4];
+        // SAFETY: input slices have n elements; the output is an owned array.
+        self.check(unsafe {
+            (self.association_exact_fn)(
+                self.context,
+                r.factor_codes.as_ptr(),
+                r.targets.as_ptr(),
+                n as i64,
+                i32::from(r.categorical),
+                r.max_arrangements as i64,
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(self.exact(out))
+    }
+    fn correlation_exact(
+        &self,
+        r: &CorrelationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        let n = r.x.len();
+        if n < 2
+            || r.y.len() != n
+            || !(1..=10_000_000).contains(&r.max_arrangements)
+            || r.x.iter().chain(&r.y).any(|v| !v.is_finite())
+        {
+            return Err(ProviderError("INVALID_EXACT_PERMUTATION_REQUEST".into()));
+        }
+        let mut out = [f64::NAN; 4];
+        // SAFETY: input slices have n elements; the output is an owned array.
+        self.check(unsafe {
+            (self.correlation_exact_fn)(
+                self.context,
+                r.x.as_ptr(),
+                r.y.as_ptr(),
+                n as i64,
+                i32::from(r.method == CorrelationMethod::Spearman),
+                r.max_arrangements as i64,
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(self.exact(out))
+    }
+    fn bh_adjust(&self, r: &BhRequest) -> Result<BhDiagnostics, ProviderError> {
+        if r.p_values.is_empty() || r.p_values.iter().any(|p| !(0.0..=1.0).contains(p)) {
+            return Err(ProviderError("INVALID_BH_REQUEST".into()));
+        }
+        let mut adjusted = vec![f64::NAN; r.p_values.len()];
+        // SAFETY: input and output buffers both hold m elements.
+        self.check(unsafe {
+            (self.bh_fn)(
+                self.context,
+                r.p_values.as_ptr(),
+                r.p_values.len() as i64,
+                adjusted.as_mut_ptr(),
+            )
+        })?;
+        Ok(BhDiagnostics {
             adjusted,
             backend_version: self.version.clone(),
         })

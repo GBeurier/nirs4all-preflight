@@ -9,8 +9,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
 
+/// Deserialized through a raw wire form: partitions and identifiers
+/// are decoded first and target content stays opaque JSON until the
+/// partition of its sample is known. Retained-test references keep their
+/// identity fields; their value and category are dropped unread.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawQualificationInput")]
 pub struct QualificationInput {
     pub schema_version: u32,
     #[serde(default)]
@@ -19,8 +23,236 @@ pub struct QualificationInput {
     pub samples: Vec<Sample>,
     #[serde(default)]
     pub targets: Vec<Target>,
+    /// Typed sample-level metadata beyond `instrument` and `campaign`.
+    #[serde(default)]
+    pub metadata: MetadataTable,
     #[serde(default)]
     pub options: Options,
+}
+
+/// Wire form of [`QualificationInput`]: identical fields, with target
+/// values and categories kept as unparsed JSON text (`RawValue`): the
+/// tokenizer only skips them, so no number, string or nested content of a
+/// retained-test reference is ever decoded.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawQualificationInput {
+    schema_version: u32,
+    #[serde(default)]
+    data_origin: DataOrigin,
+    sources: Vec<SpectralSource>,
+    samples: Vec<Sample>,
+    #[serde(default)]
+    targets: Vec<RawTarget>,
+    #[serde(default)]
+    metadata: MetadataTable,
+    #[serde(default)]
+    options: Options,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTarget {
+    target_id: String,
+    kind: TargetKind,
+    values: Vec<RawTargetValue>,
+    #[serde(default)]
+    unit: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTargetValue {
+    sample_id: String,
+    #[serde(default)]
+    value: Option<Box<serde_json::value::RawValue>>,
+    #[serde(default)]
+    category: Option<Box<serde_json::value::RawValue>>,
+    status: ReferenceStatus,
+    #[serde(default)]
+    reference_id: Option<String>,
+    #[serde(default)]
+    reference_group_id: Option<String>,
+}
+
+impl TryFrom<RawQualificationInput> for QualificationInput {
+    type Error = String;
+    fn try_from(raw: RawQualificationInput) -> Result<Self, String> {
+        let retained: BTreeSet<&str> = raw
+            .samples
+            .iter()
+            .filter(|s| s.partition == Partition::RetainedTest)
+            .map(|s| s.sample_id.as_str())
+            .collect();
+        let mut targets = Vec::with_capacity(raw.targets.len());
+        for (ti, target) in raw.targets.into_iter().enumerate() {
+            let mut values = Vec::with_capacity(target.values.len());
+            for (vi, v) in target.values.into_iter().enumerate() {
+                let (value, category) = if retained.contains(v.sample_id.as_str()) {
+                    (None, None)
+                } else {
+                    let path = format!("targets[{ti}].values[{vi}]");
+                    let value = match &v.value {
+                        None => None,
+                        Some(raw) => serde_json::from_str::<Option<f64>>(raw.get())
+                            .map_err(|e| format!("{path}.value: {e}"))?,
+                    };
+                    let category = match &v.category {
+                        None => None,
+                        Some(raw) => serde_json::from_str::<Option<String>>(raw.get())
+                            .map_err(|e| format!("{path}.category: {e}"))?,
+                    };
+                    (value, category)
+                };
+                values.push(TargetValue {
+                    sample_id: v.sample_id,
+                    value,
+                    category,
+                    status: v.status,
+                    reference_id: v.reference_id,
+                    reference_group_id: v.reference_group_id,
+                });
+            }
+            targets.push(Target {
+                target_id: target.target_id,
+                kind: target.kind,
+                values,
+                unit: target.unit,
+            });
+        }
+        Ok(Self {
+            schema_version: raw.schema_version,
+            data_origin: raw.data_origin,
+            sources: raw.sources,
+            samples: raw.samples,
+            targets,
+            metadata: raw.metadata,
+            options: raw.options,
+        })
+    }
+}
+
+/// Declared metadata columns and their per-sample values. Values are keyed by
+/// `sample_id`: a value describes every acquisition of that sample, so an
+/// acquisition-level covariate is declared only when it is constant per sample.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataTable {
+    #[serde(default)]
+    pub columns: Vec<MetadataColumn>,
+    /// sample_id -> column name -> value; absent or null means missing.
+    #[serde(default)]
+    pub values: BTreeMap<String, BTreeMap<String, Option<MetadataValue>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataColumn {
+    pub name: String,
+    pub kind: MetadataKind,
+    /// Physical unit of a continuous column; not allowed for categorical ones.
+    #[serde(default)]
+    pub unit: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataKind {
+    Categorical,
+    Continuous,
+}
+
+/// JSON strings are categorical levels and JSON numbers continuous values;
+/// neither is ever converted into the other.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MetadataValue {
+    Number(f64),
+    Text(String),
+}
+
+/// Built-in sample fields that are categorical metadata factors.
+pub const SAMPLE_METADATA_FIELDS: [&str; 2] = ["instrument", "campaign"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataOrigin {
+    /// `Sample::instrument` or `Sample::campaign`.
+    SampleField,
+    /// A column of `QualificationInput::metadata`.
+    Declared,
+}
+
+/// One analysable metadata factor (categorical) or covariate (continuous).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetadataFactor<'a> {
+    pub name: &'a str,
+    pub kind: MetadataKind,
+    pub unit: Option<&'a str>,
+    pub origin: MetadataOrigin,
+}
+
+/// Value of one factor for one sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MetadataLevel<'a> {
+    Category(&'a str),
+    Value(f64),
+}
+
+impl QualificationInput {
+    /// Analysable metadata in report order: `instrument`, `campaign`, then the
+    /// declared columns in declaration order. Call on validated input.
+    pub fn metadata_factors(&self) -> Vec<MetadataFactor<'_>> {
+        SAMPLE_METADATA_FIELDS
+            .iter()
+            .map(|name| MetadataFactor {
+                name,
+                kind: MetadataKind::Categorical,
+                unit: None,
+                origin: MetadataOrigin::SampleField,
+            })
+            .chain(self.metadata.columns.iter().map(|c| MetadataFactor {
+                name: &c.name,
+                kind: c.kind,
+                unit: c.unit.as_deref(),
+                origin: MetadataOrigin::Declared,
+            }))
+            .collect()
+    }
+
+    /// Value of `factor` for `sample`; `None` when missing. A value of the
+    /// wrong JSON type (rejected by `validate_input`) is also `None`.
+    pub fn metadata_value<'a>(
+        &'a self,
+        factor: &MetadataFactor<'_>,
+        sample: &'a Sample,
+    ) -> Option<MetadataLevel<'a>> {
+        match factor.origin {
+            MetadataOrigin::SampleField => match factor.name {
+                "instrument" => sample.instrument.as_deref().map(MetadataLevel::Category),
+                "campaign" => sample.campaign.as_deref().map(MetadataLevel::Category),
+                _ => None,
+            },
+            MetadataOrigin::Declared => {
+                match (
+                    factor.kind,
+                    self.metadata
+                        .values
+                        .get(&sample.sample_id)?
+                        .get(factor.name)?
+                        .as_ref()?,
+                ) {
+                    (MetadataKind::Categorical, MetadataValue::Text(t)) => {
+                        Some(MetadataLevel::Category(t))
+                    }
+                    (MetadataKind::Continuous, MetadataValue::Number(v)) => {
+                        Some(MetadataLevel::Value(*v + 0.0))
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -152,7 +384,9 @@ pub struct Options {
     /// no metadata-target association. Required for permutation tests.
     #[serde(default)]
     pub exchangeable_units: bool,
-    #[serde(default)]
+    /// Root seed: a JSON number or, for values above 2^53 sent from
+    /// JavaScript, a canonical decimal string. Serialized as a string.
+    #[serde(default, with = "u64_number_or_decimal")]
     pub seed: u64,
     #[serde(default = "default_max_cells")]
     pub max_cells: usize,
@@ -546,13 +780,20 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             );
         }
         for (vi, value) in target.values.iter().enumerate() {
-            if !by_id.contains_key(value.sample_id.as_str()) {
-                out.add(
-                    "UNKNOWN_SAMPLE",
-                    format!("{path}.values[{vi}].sample_id"),
-                    "Target sample ID is not declared",
-                    true,
-                );
+            // The partition is checked before any Y content: retained-test Y
+            // is never read, not even to validate it.
+            match by_id.get(value.sample_id.as_str()) {
+                None => {
+                    out.add(
+                        "UNKNOWN_SAMPLE",
+                        format!("{path}.values[{vi}].sample_id"),
+                        "Target sample ID is not declared",
+                        true,
+                    );
+                    continue;
+                }
+                Some(sample) if sample.partition == Partition::RetainedTest => continue,
+                Some(_) => {}
             }
             if value.value.is_some_and(|v| !v.is_finite()) {
                 out.add(
@@ -579,101 +820,286 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             }
         }
     }
-    // Build transitive identity components on the *original* partitions before aggregation.
-    // An augmentation parent names a sample ID; that ID is joined to its physical alias here.
-    let mut parent: HashMap<String, String> = HashMap::new();
-    fn find(parent: &mut HashMap<String, String>, key: &str) -> String {
-        let mut root = key.to_owned();
-        let mut path = Vec::new();
-        loop {
-            let next = parent
-                .entry(root.clone())
-                .or_insert_with(|| root.clone())
-                .clone();
-            if next == root {
-                break;
+    validate_metadata(input, &by_id, &mut out);
+    // Partitions are checked on whole linked components, built on the original
+    // rows before any aggregation or exclusion. Prediction rows take no role
+    // but stay in the union as identity bridges. Declared independence groups
+    // are dependencies whatever the analysis unit, so they always link here.
+    let role = |s: &Sample| match s.partition {
+        Partition::Development => Some("fit"),
+        Partition::RetainedTest => Some("eval"),
+        Partition::Prediction => None,
+    };
+    let crossing = |component: &[usize]| {
+        let mut roles = BTreeMap::<usize, BTreeSet<&'static str>>::new();
+        for (i, sample) in input.samples.iter().enumerate() {
+            let entry = roles.entry(component[i]).or_default();
+            if let Some(r) = role(sample) {
+                entry.insert(r);
             }
-            path.push(root);
-            root = next;
         }
-        for node in path {
-            parent.insert(node, root.clone());
-        }
-        root
+        roles
+            .into_iter()
+            .filter(|(_, r)| r.len() > 1)
+            .map(|(root, _)| root)
+            .collect::<BTreeSet<usize>>()
+    };
+    let identity = identity_components(input, &[], true);
+    let identity_crossing = crossing(&identity);
+    for &root in &identity_crossing {
+        out.add(
+            "IDENTITY_LEAKAGE",
+            "samples",
+            format!(
+                "Linked identity component of sample {} spans development and retained test",
+                input.samples[root].sample_id
+            ),
+            true,
+        );
     }
-    fn union(parent: &mut HashMap<String, String>, a: &str, b: &str) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent.insert(ra, rb);
-        }
-    }
-    for sample in &input.samples {
-        let own = format!("sample:{}", sample.sample_id);
-        if let Some(v) = &sample.physical_sample_id {
-            union(&mut parent, &own, &format!("physical:{v}"));
-        }
-        if let Some(v) = &sample.individual_id {
-            union(&mut parent, &own, &format!("individual:{v}"));
-        }
-        if let Some(v) = &sample.augmentation_parent_id {
-            union(&mut parent, &own, &format!("sample:{v}"));
-        }
-    }
-    let mut components: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
-    for sample in &input.samples {
-        if sample.partition == Partition::Prediction {
+    let targets: Vec<&Target> = input.targets.iter().collect();
+    let full = identity_components(input, &targets, true);
+    for root in crossing(&full) {
+        let members: Vec<usize> = (0..full.len()).filter(|&i| full[i] == root).collect();
+        if members
+            .iter()
+            .any(|&i| identity_crossing.contains(&identity[i]))
+        {
             continue;
         }
-        let role = if sample.partition == Partition::RetainedTest {
-            "eval"
-        } else {
-            "fit"
-        };
-        let root = find(&mut parent, &format!("sample:{}", sample.sample_id));
-        components.entry(root).or_default().insert(role);
+        out.add(
+            "REFERENCE_LEAKAGE",
+            "targets",
+            format!(
+                "Reference groups link the component of sample {} across development and retained test",
+                input.samples[root].sample_id
+            ),
+            true,
+        );
     }
-    for (key, roles) in components {
-        if roles.len() > 1 {
+    out
+}
+
+/// Linked identity components of `input.samples`, built from every identity
+/// link before any analytic exclusion: physical sample, individual,
+/// augmentation parent, `independence_group` when it is the declared unit,
+/// and the `reference_group_id` of every value of `targets` (all partitions
+/// and statuses; identity fields only, never Y content). Returns, for each
+/// sample index, the smallest sample index of its component.
+pub fn independence_components<'a>(
+    input: &'a QualificationInput,
+    targets: &[&'a Target],
+) -> Vec<usize> {
+    identity_components(
+        input,
+        targets,
+        input.options.independence_unit == IndependenceUnit::Group,
+    )
+}
+
+/// Structured identity key: each kind and each field stays separate, so no
+/// identifier containing a separator can collide with another key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IdentityKey<'a> {
+    Sample(&'a str),
+    Physical(&'a str),
+    Individual(&'a str),
+    Group(&'a str),
+    /// (target_id, reference_group_id): reference groups are per target.
+    Reference(&'a str, &'a str),
+}
+
+/// Union-find over all samples; `groups` adds `independence_group` links.
+fn identity_components<'a>(
+    input: &'a QualificationInput,
+    targets: &[&'a Target],
+    groups: bool,
+) -> Vec<usize> {
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let index: HashMap<&str, usize> = input
+        .samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.sample_id.as_str(), i))
+        .collect();
+    let mut parent: Vec<usize> = (0..input.samples.len()).collect();
+    let mut first = HashMap::<IdentityKey<'a>, usize>::new();
+    let mut link = |key: IdentityKey<'a>, i: usize, parent: &mut Vec<usize>| {
+        if let Some(&j) = first.get(&key) {
+            let (a, b) = (root(parent, i), root(parent, j));
+            parent[a.max(b)] = a.min(b);
+        } else {
+            first.insert(key, i);
+        }
+    };
+    for (i, sample) in input.samples.iter().enumerate() {
+        link(IdentityKey::Sample(&sample.sample_id), i, &mut parent);
+        if let Some(v) = &sample.physical_sample_id {
+            link(IdentityKey::Physical(v), i, &mut parent);
+        }
+        if let Some(v) = &sample.individual_id {
+            link(IdentityKey::Individual(v), i, &mut parent);
+        }
+        if let Some(v) = &sample.augmentation_parent_id {
+            link(IdentityKey::Sample(v), i, &mut parent);
+        }
+        if groups {
+            if let Some(v) = &sample.independence_group {
+                link(IdentityKey::Group(v), i, &mut parent);
+            }
+        }
+    }
+    for target in targets {
+        for value in &target.values {
+            if let (Some(group), Some(&i)) = (
+                &value.reference_group_id,
+                index.get(value.sample_id.as_str()),
+            ) {
+                link(
+                    IdentityKey::Reference(&target.target_id, group),
+                    i,
+                    &mut parent,
+                );
+            }
+        }
+    }
+    (0..parent.len()).map(|i| root(&mut parent, i)).collect()
+}
+
+/// Typed metadata at the input boundary: declared columns, known samples and
+/// names, JSON types, and (non-blocking) values varying inside the identity
+/// components that association tests treat as one independence unit.
+fn validate_metadata(
+    input: &QualificationInput,
+    by_id: &HashMap<&str, &Sample>,
+    out: &mut ValidationResult,
+) {
+    let mut kinds = BTreeMap::<&str, MetadataKind>::new();
+    for (ci, column) in input.metadata.columns.iter().enumerate() {
+        let path = format!("metadata.columns[{ci}]");
+        let name = column.name.as_str();
+        if name.trim().is_empty()
+            || SAMPLE_METADATA_FIELDS.contains(&name)
+            || kinds.insert(name, column.kind).is_some()
+        {
             out.add(
-                "IDENTITY_LEAKAGE",
-                "samples",
-                format!("Linked identity component {key} spans development and retained test"),
+                "INVALID_METADATA_COLUMN",
+                format!("{path}.name"),
+                "Metadata column names must be nonempty, unique and distinct from instrument and campaign",
                 true,
             );
         }
-    }
-    for target in &input.targets {
-        let mut groups: BTreeMap<&str, BTreeSet<&'static str>> = BTreeMap::new();
-        for value in &target.values {
-            if let (Some(group), Some(sample)) = (
-                &value.reference_group_id,
-                by_id.get(value.sample_id.as_str()),
-            ) {
-                if sample.partition == Partition::Prediction {
-                    continue;
-                }
-                groups.entry(group).or_default().insert(
-                    if sample.partition == Partition::RetainedTest {
-                        "eval"
-                    } else {
-                        "fit"
-                    },
-                );
-            }
+        match (column.kind, column.unit.as_deref()) {
+            (MetadataKind::Categorical, Some(_)) => out.add(
+                "INVALID_METADATA_COLUMN",
+                format!("{path}.unit"),
+                "Categorical metadata columns carry no unit",
+                true,
+            ),
+            (MetadataKind::Continuous, Some(unit)) if unit.trim().is_empty() => out.add(
+                "INVALID_METADATA_COLUMN",
+                format!("{path}.unit"),
+                "A declared metadata unit must be nonempty",
+                true,
+            ),
+            (MetadataKind::Continuous, None) => out.add(
+                "UNKNOWN_METADATA_UNIT",
+                format!("{path}.unit"),
+                "Continuous metadata column has no unit; its values are reported without one",
+                false,
+            ),
+            _ => {}
         }
-        for (group, roles) in groups {
-            if roles.len() > 1 {
+    }
+    for (sample_id, row) in &input.metadata.values {
+        let path = format!("metadata.values.{sample_id}");
+        if !by_id.contains_key(sample_id.as_str()) {
+            out.add(
+                "UNKNOWN_SAMPLE",
+                path.clone(),
+                "Metadata sample ID is not declared",
+                true,
+            );
+        }
+        for (name, value) in row {
+            let Some(kind) = kinds.get(name.as_str()) else {
                 out.add(
-                    "REFERENCE_LEAKAGE",
-                    format!("targets.{}", target.target_id),
-                    format!("Reference group {group} spans development and retained test"),
+                    "UNKNOWN_METADATA_COLUMN",
+                    format!("{path}.{name}"),
+                    "Metadata value names an undeclared column",
                     true,
                 );
+                continue;
+            };
+            match (kind, value) {
+                (_, None) => {}
+                (MetadataKind::Categorical, Some(MetadataValue::Text(t))) if t.trim().is_empty() => {
+                    out.add(
+                        "INVALID_METADATA_VALUE",
+                        format!("{path}.{name}"),
+                        "Categorical metadata levels must be nonempty",
+                        true,
+                    )
+                }
+                (MetadataKind::Continuous, Some(MetadataValue::Number(v))) if !v.is_finite() => {
+                    out.add(
+                        "INVALID_METADATA_VALUE",
+                        format!("{path}.{name}"),
+                        "Continuous metadata values must be finite",
+                        true,
+                    )
+                }
+                (MetadataKind::Categorical, Some(MetadataValue::Number(_)))
+                | (MetadataKind::Continuous, Some(MetadataValue::Text(_))) => out.add(
+                    "METADATA_TYPE_MISMATCH",
+                    format!("{path}.{name}"),
+                    "Categorical levels must be JSON strings and continuous values JSON numbers; nothing is converted",
+                    true,
+                ),
+                _ => {}
             }
         }
     }
-    out
+    if input.metadata.columns.is_empty() {
+        return;
+    }
+    let targets: Vec<&Target> = input.targets.iter().collect();
+    let component = independence_components(input, &targets);
+    for (ci, column) in input.metadata.columns.iter().enumerate() {
+        let mut seen = HashMap::<usize, &MetadataValue>::new();
+        let mut varying = BTreeSet::<usize>::new();
+        for (i, sample) in input.samples.iter().enumerate() {
+            let Some(Some(value)) = input
+                .metadata
+                .values
+                .get(&sample.sample_id)
+                .and_then(|row| row.get(&column.name))
+            else {
+                continue;
+            };
+            if seen.entry(component[i]).or_insert(value) != &value {
+                varying.insert(component[i]);
+            }
+        }
+        if !varying.is_empty() {
+            out.add(
+                "METADATA_VARIES_WITHIN_INDEPENDENCE_UNIT",
+                format!("metadata.columns[{ci}]"),
+                format!(
+                    "Metadata {} varies inside {} linked identity component(s); association tests on it are not identifiable",
+                    column.name,
+                    varying.len()
+                ),
+                false,
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -988,6 +1414,37 @@ pub mod u64_decimal {
     }
 }
 
+/// Root-seed transport: an unsigned JSON integer or a canonical decimal
+/// string (digits only, no sign, no leading zero), so JavaScript hosts can
+/// send every u64 without rounding. Serialized as a decimal string.
+pub mod u64_number_or_decimal {
+    use serde::{de, Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Seed {
+            Number(u64),
+            Text(String),
+        }
+        match Seed::deserialize(deserializer)? {
+            Seed::Number(v) => Ok(v),
+            Seed::Text(t) => {
+                let canonical = !t.is_empty()
+                    && t.bytes().all(|b| b.is_ascii_digit())
+                    && (t == "0" || !t.starts_with('0'));
+                if !canonical {
+                    return Err(de::Error::custom("seed must be a canonical decimal u64"));
+                }
+                t.parse()
+                    .map_err(|_| de::Error::custom("seed is outside the u64 range"))
+            }
+        }
+    }
+}
+
 pub const PERMUTATION_PLAN_VERSION: &str = "permutation_plan.v1";
 
 /// Versioned description of one permutation test, carried with its metric so
@@ -1010,12 +1467,24 @@ pub struct PermutationPlan {
     #[serde(with = "u64_decimal")]
     pub seed: u64,
     pub seed_derivation: String,
-    /// log10 upper bound on distinct permutation outcomes of the statistic.
+    /// log10 of a combinatorial upper bound on distinct permutation outcomes
+    /// (distinct arrangements); 1/bound is only a lower bound on the smallest
+    /// attainable exact p-value.
     pub log10_distinct_admissible_permutations: Option<f64>,
     pub n_permutations_requested: usize,
     pub n_permutations_executed: usize,
-    /// max(1/(B+1), 1/distinct): smallest p-value the plan can support.
+    /// Monte Carlo step 1/(B+1).
+    pub monte_carlo_step: f64,
+    /// Distinct arrangements enumerated exactly; None when not enumerated.
+    pub n_enumerated_arrangements: Option<usize>,
+    /// Smallest attainable exact p-value #{T >= T_max}/N, from enumeration.
+    pub exact_minimum_p_value: Option<f64>,
+    /// Smallest p-value the plan can support: max(Monte Carlo step, exact
+    /// minimum p-value) when enumerated, otherwise max(Monte Carlo step,
+    /// 1/bound), which is then only a lower bound.
     pub resolution: Option<f64>,
+    /// `exact_enumeration` or `lower_bound_from_combinatorial_bound`.
+    pub resolution_basis: Option<String>,
     pub p_value_convention: String,
     pub tie_tolerance: f64,
     pub executed: bool,
@@ -1061,6 +1530,86 @@ pub struct HolmDiagnostics {
     pub adjusted: Vec<f64>,
     pub backend_version: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrelationMethod {
+    Pearson,
+    /// Pearson correlation of average ranks (ties share their mean rank).
+    Spearman,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrelationRequest {
+    /// One row per exchangeable unit; y is permuted over all rows.
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
+    pub method: CorrelationMethod,
+    pub n_permutations: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrelationDiagnostics {
+    /// None when x or y is constant.
+    pub coefficient: Option<f64>,
+    pub n_distinct_x: usize,
+    pub n_distinct_y: usize,
+    pub log10_distinct_permutations: f64,
+    /// Two-sided Monte Carlo (1+b)/(1+B) on |coefficient|.
+    pub p_value: Option<f64>,
+    pub n_at_least_observed: usize,
+    pub n_permutations_executed: usize,
+    pub backend_version: String,
+}
+
+/// Exhaustive enumeration request for the factor-association statistic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssociationExactRequest {
+    pub factor_codes: Vec<i64>,
+    pub targets: Vec<f64>,
+    pub categorical: bool,
+    pub max_arrangements: usize,
+}
+
+/// Exhaustive enumeration request for |r| (Pearson or Spearman).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrelationExactRequest {
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
+    pub method: CorrelationMethod,
+    pub max_arrangements: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExactPermutationDiagnostics {
+    /// Distinct arrangements N, each of probability 1/N.
+    pub n_arrangements: usize,
+    /// Exact p-value #{T >= T_obs}/N; None when the statistic is undefined.
+    pub p_value: Option<f64>,
+    /// Smallest attainable exact p-value #{T >= T_max}/N.
+    pub minimum_p_value: Option<f64>,
+    pub maximum_statistic: Option<f64>,
+    pub backend_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BhRequest {
+    pub p_values: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BhDiagnostics {
+    pub adjusted: Vec<f64>,
+    pub backend_version: String,
+}
+
+/// Provider reason for a Methods refusal of inputs outside the supported
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32, Methods N4M_DOMAIN_MAX_SPREAD_LOG2).
+pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
+/// Prefix of the Methods context message for that refusal.
+pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
 
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
@@ -1121,10 +1670,35 @@ pub trait MethodsProvider {
     fn holm_adjust(&self, _request: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
         Err(ProviderError("HOLM_PROVIDER_NOT_CONFIGURED".into()))
     }
+    fn correlation(
+        &self,
+        _request: &CorrelationRequest,
+    ) -> Result<CorrelationDiagnostics, ProviderError> {
+        Err(ProviderError("CORRELATION_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn bh_adjust(&self, _request: &BhRequest) -> Result<BhDiagnostics, ProviderError> {
+        Err(ProviderError("BH_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn association_exact(
+        &self,
+        _request: &AssociationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        Err(ProviderError(
+            "EXACT_PERMUTATION_PROVIDER_NOT_CONFIGURED".into(),
+        ))
+    }
+    fn correlation_exact(
+        &self,
+        _request: &CorrelationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        Err(ProviderError(
+            "EXACT_PERMUTATION_PROVIDER_NOT_CONFIGURED".into(),
+        ))
+    }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 12] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 16] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -1137,6 +1711,10 @@ pub const METHODS_CAPABILITY_IDS: [&str; 12] = [
     "methods.tolerance_pairs",
     "methods.association",
     "methods.holm_adjust",
+    "methods.correlation",
+    "methods.bh_adjust",
+    "methods.association_exact",
+    "methods.correlation_exact",
 ];
 
 pub struct UnavailableMethodsProvider;

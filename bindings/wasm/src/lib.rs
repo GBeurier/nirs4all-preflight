@@ -20,7 +20,20 @@ impl CallbackProvider<'_> {
                 &JsValue::from_str(operation),
                 &JsValue::from_str(&request),
             )
-            .map_err(|_| ProviderError("METHODS_CALLBACK_FAILED".into()))?;
+            .map_err(|error| {
+                // The only reason forwarded from a callback exception.
+                let domain = error
+                    .dyn_ref::<js_sys::Error>()
+                    .is_some_and(|e| e.message() == NUMERICAL_DOMAIN_EXCEEDED);
+                ProviderError(
+                    if domain {
+                        NUMERICAL_DOMAIN_EXCEEDED
+                    } else {
+                        "METHODS_CALLBACK_FAILED"
+                    }
+                    .into(),
+                )
+            })?;
         let text = result
             .as_string()
             .ok_or_else(|| ProviderError("METHODS_CALLBACK_MUST_RETURN_JSON_STRING".into()))?;
@@ -90,6 +103,24 @@ impl MethodsProvider for CallbackProvider<'_> {
     }
     fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
         self.invoke("holm_adjust", r)
+    }
+    fn correlation(&self, r: &CorrelationRequest) -> Result<CorrelationDiagnostics, ProviderError> {
+        self.invoke("correlation", r)
+    }
+    fn bh_adjust(&self, r: &BhRequest) -> Result<BhDiagnostics, ProviderError> {
+        self.invoke("bh_adjust", r)
+    }
+    fn association_exact(
+        &self,
+        r: &AssociationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        self.invoke("association_exact", r)
+    }
+    fn correlation_exact(
+        &self,
+        r: &CorrelationExactRequest,
+    ) -> Result<ExactPermutationDiagnostics, ProviderError> {
+        self.invoke("correlation_exact", r)
     }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {

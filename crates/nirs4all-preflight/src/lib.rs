@@ -39,7 +39,9 @@ pub fn capabilities(provider: &impl MethodsProvider) -> Vec<Capability> {
     }
     let association_available = [
         "methods.association",
+        "methods.correlation",
         "methods.holm_adjust",
+        "methods.bh_adjust",
         "methods.summary",
     ]
     .iter()
@@ -822,24 +824,23 @@ fn analyze_local(
         i
     }
     let mut parent: Vec<usize> = (0..selected.len()).collect();
-    let mut first_for_key = BTreeMap::<String, usize>::new();
+    // Structured keys: a reference group named like a sample ID, or a
+    // physical ID equal to another sample's ID, never merges by accident.
+    let mut first_for_key = BTreeMap::<IdentityKey, usize>::new();
     for (i, (_, v)) in selected.iter().enumerate() {
         let sample = samples[v.sample_id.as_str()];
-        let physical = sample
-            .physical_sample_id
-            .clone()
-            .unwrap_or_else(|| sample.sample_id.clone());
+        let physical = match &sample.physical_sample_id {
+            Some(p) => IdentityKey::Physical(p),
+            None => IdentityKey::Sample(&sample.sample_id),
+        };
         let base = match input.options.independence_unit {
-            IndependenceUnit::Sample => sample
-                .physical_sample_id
-                .clone()
-                .unwrap_or_else(|| sample.sample_id.clone()),
-            IndependenceUnit::ReferenceGroup => v
-                .reference_group_id
-                .clone()
-                .unwrap_or_else(|| sample.sample_id.clone()),
+            IndependenceUnit::Sample | IndependenceUnit::Unknown => physical,
+            IndependenceUnit::ReferenceGroup => match &v.reference_group_id {
+                Some(g) => IdentityKey::Reference(&target.target_id, g),
+                None => IdentityKey::Sample(&sample.sample_id),
+            },
             IndependenceUnit::Group => match &sample.independence_group {
-                Some(g) => g.clone(),
+                Some(g) => IdentityKey::Group(g),
                 None => {
                     report.metrics.push(Metric::unavailable(
                         "local.global_contrast",
@@ -851,14 +852,10 @@ fn analyze_local(
                     return;
                 }
             },
-            IndependenceUnit::Unknown => sample
-                .physical_sample_id
-                .clone()
-                .unwrap_or_else(|| sample.sample_id.clone()),
         };
-        let mut keys = vec![format!("physical:{physical}"), format!("base:{base}")];
+        let mut keys = vec![physical, base];
         if let Some(reference_group) = &v.reference_group_id {
-            keys.push(format!("reference:{reference_group}"));
+            keys.push(IdentityKey::Reference(&target.target_id, reference_group));
         }
         for key in keys {
             if let Some(&first) = first_for_key.get(&key) {
