@@ -319,11 +319,11 @@ fn real_methods_comparisons_and_tests_match_numpy_goldens() {
             outside: 1,
         },
     );
-    // K-sample energy tests: seeds from the Python re-implementation of the
+    // K-sample energy tests (protocol domain_shift.v2): seeds from the Python re-implementation of the
     // derivation, b from default_rng(seed).permutation(14) x 999.
     let instrument = find(&report, "domain_shift.energy_test", "instrument", None);
     let plan = &instrument.parameters["permutation_plan"];
-    assert_eq!(plan["seed"], "3370720132560741253");
+    assert_eq!(plan["seed"], "3852551409661268358");
     assert_eq!(plan["executed"], true);
     assert_eq!(plan["restrictions"], "none_single_block");
     close(
@@ -331,18 +331,18 @@ fn real_methods_comparisons_and_tests_match_numpy_goldens() {
         3003f64.log10(),
     );
     close(value(instrument, "statistic"), 2.9563946134953585);
-    assert_eq!(value(instrument, "n_at_least_observed"), 0);
-    close(value(instrument, "p_value"), 0.001);
-    close(value(instrument, "p_value_holm"), 0.002);
+    assert_eq!(value(instrument, "n_at_least_observed"), 1);
+    close(value(instrument, "p_value"), 0.002);
+    close(value(instrument, "p_value_holm"), 0.004);
     assert_eq!(value(instrument, "rejects_null_at_family_alpha"), true);
     let campaign = find(&report, "domain_shift.energy_test", "campaign", None);
     assert_eq!(
         campaign.parameters["permutation_plan"]["seed"],
-        "6307764696871631775"
+        "7927219953912052954"
     );
     close(value(campaign, "statistic"), 0.21589492769375013);
-    assert_eq!(value(campaign, "n_at_least_observed"), 894);
-    close(value(campaign, "p_value_holm"), 0.895);
+    assert_eq!(value(campaign, "n_at_least_observed"), 914);
+    close(value(campaign, "p_value_holm"), 0.915);
     let family = family(&report, "domain_factors");
     assert_eq!(value(family, "family_size"), 2);
     // Exactly one exploratory finding, for instrument, with unknown confidence.
@@ -766,10 +766,10 @@ fn residual_outside_a_residual_free_reference_is_counted_and_k_follows_rank() {
     assert_eq!(coverage.parameters["n_components_requested"], 2);
     assert_eq!(coverage.parameters["n_components_effective"], 1);
     assert_eq!(value(coverage, "q_limit"), 0.0);
-    // (0, 100) and (1, 100) are certainly beyond; (2, 0) lies in the
-    // subspace and cannot be certified against a limit of 0: undetermined.
+    // (0, 100) and (1, 100) exceed the limit by more than the tolerance;
+    // (2, 0) lies in the subspace, within the tolerance of the limit 0.
     assert_eq!(value(coverage, "n_target_beyond_q_limit"), 2);
-    assert_eq!(value(coverage, "n_target_undetermined_q"), 1);
+    assert_eq!(value(coverage, "n_target_near_q_limit"), 1);
     assert!(
         value(coverage, "n_target_beyond_either_limit")
             .as_u64()
@@ -802,7 +802,7 @@ fn residual_outside_a_residual_free_reference_is_counted_and_k_follows_rank() {
     // (1, 3) is beyond; (1, 2) equals every reference unit: its residual is
     // exactly 0 with a zero interval, so it is certainly not beyond.
     assert_eq!(value(coverage, "n_target_beyond_q_limit"), 1);
-    assert_eq!(value(coverage, "n_target_undetermined_q"), 0);
+    assert_eq!(value(coverage, "n_target_near_q_limit"), 0);
     let dispersion = find(&report, "domain_shift.dispersion", "instrument", Some("B"));
     assert_eq!(
         dispersion.reason_code.as_deref(),
@@ -1031,7 +1031,10 @@ fn magnitude_sweep_is_equivariant_inside_the_domain_and_refused_outside() {
                 "{}",
                 m.metric_id
             );
-            assert_eq!(m.parameters["numerical_domain"], DIFFERENCE_NUMERICAL_DOMAIN);
+            assert_eq!(
+                m.parameters["numerical_domain"],
+                DIFFERENCE_NUMERICAL_DOMAIN
+            );
         }
         let test = find(&report, "domain_shift.energy_test", "instrument", None);
         let base = find(&reference, "domain_shift.energy_test", "instrument", None);
@@ -1054,7 +1057,7 @@ fn magnitude_sweep_is_equivariant_inside_the_domain_and_refused_outside() {
         for key in [
             "n_target_beyond_t2_limit",
             "n_target_beyond_q_limit",
-            "n_target_undetermined_q",
+            "n_target_near_q_limit",
             "t2_limit",
         ] {
             assert_eq!(value(c, key), value(c0, key), "{key} at shift {shift}");
@@ -1085,24 +1088,26 @@ fn audit_without_development_units_is_refused_before_indexing() {
 }
 
 #[test]
-fn tiny_real_residual_and_huge_level_are_resolved_inside_the_domain() {
+fn small_real_residual_and_large_level_inside_the_domain() {
     let Some(provider) = native() else {
         return;
     };
-    // Astra b10fix (1): (1, 2^-27) leaves the residual-free line by Q = 2^-54.
+    // Astra b10fix (1): (1, 2^-18) leaves the residual-free line by
+    // Q = 2^-36, above the limit 0 by more than the tolerance (about 1e-12);
+    // (3, 0) lies on the line, within the tolerance band of the limit.
     let a: Vec<[f64; 2]> = (-5..=5).map(|i| [f64::from(i), 0.0]).collect();
     let report = analyze(
-        &line_dataset(&a, &[[1.0, 2f64.powi(-27)], [3.0, 0.0]]),
+        &line_dataset(&a, &[[1.0, 2f64.powi(-18)], [3.0, 0.0]]),
         &provider,
     );
     let coverage = find(&report, "domain_shift.coverage", "instrument", Some("B"));
     assert_eq!(value(coverage, "n_target_beyond_q_limit"), 1);
-    assert_eq!(value(coverage, "n_target_undetermined_q"), 1);
-    // Astra b10fix (2, 4): a 2^60 reference level does not erase the unit
-    // differences of the targets [0], [1]: dispersion 0.5, energy computed
-    // from local differences.
+    assert_eq!(value(coverage, "n_target_near_q_limit"), 1);
+    // Astra b10fix (2, 4): a 2^31 reference level (inside the 2^32 spread)
+    // does not erase the unit differences of the targets: dispersion 0.5,
+    // energy computed from local differences.
     let huge: Vec<[f64; 2]> = (-5..=5)
-        .map(|i| [2f64.powi(60) + 256.0 * f64::from(i), 1.0])
+        .map(|i| [2f64.powi(31) + 256.0 * f64::from(i), 1.0])
         .collect();
     let report = analyze(&line_dataset(&huge, &[[0.0, 1.0], [1.0, 1.0]]), &provider);
     let dispersion = find(&report, "domain_shift.dispersion", "instrument", Some("B"));
@@ -1115,4 +1120,44 @@ fn tiny_real_residual_and_huge_level_are_resolved_inside_the_domain() {
     );
     assert_eq!(status(distance), "computed");
     assert!(value(distance, "energy_e").as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn published_tie_rule_is_the_executed_one() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Astra b10fix2 P0-2, inside the 2^32 domain: large shared distances make
+    // the rounding estimate of T exceed sqrt(eps) T. The p-value follows the
+    // declared relative rule; undecidable draws are published apart.
+    let a = [[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [2f64.powi(31), 1.0]];
+    let b = [
+        [100.0, 1.0],
+        [101.0, 1.0],
+        [102.0, 1.0],
+        [2f64.powi(31), 1.0],
+    ];
+    let report = analyze(&line_dataset(&a, &b), &provider);
+    let test = find(&report, "domain_shift.energy_test", "instrument", None);
+    assert_eq!(test.parameters["protocol"], "domain_shift.v2");
+    let plan = &test.parameters["permutation_plan"];
+    assert_eq!(plan["tie_tolerance"], 1.490_116_119_384_765_6e-8);
+    assert!(test.parameters["tie_rule"]
+        .as_str()
+        .unwrap()
+        .contains("T_perm - T >= -sqrt(eps)|T|"));
+    if status(test) == "computed" {
+        let b = value(test, "n_at_least_observed").as_u64().unwrap() as f64;
+        close(value(test, "p_value"), (1.0 + b) / 1000.0);
+        let p = value(test, "p_value").as_f64().unwrap();
+        let conservative = value(test, "p_value_conservative").as_f64().unwrap();
+        assert!(conservative >= p && conservative <= 1.0);
+        assert!(value(test, "n_undecidable_draws").as_u64().unwrap() <= 999);
+    } else {
+        // Eight units: C(8,4) = 70 arrangements cannot resolve 0.05 / 2.
+        assert_eq!(
+            test.reason_code.as_deref(),
+            Some("PERMUTATION_RESOLUTION_INSUFFICIENT")
+        );
+    }
 }

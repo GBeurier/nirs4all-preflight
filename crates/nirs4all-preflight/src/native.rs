@@ -1241,10 +1241,10 @@ impl MethodsProvider for NativeMethodsProvider {
         let mut energy = vec![f64::NAN; g * g];
         let mut bounds = vec![f64::NAN; g * g];
         let mut mean = vec![f64::NAN; g * g];
-        let mut out = [f64::NAN; 4];
-        let mut counts = [0i64; 2];
+        let mut out = [f64::NAN; 5];
+        let mut counts = [0i64; 3];
         // SAFETY: X is an owned n x p buffer, codes hold n elements and the
-        // outputs hold g x g (three), 4 and 2 elements as documented.
+        // outputs hold g x g (three), 5 and 3 elements as documented.
         self.check(unsafe {
             (self.energy_fn)(
                 self.context,
@@ -1269,8 +1269,10 @@ impl MethodsProvider for NativeMethodsProvider {
             statistic_bound: out[1],
             log10_distinct_permutations: out[2],
             p_value: out[3].is_finite().then_some(out[3]),
+            p_value_conservative: out[4].is_finite().then_some(out[4]),
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
+            n_undecidable: counts[2].max(0) as usize,
             backend_version: self.version.clone(),
         })
     }
@@ -1330,15 +1332,16 @@ impl MethodsProvider for NativeMethodsProvider {
             monitored_q: mq,
             t2_limit: finite(out[0]),
             q_limit: out[1],
-            t2_limit_interval: (out[9].is_finite() && out[10].is_finite())
-                .then_some([out[9], out[10]]),
-            q_limit_interval: [out[11], out[12]],
+            tolerance: out[9],
+            condition: out[10],
+            q_tolerance_scale: out[11],
+            eigenvalue_resolution: out[12],
             n_beyond_t2: counts[0].max(0) as usize,
             n_beyond_q: counts[1].max(0) as usize,
             n_beyond_either: counts[2].max(0) as usize,
-            n_undetermined_t2: counts[3].max(0) as usize,
-            n_undetermined_q: counts[4].max(0) as usize,
-            n_undetermined_either: counts[5].max(0) as usize,
+            n_near_t2: counts[3].max(0) as usize,
+            n_near_q: counts[4].max(0) as usize,
+            n_near_either: counts[5].max(0) as usize,
             reference_total_variance: out[2],
             monitored_total_variance: finite(out[3]),
             centroid_distance: out[4],

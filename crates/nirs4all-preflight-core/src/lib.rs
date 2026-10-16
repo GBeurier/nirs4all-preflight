@@ -1912,9 +1912,14 @@ pub struct EnergyDistanceDiagnostics {
     pub statistic_bound: f64,
     /// log10(n! / prod n_a!).
     pub log10_distinct_permutations: f64,
+    /// (1+b)/(1+B) under the declared tie rule T_perm >= T - sqrt(eps)|T|.
     pub p_value: Option<f64>,
+    /// Counts every numerically undecidable draw as a tie.
+    pub p_value_conservative: Option<f64>,
     pub n_at_least_observed: usize,
     pub n_permutations_executed: usize,
+    /// Draws within twice the rounding estimate of the tie threshold.
+    pub n_undecidable: usize,
     pub backend_version: String,
 }
 
@@ -1933,7 +1938,8 @@ pub struct PcaMonitorRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcaMonitorDiagnostics {
-    /// Smallest numerical rank of the fold and full fits, capped.
+    /// Smallest number of components above the eigenvalue resolution in the
+    /// fold and full fits, capped.
     pub effective_components: usize,
     /// The effective_components eigenvalues (ddof 1).
     pub eigenvalues: Vec<f64>,
@@ -1945,17 +1951,21 @@ pub struct PcaMonitorDiagnostics {
     /// Type-7 (1 - alpha) quantiles of the out-of-fold reference values.
     pub t2_limit: Option<f64>,
     pub q_limit: f64,
-    /// Limit intervals (quantiles of the out-of-fold interval ends).
-    pub t2_limit_interval: Option<[f64; 2]>,
-    pub q_limit_interval: [f64; 2],
-    /// Monitored rows certainly beyond the limits (interval above the limit
-    /// interval), and rows the rounding intervals cannot decide.
+    /// Conservative relative tolerance tau = 16 m eps cond (an estimate, not
+    /// a proven bound), the condition lambda_1 / lambda_k, the Q tolerance
+    /// scale S (Q tolerance = tau S) and the eigenvalue resolution.
+    pub tolerance: f64,
+    pub condition: f64,
+    pub q_tolerance_scale: f64,
+    pub eigenvalue_resolution: f64,
+    /// Monitored rows above a limit by more than the tolerance, and rows
+    /// within the tolerance of it (numerically undetermined).
     pub n_beyond_t2: usize,
     pub n_beyond_q: usize,
     pub n_beyond_either: usize,
-    pub n_undetermined_t2: usize,
-    pub n_undetermined_q: usize,
-    pub n_undetermined_either: usize,
+    pub n_near_t2: usize,
+    pub n_near_q: usize,
+    pub n_near_either: usize,
     pub reference_total_variance: f64,
     pub monitored_total_variance: Option<f64>,
     pub centroid_distance: f64,

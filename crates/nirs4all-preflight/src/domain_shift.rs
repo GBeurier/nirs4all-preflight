@@ -16,7 +16,9 @@ use crate::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-pub(crate) const PROTOCOL: &str = "domain_shift.v1";
+/// v2: declared relative tie rule with undecidable draws counted apart, and
+/// tolerance-based (never certified) coverage counts.
+pub(crate) const PROTOCOL: &str = "domain_shift.v2";
 /// Monte Carlo budget per global test (specification section 6).
 const PERMUTATIONS: usize = 999;
 /// Holm family-wise error rate of each per-source test family.
@@ -25,7 +27,7 @@ const FAMILY_ALPHA: f64 = 0.05;
 const COVERAGE_ALPHA: f64 = 0.05;
 const MAX_FOLDS: usize = 10;
 const MAX_COMPONENTS: usize = 10;
-/// sqrt(f64::EPSILON), applied by Methods relative to T (energy scale).
+/// Declared tie rule: draws with T_perm - T >= -sqrt(f64::EPSILON) |T| count.
 const TIE_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 const VIEW: &str = "canonical:centered";
 /// Factor name of the development versus retained-test comparison.
@@ -181,9 +183,10 @@ fn tag(metric: &mut Metric, scope: &str, factor: &str) {
     metric.parameters.insert("protocol".into(), json!(PROTOCOL));
     metric.parameters.insert("factor".into(), json!(factor));
     metric.parameters.insert("estimand".into(), json!(ESTIMAND));
-    metric
-        .parameters
-        .insert("numerical_domain".into(), json!(DIFFERENCE_NUMERICAL_DOMAIN));
+    metric.parameters.insert(
+        "numerical_domain".into(),
+        json!(DIFFERENCE_NUMERICAL_DOMAIN),
+    );
 }
 
 fn unavailable_metric(
@@ -472,14 +475,16 @@ fn compare(
         json!({
             "t2_limit": d.t2_limit,
             "q_limit": d.q_limit,
-            "t2_limit_interval": d.t2_limit_interval,
-            "q_limit_interval": d.q_limit_interval,
+            "tolerance": d.tolerance,
+            "reference_condition": d.condition,
+            "q_tolerance": d.tolerance * d.q_tolerance_scale,
+            "eigenvalue_resolution": d.eigenvalue_resolution,
             "n_target_beyond_t2_limit": t2.then_some(d.n_beyond_t2),
             "n_target_beyond_q_limit": d.n_beyond_q,
             "n_target_beyond_either_limit": t2.then_some(d.n_beyond_either),
-            "n_target_undetermined_t2": t2.then_some(d.n_undetermined_t2),
-            "n_target_undetermined_q": d.n_undetermined_q,
-            "n_target_undetermined_either": t2.then_some(d.n_undetermined_either),
+            "n_target_near_t2_limit": t2.then_some(d.n_near_t2),
+            "n_target_near_q_limit": d.n_near_q,
+            "n_target_near_either_limit": t2.then_some(d.n_near_either),
             "fraction_target_beyond_t2_limit": t2.then(|| fraction(d.n_beyond_t2)),
             "fraction_target_beyond_q_limit": fraction(d.n_beyond_q),
             "fraction_target_beyond_either_limit": t2.then(|| fraction(d.n_beyond_either)),
@@ -506,7 +511,7 @@ fn compare(
     );
     coverage.parameters.insert(
         "statistics".into(),
-        json!("T² = sum_a t_a² / lambda_a over the effective components; Q = squared norm of the explicit residual outside the reference subspace (compensated); each value carries a rounding interval (score and residual-norm errors from the operations and the measured orthonormality defect of the components; eigenvalue rounding not propagated); a target unit is beyond a limit when its interval lies above the limit interval, undetermined when they overlap, decided by Methods"),
+        json!("T² = sum_a t_a² / lambda_a over the effective components (above the eigenvalue resolution 16 m eps lambda_1); Q = squared norm of the explicit residual outside the reference subspace; a target unit counts beyond a limit only when it exceeds it by more than the tolerance (tau max(T², limit) for T², tau S for Q, tau = 16 m eps lambda_1 / lambda_k a conservative estimate, not a proven bound) and as near the limit (numerically undetermined, never a decision) when within it"),
     );
     coverage.parameters.insert(
         "interpretation".into(),
@@ -515,7 +520,8 @@ fn compare(
     coverage.parameters.insert(
         "value_units".into(),
         json!({
-            "t2_limit": "dimensionless", "q_limit": squared, "q_limit_interval": squared,
+            "t2_limit": "dimensionless", "q_limit": squared, "q_tolerance": squared,
+            "tolerance": "dimensionless", "eigenvalue_resolution": squared,
             "reference_eigenvalues": squared, "fractions": "dimensionless",
         }),
     );
@@ -550,6 +556,11 @@ fn energy(
         && d.n_at_least_observed <= d.n_permutations_executed
         && d.p_value.is_some() == (request.n_permutations > 0)
         && d.p_value.is_none_or(|p| p > 0.0 && p <= 1.0)
+        && d.p_value_conservative.is_some() == d.p_value.is_some()
+        && d.p_value
+            .zip(d.p_value_conservative)
+            .is_none_or(|(p, c)| c >= p && c <= 1.0)
+        && d.n_undecidable <= d.n_permutations_executed
     {
         Ok(d)
     } else {
@@ -586,21 +597,15 @@ fn monitor(
         && d.n_beyond_either <= n_m
         && d.n_beyond_either >= d.n_beyond_q
         && d.n_beyond_either >= d.n_beyond_t2
-        && d.n_beyond_q + d.n_undetermined_q <= n_m
-        && d.n_beyond_t2 + d.n_undetermined_t2 <= n_m
-        && d.n_beyond_either + d.n_undetermined_either <= n_m
-        && (k > 0 || d.n_beyond_t2 + d.n_undetermined_t2 == 0)
-        && d.t2_limit_interval.is_some() == (k > 0)
-        && d.t2_limit_interval.is_none_or(|[lo, hi]| {
-            nonnegative(lo)
-                && lo <= hi
-                && hi.is_finite()
-                && d.t2_limit.is_some_and(|t| lo <= t && t <= hi)
-        })
-        && nonnegative(d.q_limit_interval[0])
-        && d.q_limit_interval[1].is_finite()
-        && d.q_limit_interval[0] <= d.q_limit
-        && d.q_limit <= d.q_limit_interval[1]
+        && d.n_beyond_q + d.n_near_q <= n_m
+        && d.n_beyond_t2 + d.n_near_t2 <= n_m
+        && d.n_beyond_either + d.n_near_either <= n_m
+        && (k > 0 || d.n_beyond_t2 + d.n_near_t2 == 0)
+        && nonnegative(d.tolerance)
+        && d.condition.is_finite()
+        && d.condition >= 1.0
+        && nonnegative(d.q_tolerance_scale)
+        && nonnegative(d.eigenvalue_resolution)
         && nonnegative(d.reference_total_variance)
         && d.monitored_total_variance.is_some() == (n_m >= 2)
         && d.monitored_total_variance.is_none_or(nonnegative)
@@ -963,6 +968,10 @@ fn test_candidate(
         "energy_statistic_error_bound".into(),
         json!(descriptive.statistic_bound),
     );
+    metric.parameters.insert(
+        "tie_rule".into(),
+        json!("a draw counts when T_perm - T >= -sqrt(eps)|T| (permutation_plan.tie_tolerance, relative to |T|); draws within twice the rounding estimate of T of that threshold are reported as n_undecidable_draws, and p_value_conservative counts them as ties; the Holm family uses p_value"),
+    );
     metric
         .parameters
         .insert("backend_version".into(), json!(descriptive.backend_version));
@@ -1056,9 +1065,10 @@ fn run_family(
     family_metric
         .parameters
         .insert("protocol".into(), json!(PROTOCOL));
-    family_metric
-        .parameters
-        .insert("numerical_domain".into(), json!(DIFFERENCE_NUMERICAL_DOMAIN));
+    family_metric.parameters.insert(
+        "numerical_domain".into(),
+        json!(DIFFERENCE_NUMERICAL_DOMAIN),
+    );
     family_metric
         .parameters
         .insert("family".into(), json!(family));
@@ -1088,6 +1098,8 @@ fn run_family(
                     "rejects_null_at_family_alpha": rejects,
                     "multiplicity_reason_code": holm.as_ref().err(),
                     "n_at_least_observed": d.n_at_least_observed,
+                    "n_undecidable_draws": d.n_undecidable,
+                    "p_value_conservative": d.p_value_conservative,
                     "log10_distinct_permutations": d.log10_distinct_permutations,
                 }));
                 if let Some(a) = adjusted.filter(|a| *a <= FAMILY_ALPHA) {

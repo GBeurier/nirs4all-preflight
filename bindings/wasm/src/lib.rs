@@ -47,7 +47,10 @@ enum Reply<T> {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WireError {
-    Methods { methods_status: i32, message: String },
+    Methods {
+        methods_status: i32,
+        message: String,
+    },
     Adapter(ProviderError),
 }
 impl MethodsProvider for CallbackProvider<'_> {

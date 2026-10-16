@@ -231,11 +231,11 @@ test('WASM domain shift matches the native engine goldens',async()=>{
   const find=(id,factor,level)=>report.metrics.find(m=>m.metric_id===id&&m.parameters.factor===factor&&(level===undefined||m.parameters.target_domain===level));
   const close=(a,b)=>assert.ok(Math.abs(a-b)<=1e-9*Math.max(1,Math.abs(b)),`${a} != ${b}`);
   const instrument=find('domain_shift.energy_test','instrument');
-  assert.equal(instrument.parameters.permutation_plan.seed,'3370720132560741253');
-  assert.equal(instrument.value.n_at_least_observed,0);
-  close(instrument.value.p_value_holm,0.002);
+  assert.equal(instrument.parameters.permutation_plan.seed,'3852551409661268358');
+  assert.equal(instrument.value.n_at_least_observed,1);
+  close(instrument.value.p_value_holm,0.004);
   close(instrument.value.statistic,2.9563946134953585);
-  assert.equal(find('domain_shift.energy_test','campaign').value.n_at_least_observed,894);
+  assert.equal(find('domain_shift.energy_test','campaign').value.n_at_least_observed,914);
   const coverage=find('domain_shift.coverage','instrument','A');
   close(coverage.value.t2_limit,23.820918374509468);
   close(coverage.value.q_limit,0.0026974145909210608);
@@ -275,12 +275,12 @@ test('WASM domain shift refuses inputs outside the numerical domain with the sam
   assert.equal(coverage.value,null);
   // Inside the domain the Q of a tiny real residual is counted.
   const a=[-5,-4,-3,-2,-1,0,1,2,3,4,5].map(i=>[i,0]);
-  const rows=[...a,[1,2**-27],[3,0]];
+  const rows=[...a,[1,2**-18],[3,0]];
   const ids=rows.map((_,i)=>`s${String(i).padStart(2,'0')}`);
   const input={...fixture,targets:[],samples:ids.map((id,i)=>({sample_id:id,physical_sample_id:`p${i}`,partition:'development',instrument:i<11?'A':'B',campaign:'c1'})),
     sources:[{...fixture.sources[0],observation_ids:ids.map(i=>`o_${i}`),sample_ids:ids,x:rows,axis:[1000,1010]}],
     options:{...fixture.options,domain_shift:{}}};
   const b=runtime.analyze(input).metrics.find(m=>m.metric_id==='domain_shift.coverage'&&m.parameters.target_domain==='B');
   assert.equal(b.value.n_target_beyond_q_limit,1);
-  assert.equal(b.value.n_target_undetermined_q,1);
+  assert.equal(b.value.n_target_near_q_limit,1);
 });
