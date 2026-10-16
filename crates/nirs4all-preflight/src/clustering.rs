@@ -207,9 +207,16 @@ fn refit_scores(
                 && result
                     .scores
                     .iter()
-                    .all(|s| s.len() == k && s.iter().all(|v| v.is_finite())) =>
+                    .all(|s| s.len() == k && s.iter().all(|v| v.is_finite()))
+                && result.unresolved.len() == k =>
         {
-            Ok(result.scores)
+            // Same rule as the canonical PCA: unresolved components are
+            // dropped before the scores reach HDBSCAN.
+            let resolved = result.resolved();
+            if resolved.eigenvalues.is_empty() {
+                return Err(failure(Availability::Undefined, "ZERO_NUMERICAL_RANK"));
+            }
+            Ok(resolved.scores)
         }
         Ok(_) => Err(invalid()),
         Err(e) => Err(provider_failure(e)),

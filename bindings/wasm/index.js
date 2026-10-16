@@ -83,7 +83,7 @@ export async function createQualificationRuntime(options = {}) {
       case 'capabilities': result = methodsCapabilities; break;
       case 'pca': {
         const output = methods.preflightPca(matrix(request.matrix), request.n_components);
-        result = { eigenvalues: Array.from(output.eigenvalues), scores: nested(output.scores.data, output.scores.cols), full_moments: output.fullMoments, backend_version };
+        result = { eigenvalues: Array.from(output.eigenvalues), scores: nested(output.scores.data, output.scores.cols), full_moments: output.fullMoments, resolution: output.resolution, unresolved: Array.from(output.unresolved, Boolean), backend_version };
         break;
       }
       case 'repeatability': {

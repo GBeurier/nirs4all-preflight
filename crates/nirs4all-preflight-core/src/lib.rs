@@ -1380,10 +1380,43 @@ pub struct PcaRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcaDiagnostics {
+    /// Variances; 0 for an unresolved component.
     pub eigenvalues: Vec<f64>,
     pub scores: Vec<Vec<f64>>,
     pub full_moments: [f64; 2],
+    /// Absolute accuracy bound of every eigenvalue (Methods ABI 2.20:
+    /// 16 * max(n,p) * eps * lambda_max).
+    pub resolution: f64,
+    /// Per component: variance not above `resolution`. Published as 0 with
+    /// zero scores; never counted as numerical rank.
+    pub unresolved: Vec<bool>,
     pub backend_version: String,
+}
+
+impl PcaDiagnostics {
+    /// The components above Methods' published resolution (rule-14 accuracy
+    /// contract). Unresolved components, whose variance and scores are 0 and
+    /// which are not numerical rank, are dropped, so no downstream use of the
+    /// scores (structure, clustering, confounding, local contrast,
+    /// domain-shift, SNV sensitivity) sees them. The result has `k_resolved`
+    /// columns; `full_moments`, `resolution` and the version are kept.
+    pub fn resolved(&self) -> PcaDiagnostics {
+        let keep: Vec<usize> = (0..self.eigenvalues.len())
+            .filter(|&a| !self.unresolved.get(a).copied().unwrap_or(false))
+            .collect();
+        PcaDiagnostics {
+            eigenvalues: keep.iter().map(|&a| self.eigenvalues[a]).collect(),
+            scores: self
+                .scores
+                .iter()
+                .map(|row| keep.iter().map(|&a| row[a]).collect())
+                .collect(),
+            full_moments: self.full_moments,
+            resolution: self.resolution,
+            unresolved: vec![false; keep.len()],
+            backend_version: self.backend_version.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

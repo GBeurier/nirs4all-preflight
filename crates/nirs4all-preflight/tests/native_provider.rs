@@ -18,6 +18,42 @@ fn actual_public_methods_abi_matches_analytic_covariance_and_repeatability() {
     assert!((result.eigenvalues[0] - 4. / 3.).abs() < 1e-10);
     assert!((result.full_moments[0] - 5. / 3.).abs() < 1e-10);
     assert!((result.full_moments[1] - 17. / 9.).abs() < 1e-10);
+    // ABI 2.20 accuracy contract: resolution = 16 max(n,p) eps lambda_max.
+    assert_eq!(
+        result.resolution,
+        16. * 4. * f64::EPSILON * result.eigenvalues[0]
+    );
+    assert_eq!(result.unresolved, vec![false]);
+    // [A; -A], A = [[-1,1,-1],[-1,-1,-1],[1,-1,1],[-t,t,t]] (spread 1/t,
+    // inside the 2^32 domain). The third variance 4t^2/7 (1 + O(t^2)) is
+    // resolved for t = 2^-20 (~3e-13 lambda_1) and unresolved for t = 2^-30
+    // (~2^-61 lambda_1): flagged and published as 0, not a rank-3 claim.
+    let weak = |t: f64| {
+        let a = [[-1., 1., -1.], [-1., -1., -1.], [1., -1., 1.], [-t, t, t]];
+        let matrix: Vec<Vec<f64>> = a
+            .iter()
+            .map(|r| r.to_vec())
+            .chain(a.iter().map(|r| r.iter().map(|v| -v).collect()))
+            .collect();
+        provider
+            .pca(&PcaRequest {
+                source_id: "analytic".into(),
+                sample_ids: vec![],
+                matrix,
+                n_components: 3,
+            })
+            .unwrap()
+    };
+    let s17 = 17f64.sqrt();
+    let resolved = weak(2f64.powi(-20));
+    assert_eq!(resolved.unresolved, vec![false, false, false]);
+    assert!(
+        (resolved.eigenvalues[0] - 2. * (s17 + 1.) * (s17 + 1.) / 28.).abs() <= resolved.resolution
+    );
+    assert!((resolved.eigenvalues[2] - 4. * 2f64.powi(-40) / 7.).abs() <= resolved.resolution);
+    let unresolved = weak(2f64.powi(-30));
+    assert_eq!(unresolved.unresolved, vec![false, false, true]);
+    assert_eq!(unresolved.eigenvalues[2], 0.);
     let repeats = provider
         .repeatability(&RepeatabilityRequest {
             source_id: "analytic".into(),
@@ -1022,5 +1058,100 @@ fn native_local_contrast_is_computed_on_rank_deficient_spectra() {
     assert_eq!(
         m.parameters["numerical_domain"],
         NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+/// Rank-2 spectra (24 samples x 40 wavelengths around 10, two smooth bases):
+/// the canonical PCA asks for 10 components, 8 of which are rounding noise
+/// below Methods' resolution. They are dropped before any downstream use, so
+/// the scores keep the 2 resolved columns and the structure, local-contrast
+/// and clustering metrics are computed on them.
+#[test]
+fn rank_two_spectra_drop_unresolved_components_before_downstream_metrics() {
+    let Ok(path) = std::env::var("N4M_LIBRARY_PATH") else {
+        return;
+    };
+    let provider = NativeMethodsProvider::load(path).expect("compatible Methods ABI");
+    let n = 24;
+    let coef = |i: usize| ((i as f64) * 0.7).sin() * 0.3;
+    let coef2 = |i: usize| ((i as f64) * 1.3 + 0.4).cos() * 0.2;
+    let x: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            (0..40)
+                .map(|w| {
+                    let l = 1100.0 + 10.0 * w as f64;
+                    10.0 + coef(i) * (l * 0.01).sin() + coef2(i) * (l * 0.007).cos()
+                })
+                .collect()
+        })
+        .collect();
+    let ids: Vec<String> = (0..n).map(|i| format!("s{i}")).collect();
+    let input: QualificationInput = serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "data_origin": "synthetic",
+        "sources": [{
+            "source_id": "rank2",
+            "observation_ids": (0..n).map(|i| format!("o{i}")).collect::<Vec<_>>(),
+            "sample_ids": ids,
+            "x": x,
+            "axis": (0..40).map(|w| 1100.0 + 10.0 * w as f64).collect::<Vec<_>>(),
+            "axis_unit": "nm",
+            "signal_unit": "absorbance",
+            "signal_type": "absorbance"
+        }],
+        "samples": (0..n).map(|i| serde_json::json!({
+            "sample_id": format!("s{i}"),
+            "physical_sample_id": format!("p{i}"),
+            "partition": "development",
+            "instrument": "a",
+            "campaign": "2026"
+        })).collect::<Vec<_>>(),
+        "targets": [{
+            "target_id": "y",
+            "kind": "continuous",
+            "unit": "%",
+            "values": (0..n).map(|i| serde_json::json!({
+                "sample_id": format!("s{i}"),
+                "value": coef(i) + 0.5 * coef2(i),
+                "status": "exact",
+                "reference_id": format!("r{i}")
+            })).collect::<Vec<_>>()
+        }],
+        "options": {}
+    }))
+    .expect("valid rank-2 input");
+    let report = analyze(&input, &provider);
+    let metric = |id: &str| {
+        report
+            .metrics
+            .iter()
+            .find(|m| m.metric_id == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+    };
+    let eigen = metric("structure.pca_eigenvalues");
+    assert_eq!(eigen.parameters["k_requested"], 10);
+    assert_eq!(eigen.parameters["k_resolved"], 2);
+    assert_eq!(eigen.value.as_ref().unwrap().as_array().unwrap().len(), 2);
+    let scores = metric("structure.pca_scores");
+    assert!(matches!(scores.status, Availability::Computed));
+    assert_eq!(scores.parameters["score_columns"], 2);
+    let rows = scores.value.as_ref().unwrap()["scores"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(rows.iter().all(|r| r.as_array().unwrap().len() == 2));
+    for id in [
+        "structure.effective_dimension",
+        "structure.explained_variance_retained",
+        "local.global_contrast",
+    ] {
+        assert!(matches!(metric(id).status, Availability::Computed), "{id}");
+    }
+    let partition = metric("clustering.partition");
+    assert!(
+        !matches!(
+            partition.status,
+            Availability::Unsupported | Availability::Error
+        ),
+        "clustering: {:?} {:?}",
+        partition.status,
+        partition.reason_code
     );
 }

@@ -40,6 +40,8 @@ type Pca = unsafe extern "C" fn(
     *const MatrixView,
     *mut f64,
     *mut f64,
+    *mut f64,
+    *mut u8,
 ) -> i32;
 type Repeats = unsafe extern "C" fn(
     *mut c_void,
@@ -326,7 +328,7 @@ impl NativeMethodsProvider {
                 .get::<LastError>(b"n4m_context_last_error\0")
                 .map_err(err)?;
             let pca_fn = *library
-                .get::<Pca>(b"n4m_preflight_pca_compute\0")
+                .get::<Pca>(b"n4m_preflight_pca_compute_resolved\0")
                 .map_err(err)?;
             let repeats_fn = *library
                 .get::<Repeats>(b"n4m_preflight_repeatability_compute\0")
@@ -542,6 +544,8 @@ impl MethodsProvider for NativeMethodsProvider {
         let mut loadings = vec![0.; k * p];
         let mut eigenvalues = vec![0.; k];
         let mut full_moments = [0.; 2];
+        let mut resolution = 0.;
+        let mut unresolved = vec![0u8; k];
         let xv = MatrixView::new(&mut x, n, p);
         let sv = MatrixView::new(&mut scores, n, k);
         let lv = MatrixView::new(&mut loadings, k, p);
@@ -555,12 +559,16 @@ impl MethodsProvider for NativeMethodsProvider {
                 &lv,
                 eigenvalues.as_mut_ptr(),
                 full_moments.as_mut_ptr(),
+                &mut resolution,
+                unresolved.as_mut_ptr(),
             )
         })?;
         Ok(PcaDiagnostics {
             eigenvalues,
             scores: scores.chunks(k).map(<[f64]>::to_vec).collect(),
             full_moments,
+            resolution,
+            unresolved: unresolved.into_iter().map(|u| u != 0).collect(),
             backend_version: self.version.clone(),
         })
     }

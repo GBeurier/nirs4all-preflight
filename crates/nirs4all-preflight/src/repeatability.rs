@@ -971,8 +971,9 @@ pub(crate) fn balanced_repeat_sensitivity(
         matrix,
         n_components: k,
     };
+    // Unresolved components (below Methods' resolution) are not variance.
     let result = match provider.pca(&request) {
-        Ok(r) if pca_result_valid(&r, k, n) => r,
+        Ok(r) if pca_result_valid(&r, k, n) => r.resolved(),
         Ok(_) => {
             push(
                 report,
