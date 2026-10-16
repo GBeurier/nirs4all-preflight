@@ -4,6 +4,7 @@ pub use nirs4all_preflight_core::*;
 mod association;
 mod clustering;
 mod confounding;
+pub mod dagml;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 mod probe;
@@ -38,9 +39,14 @@ pub fn capabilities_with_validation(
     let nested = validation_capabilities
         .iter()
         .find(|c| c.capability_id == VALIDATION_CAPABILITY_ID);
-    let probe_available = nested.is_some_and(|c| c.available);
+    let kernels = probe::METHODS_NEEDED
+        .iter()
+        .all(|id| out.iter().any(|c| c.capability_id == *id && c.available));
+    let probe_available = nested.is_some_and(|c| c.available) && kernels;
     let probe_reason = if probe_available {
         "ALPHA_PROTOCOL_UNQUALIFIED".to_string()
+    } else if nested.is_some_and(|c| c.available) {
+        "PROBE_METHODS_KERNELS_NOT_CONFIGURED".to_string()
     } else {
         nested
             .and_then(|c| c.reason.clone())
@@ -287,7 +293,7 @@ pub fn analyze_with_validation(
         analyze_target(target, &samples, input, provider, &mut report);
     }
     association::analyze_metadata_associations(input, &samples, provider, &mut report);
-    probe::analyze(input, &samples, validation_provider, &mut report);
+    probe::analyze(input, &samples, provider, validation_provider, &mut report);
     report
 }
 

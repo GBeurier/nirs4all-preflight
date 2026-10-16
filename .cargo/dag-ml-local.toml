@@ -1,0 +1,7 @@
+# Local-testing override only, never loaded implicitly: point dag-ml-core at a
+# sibling dag-ml checkout that carries `nested_selection` until it is
+# published. Usage from the repository root:
+#   cargo --config .cargo/dag-ml-local.toml test --workspace
+# The path is relative to the repository root (the parent of .cargo).
+[patch.crates-io]
+dag-ml-core = { path = "../dag-ml/crates/dag-ml-core" }

@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { createQualificationRuntime } from '../index.js';
 
 const bytes = await readFile(new URL('../native/nirs4all_preflight_wasm_bg.wasm',import.meta.url));
-const runtime = await createQualificationRuntime({wasmModule:bytes});
+const dagMlBytes = await readFile(new URL('../node_modules/dag-ml-wasm/dag_ml_wasm_bg.wasm',import.meta.url));
+const runtime = await createQualificationRuntime({wasmModule:bytes,dagMlWasmModule:dagMlBytes});
 const input=JSON.parse(await readFile(new URL('../../../examples/first_run.json',import.meta.url),'utf8'));
 
 test('actual Rust WASM + Methods WASM computes canonical report',()=>{
@@ -158,10 +159,9 @@ test('WASM clustering uses Methods HDBSCAN on canonical PCA scores',()=>{
  assert.equal(metrics['clustering.condensed_tree'].value[0].birth_distance,null);
  assert.ok(report.capabilities.some(c=>c.capability_id==='clustering'&&c.available&&!c.qualified));
  assert.ok(report.findings.some(f=>f.rule_id==='structure.clustering.uncertain_partition.v1'));
- // No browser DAG-ML nested selection: the probe is unavailable, never emulated.
  const probe=report.capabilities.find(c=>c.capability_id==='validation_probe');
- assert.equal(probe.available,false);
- assert.equal(probe.reason,'DAG_ML_WASM_NESTED_SELECTION_UNAVAILABLE');
+ assert.equal(probe.available,true);
+ assert.equal(probe.qualified,false);
 });
 test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  // SG window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.
@@ -189,3 +189,44 @@ test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  assert.equal(metrics['structure.snv_sensitivity'].status,'computed');
  assert.ok(report.capabilities.some(c=>c.capability_id==='quasi_duplicates'&&c.available));
 });
+
+// Browser probe: dag-ml-wasm nested selection with the Methods JS controller,
+// against the CPU scikit-learn golden (folds, selections, OOF within 1e-7).
+test('WASM validation probe matches the CPU scikit-learn golden',async()=>{
+  const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/probe_sklearn_v1.json',import.meta.url),'utf8'));
+  const close=(a,e,label)=>assert.ok(Math.abs(a-e)<=1e-7*(1+Math.abs(e)),`${label}: ${a} vs ${e}`);
+  for(const [name,data] of Object.entries(golden.cases)){
+    const report=runtime.analyze(data.input);
+    for(const estimator of ['pls','pcr']){
+      const label=`${name}/${estimator}`, expected=data[estimator];
+      const get=id=>report.metrics.find(m=>m.metric_id===id&&m.parameters.estimator===estimator);
+      assert.equal(get('probe.plan').status,'computed',`${label} ${get('probe.plan').reason_code} ${JSON.stringify(get('probe.plan').parameters.provider_error_detail??'')}`);
+      assert.deepEqual(get('probe.plan').value.component_grid,data.component_grid,label);
+      const folds=get('probe.folds').value;
+      folds.forEach((f,i)=>{
+        const e=expected.folds[i];
+        assert.deepEqual(f.eval_sample_ids,e.validation_sample_ids,label);
+        assert.deepEqual(f.inner_folds.map(x=>x.eval_sample_ids),e.inner_validation_sample_ids,label);
+        assert.equal(f.selected_components,e.selected_components,label);
+      });
+      const oof=get('probe.oof_predictions').value;
+      assert.deepEqual(oof.sample_ids,data.sample_ids,label);
+      oof.prediction.forEach((v,i)=>close(v,expected.prediction[i],`${label} oof ${i}`));
+      close(get('probe.rmse').value,expected.rmse,`${label} rmse`);
+      close(get('probe.skill_vs_train_mean').value,expected.skill_vs_train_mean,`${label} skill`);
+      assert.match(get('probe.rmse').parameters.validation_backend,/dag-ml-wasm/);
+    }
+  }
+});
+
+test('WASM probe refuses data outside the declared numerical domain before any fit',async()=>{
+  const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/probe_sklearn_v1.json',import.meta.url),'utf8'));
+  const input=structuredClone(golden.cases.base.input);
+  input.sources[0].x=input.sources[0].x.map(row=>row.map(v=>v*2**300));
+  const report=runtime.analyze(input);
+  const rmse=report.metrics.find(m=>m.metric_id==='probe.rmse');
+  assert.equal(rmse.status,'unsupported');
+  assert.equal(rmse.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+  assert.match(rmse.parameters.numerical_domain,/2\^-256, 2\^256/);
+});
+

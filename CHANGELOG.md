@@ -2,10 +2,22 @@
 
 ## Unreleased
 
-- Grouped validation probe (`validation_probe.v1`, PF-04, exploratory, unqualified). This adds the `ValidationProvider` contract (`ProbeRequest`, `ProbeResult`, `ProbeScores`, `UnavailableValidationProvider`) and the `analyze_with_validation` and `capabilities_with_validation` entry points. The new option `options.validation_probe` has `enabled`, `estimators` (`pls`, `pcr`) and `max_fits`. The protocol runs per source × continuous target × recipe on aggregated exact-reference development samples, with indivisible identity components and a fixed plan: outer `min(5, G)`, inner `min(3, outer − 1)`, a bounded component grid and a fit budget. It refuses before any fit with explicit reason codes.
-- Metrics: `probe.plan`, `probe.folds`, `probe.oof_predictions`, `probe.rmse`, `probe.mae`, `probe.r2_oof`, `probe.skill_vs_train_mean`, `probe.train_mean_rmse`, `probe.train_mean_mae`, `probe.domain_scores`. Finding: `probe.no_skill_over_train_mean.v1`.
-- Capabilities: `validation_probe` (no longer `PROTOCOL_NOT_IMPLEMENTED`; the reason is `VALIDATION_PROVIDER_NOT_CONFIGURED` without a provider), `validation.nested_grouped_probe`, and `validation_probe.classification` (unavailable, `CLASSIFICATION_PROBE_NOT_QUALIFIED`).
-- The CPU provider is the new workspace-excluded crate `nirs4all-preflight-dagml` (binary `n4pf-dagml`). It calls the unreleased `dag_ml_core::execute_nested_selection` (dag-ml branch `feat/preflight-probe`) through a sibling `../dag-ml` path dependency. `n4pf`, the C ABI and Python report the probe unavailable. The browser bridge reports `DAG_ML_WASM_NESTED_SELECTION_UNAVAILABLE`. Example: `examples/validation_probe.json`.
+- Grouped validation probe (`validation_probe.v1`, PF-04, exploratory, unqualified). Nested grouped selection runs in DAG-ML (`dag_ml_core::execute_nested_selection`, next release after 0.3.41). PLS/PCR come from Methods through DAG-ML controllers: native role controllers on CPU, and `N4mWasmRegressionController` in the browser through dag-ml-wasm `execute_nested_selection_json`.
+  - Preflight owns the population, the shared `independence_components`, the plan (outer `min(5, G)`, inner `min(3, outer − 1)`, and a grid bounded by bands, numerical rank and the smallest inner training pool), the fit budget, the refusals before any fit, and the statuses and findings.
+  - Preflight re-verifies every returned fold, selection (minimum inner RMSE, ties to fewer components), fold-ID uniqueness, fit count and score, and refuses contradictions with `PROVIDER_*` reasons.
+  - Methods kernels compute repeat aggregation (`n4m_stats_group_means`), fold-train means (`summary`) and every published score (`n4m_stats_regression_scores`). Domains stay structured `(instrument, campaign)` pairs.
+  - DAG-ML errors keep their taxonomy code, are reported as `error`, and carry the fold and candidate in `provider_error_detail` (new optional `ProviderError::detail`).
+  - Methods refusals outside the declared domain are `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` (`METHODS_DOMAIN_MESSAGE`).
+- New API and options:
+  - `ValidationProvider` (`ProbeRequest`, `ProbeResult`, `UnavailableValidationProvider`), `analyze_with_validation`, `capabilities_with_validation`;
+  - `dagml::{nested_probe, probe_result, DagMlValidationProvider}`;
+  - `MethodsProvider::group_means` and `MethodsProvider::regression_scores`, with capabilities `methods.group_means` and `methods.regression_scores`;
+  - option `options.validation_probe` (`enabled`, `estimators`, `max_fits`).
+- Metrics: `probe.plan`, `probe.folds`, `probe.oof_predictions`, `probe.rmse`, `probe.mae`, `probe.r2_oof`, `probe.skill_vs_train_mean`, `probe.train_mean_rmse`, `probe.train_mean_mae` and `probe.domain_scores`, all with `numerical_domain`. Finding: `probe.no_skill_over_train_mean.v1`.
+- Capabilities: `validation_probe`, which requires a validation provider and the four Methods kernels and is no longer `PROTOCOL_NOT_IMPLEMENTED`; `validation.nested_grouped_probe`; and `validation_probe.classification`, unavailable with `CLASSIFICATION_PROBE_NOT_QUALIFIED`.
+- The CLI (`--methods-library`), the C ABI and Python run the probe with `DagMlValidationProvider`. The npm package depends on `dag-ml-wasm` and accepts `dagMlWasmModule`.
+- Until the dag-ml release, local builds use `cargo --config .cargo/dag-ml-local.toml` against a sibling `../dag-ml`.
+- Example: `examples/validation_probe.json`.
 
 Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, `n4m_stats_factor_association_exact`, `n4m_stats_correlation_exact`); the native and WASM providers refuse older libraries (`METHODS_ABI_2_20_REQUIRED`). All capabilities stay exploratory and unqualified.
 

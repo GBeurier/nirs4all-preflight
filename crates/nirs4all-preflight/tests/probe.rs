@@ -1,8 +1,65 @@
 //! Protocol of the grouped validation probe with a recording provider: the
-//! population, components, plan and refusals are fixed before any FIT, and a
-//! provider result that splits an identity component is rejected.
+//! population, components, plan and refusals are fixed before any FIT, a
+//! provider result that splits an identity component is rejected, and
+//! provider errors keep their kind and context.
 use nirs4all_preflight::*;
 use std::cell::RefCell;
+
+/// Methods stand-in for the four probe kernels (test-only arithmetic).
+struct Kernels;
+impl MethodsProvider for Kernels {
+    fn capabilities(&self) -> Vec<Capability> {
+        [
+            "methods.pca",
+            "methods.group_means",
+            "methods.summary",
+            "methods.regression_scores",
+        ]
+        .iter()
+        .map(|id| Capability {
+            capability_id: (*id).into(),
+            available: true,
+            qualified: false,
+            reason: None,
+        })
+        .collect()
+    }
+    /// Full numerical rank: one unit eigenvalue per requested component.
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Ok(PcaDiagnostics {
+            eigenvalues: vec![1.0; r.n_components],
+            scores: vec![vec![0.0; r.n_components]; r.matrix.len()],
+            full_moments: [r.n_components as f64; 2],
+            backend_version: "test".into(),
+        })
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported("TEST_NO_REPEATABILITY"))
+    }
+    fn group_means(&self, r: &GroupMeansRequest) -> Result<GroupMeansDiagnostics, ProviderError> {
+        let p = r.matrix[0].len();
+        let mut sums = vec![vec![0.0; p]; r.n_groups];
+        let mut counts = vec![0usize; r.n_groups];
+        for (row, &g) in r.matrix.iter().zip(&r.group_codes) {
+            counts[g as usize] += 1;
+            for (s, v) in sums[g as usize].iter_mut().zip(row) {
+                *s += v;
+            }
+        }
+        Ok(GroupMeansDiagnostics {
+            means: sums
+                .into_iter()
+                .zip(&counts)
+                .map(|(s, &c)| s.into_iter().map(|v| v / c as f64).collect())
+                .collect(),
+            counts,
+            backend_version: "test".into(),
+        })
+    }
+}
 
 #[derive(Default)]
 struct Spy {
@@ -23,7 +80,8 @@ impl ValidationProvider for Spy {
     fn probe(&self, request: &ProbeRequest) -> Result<ProbeResult, ProviderError> {
         self.requests.borrow_mut().push(request.clone());
         if !self.split_component {
-            return Err(ProviderError("SPY_NO_FIT".into()));
+            return Err(ProviderError::internal("SPY_NO_FIT")
+                .with_detail("outer fold `fold0` candidate `n_components:0001`"));
         }
         // Folds by sample index, ignoring the identity components.
         let ids = &request.sample_ids;
@@ -56,18 +114,13 @@ impl ValidationProvider for Spy {
                     inner_folds: vec![],
                     candidates: vec![],
                     selected_components: 1,
-                    train_mean: 0.0,
                 })
                 .collect(),
             oof: vec![],
             model: scores,
-            train_mean: scores,
             n_fits: 0,
             backend_version: "spy".into(),
         })
-    }
-    fn score(&self, _: &ProbeScoreRequest) -> Result<ProbeScores, ProviderError> {
-        Err(ProviderError("SPY_NO_SCORE".into()))
     }
 }
 
@@ -125,6 +178,7 @@ fn input(n: usize) -> QualificationInput {
                 .collect(),
             unit: Some("%".into()),
         }],
+        metadata: MetadataTable::default(),
         options: Options {
             independence_unit: IndependenceUnit::Sample,
             snv_sensitivity: false,
@@ -162,7 +216,7 @@ fn same_object_under_another_acquisition_id_in_retained_test_is_refused_before_a
     x.sources[0].sample_ids.push("t03".into());
     x.sources[0].x.push(vec![Some(9.5); 4]);
     let spy = Spy::default();
-    let report = analyze_with_validation(&x, &UnavailableMethodsProvider, &spy);
+    let report = analyze_with_validation(&x, &Kernels, &spy);
     assert_eq!(report.status, "failed");
     assert!(report
         .validation
@@ -215,7 +269,7 @@ fn linked_identities_form_one_indivisible_group_and_test_rows_never_enter() {
         });
     }
     let spy = Spy::default();
-    let report = analyze_with_validation(&x, &UnavailableMethodsProvider, &spy);
+    let report = analyze_with_validation(&x, &Kernels, &spy);
     assert_eq!(report.status, "partial");
     let requests = spy.requests.borrow();
     let request = &requests[0];
@@ -237,7 +291,18 @@ fn linked_identities_form_one_indivisible_group_and_test_rows_never_enter() {
         8
     );
     assert_eq!((request.outer_splits, request.inner_splits), (5, 3));
+    // An execution failure is an error with its fold/candidate context, not
+    // an unsupported capability.
     assert_eq!(reason(&report), Some("SPY_NO_FIT"));
+    let failed = probe_metric(&report, "probe.rmse");
+    assert_eq!(
+        serde_json::to_value(&failed.status).unwrap(),
+        serde_json::json!("error")
+    );
+    assert_eq!(
+        failed.parameters["provider_error_detail"],
+        serde_json::json!("outer fold `fold0` candidate `n_components:0001`")
+    );
 }
 
 #[test]
@@ -249,7 +314,7 @@ fn provider_folds_that_split_an_identity_component_are_rejected() {
         split_component: true,
         ..Default::default()
     };
-    let report = analyze_with_validation(&x, &UnavailableMethodsProvider, &spy);
+    let report = analyze_with_validation(&x, &Kernels, &spy);
     let metric = probe_metric(&report, "probe.rmse");
     assert_eq!(
         serde_json::to_value(&metric.status).unwrap(),
@@ -318,7 +383,7 @@ fn refusals_precede_any_fit() {
         let mut x = input(12);
         mutate(&mut x);
         let spy = Spy::default();
-        let report = analyze_with_validation(&x, &UnavailableMethodsProvider, &spy);
+        let report = analyze_with_validation(&x, &Kernels, &spy);
         assert!(spy.requests.borrow().is_empty(), "{expected}");
         assert_eq!(reason(&report), Some(expected));
         assert!(report
@@ -333,7 +398,7 @@ fn refusals_precede_any_fit() {
 fn smaller_valid_plans_follow_the_number_of_independent_groups() {
     for (n, outer, inner, k_max) in [(3, 3, 2, 0), (4, 4, 3, 0), (7, 5, 3, 1), (40, 5, 3, 4)] {
         let spy = Spy::default();
-        let report = analyze_with_validation(&input(n), &UnavailableMethodsProvider, &spy);
+        let report = analyze_with_validation(&input(n), &Kernels, &spy);
         if k_max == 0 {
             assert_eq!(reason(&report), Some("TOO_FEW_SAMPLES_FOR_COMPONENT_GRID"));
             assert!(spy.requests.borrow().is_empty());
@@ -368,4 +433,21 @@ fn without_a_validation_provider_the_probe_is_unavailable_with_its_reason() {
         .find(|c| c.capability_id == "validation_probe.classification")
         .unwrap();
     assert!(!classification.available);
+}
+
+#[test]
+fn missing_methods_kernels_make_the_probe_unavailable_before_any_fit() {
+    let spy = Spy::default();
+    let report = analyze_with_validation(&input(12), &UnavailableMethodsProvider, &spy);
+    assert!(spy.requests.borrow().is_empty());
+    assert_eq!(
+        reason(&report),
+        Some("PROBE_METHODS_KERNELS_NOT_CONFIGURED")
+    );
+    let capability = report
+        .capabilities
+        .iter()
+        .find(|c| c.capability_id == "validation_probe")
+        .unwrap();
+    assert!(!capability.available);
 }

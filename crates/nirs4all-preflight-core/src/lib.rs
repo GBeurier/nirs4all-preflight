@@ -1295,6 +1295,10 @@ pub enum ProviderErrorKind {
 pub struct ProviderError {
     pub kind: ProviderErrorKind,
     pub reason: String,
+    /// Optional diagnostic context (for example the outer fold and candidate
+    /// of a validation failure); never part of the stable reason code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl ProviderError {
@@ -1302,25 +1306,40 @@ impl ProviderError {
         Self {
             kind: ProviderErrorKind::Unsupported,
             reason: reason.into(),
+            detail: None,
         }
     }
     pub fn numerical(reason: impl Into<String>) -> Self {
         Self {
             kind: ProviderErrorKind::Numerical,
             reason: reason.into(),
+            detail: None,
         }
     }
     pub fn internal(reason: impl Into<String>) -> Self {
         Self {
             kind: ProviderErrorKind::Internal,
             reason: reason.into(),
+            detail: None,
         }
+    }
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
     /// Report status of a metric that this error prevented.
     pub fn availability(&self) -> Availability {
         match self.kind {
             ProviderErrorKind::Unsupported => Availability::Unsupported,
             ProviderErrorKind::Numerical | ProviderErrorKind::Internal => Availability::Error,
+        }
+    }
+    /// A Methods refusal carrying the declared-domain context message.
+    pub fn from_methods_message(status: i32, message: &str) -> Self {
+        if status == 10 && message.starts_with(METHODS_DOMAIN_MESSAGE) {
+            Self::unsupported(NUMERICAL_DOMAIN_EXCEEDED)
+        } else {
+            Self::from_methods_status(status)
         }
     }
     /// A non-zero Methods `n4m_status_t`, shared by every adapter: numerical
@@ -1849,6 +1868,12 @@ pub struct PermdispDiagnostics {
     pub backend_version: String,
 }
 
+/// Provider reason for a Methods refusal of inputs outside the supported
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^64).
+pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
+/// Prefix of the Methods context message for that refusal.
+pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -1964,6 +1989,57 @@ pub trait MethodsProvider {
             "FREEDMAN_LANE_PROVIDER_NOT_CONFIGURED",
         ))
     }
+    fn group_means(
+        &self,
+        _request: &GroupMeansRequest,
+    ) -> Result<GroupMeansDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "GROUP_MEANS_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+    fn regression_scores(
+        &self,
+        _request: &RegressionScoresRequest,
+    ) -> Result<RegressionScores, ProviderError> {
+        Err(ProviderError::unsupported(
+            "REGRESSION_SCORES_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+}
+
+/// Equal-weight per-group column means (Methods `n4m_stats_group_means`).
+/// Both probe kernels refuse values outside the declared numerical domain
+/// (`NUMERICAL_DOMAIN_EXCEEDED`, see `PROBE_NUMERICAL_DOMAIN`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMeansRequest {
+    pub matrix: Vec<Vec<f64>>,
+    /// One code per row in `[0, n_groups)`; every group is nonempty.
+    pub group_codes: Vec<i64>,
+    pub n_groups: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMeansDiagnostics {
+    pub means: Vec<Vec<f64>>,
+    pub counts: Vec<usize>,
+    pub backend_version: String,
+}
+
+/// Paired targets and predictions scored by Methods
+/// (`n4m_stats_regression_scores`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegressionScoresRequest {
+    pub y_true: Vec<f64>,
+    pub y_pred: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegressionScores {
+    pub rmse: f64,
+    pub mae: f64,
+    /// `None` (undefined) when the target is constant.
+    pub r2: Option<f64>,
+    pub backend_version: String,
 }
 
 /// Fixed estimator recipe of the validation probe, declared before Y is read.
@@ -1986,9 +2062,9 @@ impl ProbeEstimator {
 }
 
 /// A complete grouped probe: the provider owns the outer and inner grouped
-/// loops, the component selection from inner OOF only, and the fold-train
-/// mean baseline. Rows are aggregated samples; `group_ids` are indivisible
-/// identity components that never cross a fold boundary.
+/// loops and the component selection from inner OOF only. Rows are
+/// aggregated samples; `group_ids` are indivisible identity components that
+/// never cross a fold boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeRequest {
     pub probe_id: String,
@@ -2025,7 +2101,6 @@ pub struct ProbeOuterFold {
     pub inner_folds: Vec<ProbeFoldAssignment>,
     pub candidates: Vec<ProbeCandidateScore>,
     pub selected_components: usize,
-    pub train_mean: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2034,16 +2109,14 @@ pub struct ProbeOofRow {
     pub fold_id: String,
     pub y_true: f64,
     pub prediction: f64,
-    pub train_mean_prediction: f64,
 }
 
-/// Regression scores computed by the validation provider on identical rows.
+/// Pooled outer-OOF scores reported by the validation provider.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ProbeScores {
     pub mse: f64,
     pub rmse: f64,
     pub mae: f64,
-    /// `1 - SSE / sum((y - mean_eval(y))^2)`; meaningless when the denominator is zero.
     pub r2: f64,
 }
 
@@ -2053,26 +2126,23 @@ pub struct ProbeResult {
     /// One row per requested sample.
     pub oof: Vec<ProbeOofRow>,
     pub model: ProbeScores,
-    pub train_mean: ProbeScores,
+    /// Estimator fits executed by the provider.
     pub n_fits: usize,
     pub backend_version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProbeScoreRequest {
-    pub y_true: Vec<f64>,
-    pub predictions: Vec<f64>,
-}
-
-/// Grouped validation executed by DAG-ML. Preflight never runs its own CV loop.
+/// Grouped validation executed by DAG-ML. Preflight never runs its own CV
+/// loop; it re-verifies the returned evidence with Methods kernels.
 pub trait ValidationProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn probe(&self, request: &ProbeRequest) -> Result<ProbeResult, ProviderError>;
-    /// Provider scores of a subset of OOF rows, used for domain variability.
-    fn score(&self, request: &ProbeScoreRequest) -> Result<ProbeScores, ProviderError>;
 }
 
 pub const VALIDATION_CAPABILITY_ID: &str = "validation.nested_grouped_probe";
+
+/// Declared numerical domain of the Methods kernels used by the probe
+/// (lead rule 13); outside it they refuse with `NUMERICAL_DOMAIN_EXCEEDED`.
+pub const PROBE_NUMERICAL_DOMAIN: &str = "finite values, every nonzero |x| in [2^-256, 2^256], spread max|x|/min nonzero |x| <= 2^64 per input array (aggregated X, targets, predictions); outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; means and scores from double-double sums of explicit residuals";
 
 /// Explicitly unavailable validation, with the host-specific reason.
 pub struct UnavailableValidationProvider(pub &'static str);
@@ -2091,15 +2161,12 @@ impl ValidationProvider for UnavailableValidationProvider {
         }]
     }
     fn probe(&self, _: &ProbeRequest) -> Result<ProbeResult, ProviderError> {
-        Err(ProviderError(self.0.into()))
-    }
-    fn score(&self, _: &ProbeScoreRequest) -> Result<ProbeScores, ProviderError> {
-        Err(ProviderError(self.0.into()))
+        Err(ProviderError::unsupported(self.0))
     }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 19] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 21] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -2119,6 +2186,8 @@ pub const METHODS_CAPABILITY_IDS: [&str; 19] = [
     "methods.permanova",
     "methods.permdisp",
     "methods.permanova_freedman_lane",
+    "methods.group_means",
+    "methods.regression_scores",
 ];
 
 pub struct UnavailableMethodsProvider;

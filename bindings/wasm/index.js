@@ -11,10 +11,36 @@ const invalid = reason => Object.assign(new TypeError(reason), { providerKind: '
 
 /** Methods exceptions keep their status, mapped to kind and reason by the
  * Rust engine exactly as the native adapter maps n4m_status_t. */
+const DOMAIN_MESSAGE = 'input outside the supported numerical domain';
+const NUMERICAL_DOMAIN_EXCEEDED = 'NUMERICAL_DOMAIN_EXCEEDED';
+
 function providerError(error) {
+  // Methods refusals outside the supported numerical domain keep their reason.
+  if (error?.name === 'N4mError' && error.status === 10 && String(error.message).includes(DOMAIN_MESSAGE)) {
+    return { kind: 'unsupported', reason: NUMERICAL_DOMAIN_EXCEEDED };
+  }
   if (error instanceof methods.N4mError) return { methods_status: error.status };
-  if (error?.providerKind) return { kind: error.providerKind, reason: error.message };
+  if (error?.providerKind) {
+    return { kind: error.providerKind, reason: error.message, ...(error.providerDetail ? { detail: error.providerDetail } : {}) };
+  }
   return { kind: 'internal', reason: 'METHODS_CALLBACK_FAILED' };
+}
+
+/** DAG-ML refusals and execution failures keep their message as detail. */
+const dagFailure = error => Object.assign(new Error('DAG_ML_WASM_NESTED_SELECTION_FAILED'), {
+  providerKind: 'internal', providerDetail: String(error?.message ?? error),
+});
+
+/** Optional dag-ml-wasm (nested grouped selection) in the same worker. */
+async function loadDagMl(options) {
+  try {
+    const dagMl = await import('dag-ml-wasm');
+    const { N4mWasmRegressionController } = await import('dag-ml-wasm/n4m-controller');
+    await dagMl.default(options.dagMlWasmModule ? { module_or_path: options.dagMlWasmModule } : undefined);
+    return { dagMl, N4mWasmRegressionController, version: dagMl.dag_ml_version() };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
 }
 
 function matrix(rows) {
@@ -51,7 +77,8 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane'].map(id => ({
+  const dag = await loadDagMl(options);
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane', 'group_means', 'regression_scores'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -171,6 +198,51 @@ export async function createQualificationRuntime(options = {}) {
       case 'correlation_exact': {
         const output = methods.statsCorrelationExact(Float64Array.from(request.x), Float64Array.from(request.y), request.method, request.max_arrangements);
         result = { n_arrangements: output.nArrangements, p_value: nullable(output.pValue), minimum_p_value: nullable(output.minimumPValue), maximum_statistic: nullable(output.maximumStatistic), backend_version };
+        break;
+      }
+      case 'group_means': {
+        const output = methods.statsGroupMeans(matrix(request.matrix), request.group_codes, request.n_groups);
+        result = { means: nested(output.means.data, output.means.cols), counts: output.counts, backend_version };
+        break;
+      }
+      case 'regression_scores': {
+        if (!request.y_true.length || request.y_true.length !== request.y_pred.length) throw invalid('INVALID_REGRESSION_SCORES_REQUEST');
+        const output = methods.statsRegressionScores(Float64Array.from(request.y_true), Float64Array.from(request.y_pred));
+        result = { rmse: output.rmse, mae: output.mae, r2: nullable(output.r2), backend_version };
+        break;
+      }
+      case 'validation_capabilities': {
+        result = [{ capability_id: 'validation.nested_grouped_probe', available: !dag.error, qualified: false,
+          reason: dag.error ? 'DAG_ML_WASM_UNAVAILABLE' : `dag-ml-wasm ${dag.version}; alpha protocol` }];
+        break;
+      }
+      case 'nested_selection': {
+        // Transport only: DAG-ML owns the loops, Methods RolePipeline fits.
+        if (dag.error) throw limit('DAG_ML_WASM_UNAVAILABLE');
+        const { request: nestedRequest, envelope, rows } = request;
+        const index = new Map(rows.sample_ids.map((id, i) => [id, i]));
+        const pick = (ids, values) => {
+          if (ids.some(id => !index.has(id))) throw invalid('UNKNOWN_PROBE_SAMPLE');
+          return matrix(ids.map(id => values(index.get(id))));
+        };
+        const operators = Object.fromEntries(nestedRequest.graph.nodes.map(node => [node.id, { type: node.operator.type }]));
+        const controller = new dag.N4mWasmRegressionController({
+          methods, operators,
+          resolveFeatures: ({ view }) => ({ sampleIds: [...view.sample_ids], matrix: pick(view.sample_ids, i => rows.x[i]) }),
+          resolveTargets: ({ sampleIds }) => ({ sampleIds: [...sampleIds], matrix: pick(sampleIds, i => [rows.y[i]]) }),
+        });
+        try {
+          let outcome;
+          try {
+            outcome = dag.dagMl.execute_nested_selection_json(JSON.stringify(nestedRequest),
+              JSON.stringify([controller.manifest(dag.dagMl)]), JSON.stringify(envelope), controller.callback);
+          } catch (error) {
+            throw dagFailure(error);
+          }
+          result = JSON.parse(outcome);
+        } finally {
+          controller.close();
+        }
         break;
       }
       case 'bh_adjust': {

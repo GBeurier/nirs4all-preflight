@@ -43,7 +43,9 @@ pub unsafe extern "C" fn n4pf_analyze_json(
                     .to_str()
                     .map_err(|e| e.to_string())?;
                 let provider = native::NativeMethodsProvider::load(path).map_err(|e| e.reason)?;
-                analyze(&parsed, &provider)
+                let validation =
+                    dagml::DagMlValidationProvider::load(path).map_err(|e| e.reason)?;
+                analyze_with_validation(&parsed, &provider, &validation)
             };
             serde_json::to_vec(&report).map_err(|e| e.to_string())
         })

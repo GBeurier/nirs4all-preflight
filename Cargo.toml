@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/nirs4all-preflight-core", "crates/nirs4all-preflight", "crates/nirs4all-preflight-cli", "crates/nirs4all-preflight-capi"]
-exclude = ["bindings/wasm", "bindings/python-native", "crates/nirs4all-preflight-dagml"]
+exclude = ["bindings/wasm", "bindings/python-native"]
 
 [workspace.package]
 version = "0.1.0-alpha.3"
