@@ -30,6 +30,8 @@ impl MethodsProvider for Kernels {
             eigenvalues: vec![1.0; r.n_components],
             scores: vec![vec![0.0; r.n_components]; r.matrix.len()],
             full_moments: [r.n_components as f64; 2],
+            resolution: 0.0,
+            unresolved: vec![false; r.n_components],
             backend_version: "test".into(),
         })
     }

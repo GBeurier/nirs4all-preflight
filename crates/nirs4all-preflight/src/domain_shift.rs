@@ -1015,10 +1015,9 @@ fn run_family(
         c.plan.resolution = Some(resolution);
         c.plan.resolution_basis = Some("lower_bound_from_combinatorial_bound".into());
         let outcome = if resolution > FAMILY_ALPHA / m as f64 {
-            Err(ProviderError {
-                kind: ProviderErrorKind::Unsupported,
-                reason: "PERMUTATION_RESOLUTION_INSUFFICIENT".into(),
-            })
+            Err(ProviderError::unsupported(
+                "PERMUTATION_RESOLUTION_INSUFFICIENT",
+            ))
         } else {
             energy(
                 provider,

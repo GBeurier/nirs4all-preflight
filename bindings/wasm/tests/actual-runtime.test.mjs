@@ -162,7 +162,8 @@ test('WASM confounding follows the supported numerical domain',async()=>{
     return {partition:find('confounding.variance_partition'),test:find('confounding.permanova_marginal_test','campaign')};
   };
   const base=run(0);
-  for(const k of [-200,200]){
+  // Inside the canonical PCA domain [2^-128, 2^128] (Methods ABI 2.20).
+  for(const k of [-120,120]){
     const r=run(k);
     assert.equal(r.partition.status,'computed');
     r.partition.value.factors.forEach((f,i)=>assert.ok(Math.abs(f.r2_marginal-base.partition.value.factors[i].r2_marginal)<=1e-8));
@@ -175,14 +176,14 @@ test('WASM confounding follows the supported numerical domain',async()=>{
     assert.equal(partition.value,null);
   }
 });
-// A Methods numerical failure keeps its kind and reason across hosts (the
-// native test native_numerical_failure_is_reported_as_error).
-test('WASM reports Methods numerical failures as errors with the native reason',()=>{
+// A Methods PCA domain refusal keeps its kind and reason across hosts (the
+// native test native_pca_domain_refusal_propagates_to_confounding).
+test('WASM reports the Methods PCA domain refusal with the native reason',()=>{
   const huge=structuredClone(input);
   huge.sources[0].x=huge.sources[0].x.map((row,i)=>row.map((_,j)=>(i+j)%2?-1.7e308:1.7e308));
   const pca=runtime.analyze(huge).metrics.find(m=>m.metric_id==='structure.pca');
-  assert.equal(pca.status,'error');
-  assert.equal(pca.reason_code,'METHODS_NUMERICAL_FAILURE');
+  assert.equal(pca.status,'unsupported');
+  assert.equal(pca.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
 });
 test('WASM rejects identity leakage before diagnostics',()=>{
  const bad=structuredClone(input);

@@ -1083,6 +1083,29 @@ pub(crate) fn balanced_repeat_sensitivity(
     push(report, m);
 }
 
+/// SplitMix64 stream for the seeded replicate subsets of the sensitivity view.
+struct SplitMix64(u64);
+impl SplitMix64 {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    /// Unbiased integer in [0, bound) by rejection.
+    fn below(&mut self, bound: usize) -> usize {
+        let bound = bound as u64;
+        let zone = u64::MAX - u64::MAX % bound;
+        loop {
+            let v = self.next();
+            if v < zone {
+                return (v % bound) as usize;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::compensated_mean;
@@ -1164,29 +1187,6 @@ mod tests {
                 let got = compensated_mean(&p);
                 let ulp = f64::from_bits(exact.abs().to_bits() + 1) - exact.abs();
                 assert!((got - exact).abs() <= ulp, "{p:?}: {got} vs {exact}");
-            }
-        }
-    }
-}
-
-/// SplitMix64 stream for the seeded replicate subsets of the sensitivity view.
-struct SplitMix64(u64);
-impl SplitMix64 {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    /// Unbiased integer in [0, bound) by rejection.
-    fn below(&mut self, bound: usize) -> usize {
-        let bound = bound as u64;
-        let zone = u64::MAX - u64::MAX % bound;
-        loop {
-            let v = self.next();
-            if v < zone {
-                return (v % bound) as usize;
             }
         }
     }

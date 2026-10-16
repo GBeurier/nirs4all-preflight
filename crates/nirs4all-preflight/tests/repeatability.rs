@@ -24,6 +24,8 @@ impl MethodsProvider for Spy {
             eigenvalues: vec![1.0; r.n_components],
             scores: vec![vec![0.0; r.n_components]; r.matrix.len()],
             full_moments: [2.0, 2.0],
+            resolution: 0.0,
+            unresolved: vec![false; r.n_components],
             backend_version: "spy".into(),
         })
     }

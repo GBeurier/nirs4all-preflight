@@ -827,7 +827,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.labels_a.len() > 10_000_000
             || ka.checked_mul(kb).is_none_or(|cells| cells > 10_000_000)
         {
-            return Err(ProviderError("JACCARD_SHAPE_OR_WORK_BUDGET".into()));
+            return Err(ProviderError::unsupported("JACCARD_SHAPE_OR_WORK_BUDGET"));
         }
         let mut jaccard = vec![f64::NAN; ka * kb];
         let mut inter = vec![0i64; ka * kb];
@@ -876,7 +876,9 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.cost.iter().any(|row| row.len() != cols)
             || (rows as f64) * (cols as f64) * (rows.min(cols) as f64) > 1e8
         {
-            return Err(ProviderError("ASSIGNMENT_SHAPE_OR_WORK_BUDGET".into()));
+            return Err(ProviderError::unsupported(
+                "ASSIGNMENT_SHAPE_OR_WORK_BUDGET",
+            ));
         }
         let mut cost: Vec<f64> = r.cost.iter().flatten().copied().collect();
         let view = MatrixView::new(&mut cost, rows, cols);
@@ -907,7 +909,7 @@ impl MethodsProvider for NativeMethodsProvider {
             .checked_mul(r.n_permutations)
             .is_none_or(|v| v > 10_000_000)
         {
-            return Err(ProviderError("PERMUTATION_WORK_BUDGET".into()));
+            return Err(ProviderError::unsupported("PERMUTATION_WORK_BUDGET"));
         }
         let mut out = vec![0i64; r.n * r.n_permutations];
         // SAFETY: out holds n * n_permutations elements.
@@ -936,7 +938,9 @@ impl MethodsProvider for NativeMethodsProvider {
         let d = r.mean.len();
         let (mut cov, rows, cols) = flatten(&r.covariance)?;
         if rows != d || cols != d || r.n_samples.checked_mul(d).is_none_or(|v| v > 10_000_000) {
-            return Err(ProviderError("MULTIVARIATE_NORMAL_SHAPE_OR_BUDGET".into()));
+            return Err(ProviderError::unsupported(
+                "MULTIVARIATE_NORMAL_SHAPE_OR_BUDGET",
+            ));
         }
         let view = MatrixView::new(&mut cov, d, d);
         let mut out = vec![0.; r.n_samples * d];

@@ -119,9 +119,10 @@ fn push_unavailable(report: &mut QualificationReport, id: &str, source_id: &str,
     let mut metric = Metric::unavailable(id, f.0, &f.1, Some(source_id), None);
     metric.view_id = VIEW.into();
     if f.1 == NUMERICAL_DOMAIN_EXCEEDED {
-        metric
-            .parameters
-            .insert("numerical_domain".into(), json!(DIFFERENCE_NUMERICAL_DOMAIN));
+        metric.parameters.insert(
+            "numerical_domain".into(),
+            json!(DIFFERENCE_NUMERICAL_DOMAIN),
+        );
     }
     report.metrics.push(metric);
 }
@@ -688,9 +689,10 @@ fn computed(id: &str, value: Value, source_id: &str, n: usize) -> Metric {
     let mut metric = Metric::computed(id, value, Some(source_id), None);
     metric.view_id = VIEW.into();
     metric.denominators.insert("n_eligible_samples".into(), n);
-    metric
-        .parameters
-        .insert("numerical_domain".into(), json!(DIFFERENCE_NUMERICAL_DOMAIN));
+    metric.parameters.insert(
+        "numerical_domain".into(),
+        json!(DIFFERENCE_NUMERICAL_DOMAIN),
+    );
     metric
 }
 

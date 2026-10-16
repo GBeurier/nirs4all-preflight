@@ -157,13 +157,13 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
         vec![1.0, 2.0, spread * (1.0 + f64::EPSILON), 3.0],
     ] {
         let refused = provider.hdbscan(&column(&values));
-        assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
+        assert_eq!(refused.unwrap_err().reason, NUMERICAL_DOMAIN_EXCEEDED);
     }
     let refused = provider.linear_sum_assignment(&LinearAssignmentRequest {
         cost: vec![vec![-1e20, 1e20], vec![1.0, 0.0]],
         maximize: false,
     });
-    assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
+    assert_eq!(refused.unwrap_err().reason, NUMERICAL_DOMAIN_EXCEEDED);
     let ari = provider
         .adjusted_rand_index(&AdjustedRandRequest {
             labels_a: vec![0, 0, 1, 2],
@@ -632,7 +632,7 @@ fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
                 matrix: vec![row],
             })
             .unwrap_err();
-        assert_eq!(err.0, NUMERICAL_DOMAIN_EXCEEDED);
+        assert_eq!(err.reason, NUMERICAL_DOMAIN_EXCEEDED);
     }
 }
 
@@ -712,24 +712,18 @@ fn native_snv_rounding_residue_is_not_reported_as_structure() {
         vec![1., 2., 3., 4., 5.],
     );
     let report = analyze(&input, &provider);
-    for id in [
-        "structure.snv_sensitivity",
-        "structure.snv_effective_dimension",
-    ] {
-        let m = metric(&report, id);
-        assert_eq!(m.status_wire(), "undefined", "{id}");
-        assert!(m.value.is_none());
-        assert_eq!(
-            m.reason_code.as_deref(),
-            Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"),
-            "{id}"
-        );
-        let rms = m.parameters["snv_rms_band_deviation"].as_f64().unwrap();
-        let threshold = m.parameters["numerical_resolution_threshold"]
-            .as_f64()
-            .unwrap();
-        assert!(rms <= threshold && threshold < 1e-12);
-    }
+    // The SNV rows differ only by rounding residue, so some entries are
+    // ~1e-17 next to entries ~1.4: with Methods ABI 2.20 the SNV-view PCA
+    // refuses this matrix (max/min nonzero |x| > 2^32) before computing. The
+    // residue is never reported as structure.
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert_eq!(m.status_wire(), "unsupported");
+    assert!(m.value.is_none());
+    assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
+    assert!(!report
+        .metrics
+        .iter()
+        .any(|m| m.metric_id == "structure.snv_effective_dimension"));
     assert_eq!(
         metric(&report, "structure.effective_dimension").status_wire(),
         "computed"
@@ -1006,9 +1000,10 @@ fn native_local_contrast_is_computed_on_rank_deficient_spectra() {
     let Some(provider) = native() else {
         return;
     };
-    // Rank 2 (columns affine in i and i^2): the PCA scores carry components
-    // around 1e-16 next to values around 10. The neighbours have no spread
-    // bound, so the local contrast is computed (lead decision).
+    // Rank 2 (columns affine in i and i^2): the components beyond the rank
+    // are below Methods' PCA resolution and are dropped (k_resolved = 2), so
+    // the scores carry no rounding-level column and the local contrast is
+    // computed.
     let ids = ["a", "b", "c", "d", "e", "f"];
     let mut input = input_with(
         ids.iter()
@@ -1048,16 +1043,19 @@ fn native_local_contrast_is_computed_on_rank_deficient_spectra() {
         .clone()
         .unwrap();
     let rows = scores["scores"].as_array().unwrap();
-    assert!(rows.iter().any(|r| r
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|v| v.as_f64().unwrap().abs() < 1e-12 && v.as_f64().unwrap() != 0.0)));
+    assert_eq!(
+        metric(&report, "structure.pca_scores").parameters["k_resolved"],
+        2
+    );
+    assert!(rows.iter().all(|r| r.as_array().unwrap().len() == 2));
     let m = metric(&report, "local.global_contrast");
     assert_eq!(m.status_wire(), "computed");
     assert_eq!(
         m.parameters["numerical_domain"],
         NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+    );
+}
+
 /// Rank-2 spectra (24 samples x 40 wavelengths around 10, two smooth bases):
 /// the canonical PCA asks for 10 components, 8 of which are rounding noise
 /// below Methods' resolution. They are dropped before any downstream use, so

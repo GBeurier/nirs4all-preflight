@@ -603,7 +603,7 @@ impl MethodsProvider for PartlyResolvedPca {
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
 }
 
@@ -833,13 +833,13 @@ impl MethodsProvider for PairOracle {
         vec![]
     }
     fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
     fn repeatability(
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
     fn tolerance_pairs(
         &self,
@@ -1323,6 +1323,8 @@ impl MethodsProvider for SnvTrace {
             eigenvalues: vec![trace / req.n_components as f64; req.n_components],
             scores: vec![vec![0.0; req.n_components]; req.matrix.len()],
             full_moments: [trace, trace * trace],
+            resolution: 0.0,
+            unresolved: vec![false; req.n_components],
             backend_version: "fake".into(),
         })
     }
@@ -1330,7 +1332,7 @@ impl MethodsProvider for SnvTrace {
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
     fn snv(&self, req: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
         // Each sample of input() is its own group: output rows follow groups.

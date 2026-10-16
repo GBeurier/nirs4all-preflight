@@ -61,7 +61,7 @@ impl MethodsProvider for Mock {
     fn hdbscan(&self, r: &HdbscanRequest) -> Result<HdbscanDiagnostics, ProviderError> {
         self.hdbscan_calls.set(self.hdbscan_calls.get() + 1);
         if self.outside_domain {
-            return Err(ProviderError(NUMERICAL_DOMAIN_EXCEEDED.into()));
+            return Err(ProviderError::unsupported(NUMERICAL_DOMAIN_EXCEEDED));
         }
         let labels: Vec<i64> = r.matrix.iter().map(|s| i64::from(s[0] > 0.0)).collect();
         let n = labels.len();
@@ -502,6 +502,9 @@ fn numerical_domain_refusal_is_reported() {
         partition.reason_code.as_deref(),
         Some(NUMERICAL_DOMAIN_EXCEEDED)
     );
-    assert_eq!(partition.parameters["numerical_domain"], DIFFERENCE_NUMERICAL_DOMAIN);
+    assert_eq!(
+        partition.parameters["numerical_domain"],
+        DIFFERENCE_NUMERICAL_DOMAIN
+    );
     assert!(partition.value.is_none());
 }

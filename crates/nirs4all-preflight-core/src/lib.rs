@@ -2284,7 +2284,6 @@ pub struct PcaMonitorDiagnostics {
     pub backend_version: String,
 }
 
-
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -2326,28 +2325,32 @@ pub trait MethodsProvider {
         &self,
         _request: &ClusterJaccardRequest,
     ) -> Result<ClusterJaccardDiagnostics, ProviderError> {
-        Err(ProviderError(
-            "CLUSTER_JACCARD_PROVIDER_NOT_CONFIGURED".into(),
+        Err(ProviderError::unsupported(
+            "CLUSTER_JACCARD_PROVIDER_NOT_CONFIGURED",
         ))
     }
     fn linear_sum_assignment(
         &self,
         _request: &LinearAssignmentRequest,
     ) -> Result<LinearAssignmentDiagnostics, ProviderError> {
-        Err(ProviderError("ASSIGNMENT_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "ASSIGNMENT_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn random_permutations(
         &self,
         _request: &RandomPermutationsRequest,
     ) -> Result<RandomPermutationsDiagnostics, ProviderError> {
-        Err(ProviderError("PERMUTATION_PROVIDER_NOT_CONFIGURED".into()))
+        Err(ProviderError::unsupported(
+            "PERMUTATION_PROVIDER_NOT_CONFIGURED",
+        ))
     }
     fn multivariate_normal(
         &self,
         _request: &MultivariateNormalRequest,
     ) -> Result<MultivariateNormalDiagnostics, ProviderError> {
-        Err(ProviderError(
-            "MULTIVARIATE_NORMAL_PROVIDER_NOT_CONFIGURED".into(),
+        Err(ProviderError::unsupported(
+            "MULTIVARIATE_NORMAL_PROVIDER_NOT_CONFIGURED",
         ))
     }
     fn snv(&self, _request: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {

@@ -63,6 +63,8 @@ impl MethodsProvider for Scripted {
             eigenvalues: vec![1.0; k],
             scores: r.matrix.iter().map(|row| row[..k].to_vec()).collect(),
             full_moments: [k as f64, k as f64],
+            resolution: 0.0,
+            unresolved: vec![false; k],
             backend_version: "scripted".into(),
         })
     }
@@ -1091,12 +1093,13 @@ fn provider_failures_are_errors_unless_a_declared_limit() {
 }
 
 #[test]
-fn native_numerical_failure_is_reported_as_error() {
+fn native_pca_domain_refusal_propagates_to_confounding() {
     let Some(provider) = native() else {
         return;
     };
-    // +-1.7e308 spectra overflow the centred PCA: Methods returns
-    // N4M_ERR_NUMERICAL_FAILURE. The WASM test asserts the same status.
+    // +-1.7e308 spectra lie outside the PCA domain of Methods ABI 2.20
+    // ([2^-128, 2^128]): the canonical PCA refuses before computing and the
+    // confounding metrics inherit the refusal. The WASM test asserts the same.
     let mut input = crossed(6, false);
     for (i, row) in input.sources[0].x.iter_mut().enumerate() {
         for (j, v) in row.iter_mut().enumerate() {
@@ -1105,10 +1108,10 @@ fn native_numerical_failure_is_reported_as_error() {
     }
     let report = analyze(&input, &provider);
     let pca = find(&report, "structure.pca", None);
-    assert!(matches!(pca.status, Availability::Error));
-    assert_eq!(reason(pca), Some("METHODS_NUMERICAL_FAILURE"));
+    assert!(matches!(pca.status, Availability::Unsupported));
+    assert_eq!(reason(pca), Some("NUMERICAL_DOMAIN_EXCEEDED"));
     let partition = find(&report, "confounding.variance_partition", None);
-    assert!(matches!(partition.status, Availability::Error));
+    assert!(partition.value.is_none());
 }
 
 #[test]
@@ -1436,7 +1439,7 @@ fn native_engine_partition_is_scale_invariant_inside_the_domain() {
         }
         input
     };
-    for k in [-200, -100, 100, 200] {
+    for k in [-120, -100, 100, 120] {
         let report = analyze(&scaled(k), &provider);
         let (status, value, tests) = summary(&report);
         match status {
@@ -1460,10 +1463,10 @@ fn native_engine_partition_is_scale_invariant_inside_the_domain() {
             other => panic!("k={k}: unexpected status {other:?}"),
         }
     }
-    // Spectra at 2^-258 / 2^-262 give unit coordinates below 2^-256. Above
-    // 2^256 the canonical PCA (n4m_preflight_pca_compute, outside this
-    // protocol) fails first (convergence or numerical failure from 2^256);
-    // that side of D is covered at provider level by the dyadic test.
+    // Inside the canonical PCA domain ([2^-128, 2^128], Methods ABI 2.20).
+    // Spectra at 2^-258 / 2^-262 are refused (the canonical PCA refuses
+    // first, with the same reason); the PERMANOVA side of D is covered at
+    // provider level by the dyadic test.
     for k in [-258, -262] {
         let report = analyze(&scaled(k), &provider);
         let p = find(&report, "confounding.variance_partition", None);
