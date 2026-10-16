@@ -400,6 +400,8 @@ pub struct Options {
     /// Quasi-identity runs only with a declared tolerance; none is invented.
     #[serde(default)]
     pub quasi_duplicates: Option<QuasiDuplicateOptions>,
+    #[serde(default)]
+    pub domain_shift: DomainShiftOptions,
 }
 
 impl Default for Options {
@@ -414,8 +416,34 @@ impl Default for Options {
             noise_proxy: NoiseProxyOptions::default(),
             snv_sensitivity: true,
             quasi_duplicates: None,
+            domain_shift: DomainShiftOptions::default(),
         }
     }
+}
+
+/// Domain-shift profile. Retained-test X is read only when the external
+/// domain audit is declared; retained-test Y is never read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DomainShiftOptions {
+    /// Compare development X with retained-test X (no fit on test rows).
+    #[serde(default)]
+    pub external_domain_audit: bool,
+    /// Declared intended use of the calibration across domain factors.
+    #[serde(default)]
+    pub intended_use: Option<IntendedUse>,
+}
+
+/// Categorical domain factors whose unseen levels the calibration must
+/// serve (`new_levels`), or only the levels present in development
+/// (`seen_levels`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntendedUse {
+    #[serde(default)]
+    pub new_levels: Vec<String>,
+    #[serde(default)]
+    pub seen_levels: Vec<String>,
 }
 fn default_true() -> bool {
     true
@@ -821,6 +849,28 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
         }
     }
     validate_metadata(input, &by_id, &mut out);
+    if let Some(intended) = &input.options.domain_shift.intended_use {
+        let factors = input.metadata_factors();
+        let known: BTreeSet<&str> = factors
+            .iter()
+            .filter(|f| f.kind == MetadataKind::Categorical)
+            .map(|f| f.name)
+            .collect();
+        let mut seen = BTreeSet::new();
+        if intended
+            .new_levels
+            .iter()
+            .chain(&intended.seen_levels)
+            .any(|f| !known.contains(f.as_str()) || !seen.insert(f.as_str()))
+        {
+            out.add(
+                "INVALID_INTENDED_USE",
+                "options.domain_shift.intended_use",
+                "Intended use must name each declared categorical domain factor at most once",
+                true,
+            );
+        }
+    }
     // Partitions are checked on whole linked components, built on the original
     // rows before any aggregation or exclusion. Prediction rows take no role
     // but stay in the union as identity bridges. Declared independence groups
@@ -1244,6 +1294,12 @@ pub enum ProviderErrorKind {
     Numerical,
     Internal,
 }
+
+/// Supported numerical domain of the Methods kernels whose statistics depend
+/// on differences between input values (lead rule 15, Methods
+/// `N4M_DOMAIN_MAX_SPREAD_LOG2 = 32`), published by the metrics using them.
+pub const DIFFERENCE_NUMERICAL_DOMAIN: &str =
+    "finite values, every nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^32";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1850,6 +1906,97 @@ pub struct PermdispDiagnostics {
     pub backend_version: String,
 }
 
+/// Energy distance between groups of rows (Methods ABI 2.20
+/// `n4m_stats_energy_distance`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnergyDistanceRequest {
+    /// One row per analysis unit.
+    pub matrix: Vec<Vec<f64>>,
+    /// Group of each row, in `0..n_groups`; every group is nonempty.
+    pub group_codes: Vec<i64>,
+    pub n_groups: usize,
+    pub n_permutations: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnergyDistanceDiagnostics {
+    /// Energy distances E = 2M_ab - M_aa - M_bb (zero diagonal), unit of X.
+    pub energy: Vec<Vec<f64>>,
+    /// Absolute rounding bounds of the energies.
+    pub energy_bounds: Vec<Vec<f64>>,
+    /// Mean Euclidean distances over all ordered pairs (V-statistic).
+    pub mean_distances: Vec<Vec<f64>>,
+    /// sum_{a<b} n_a n_b / (n_a + n_b) energy[a][b], and its bound.
+    pub statistic: f64,
+    pub statistic_bound: f64,
+    /// log10(n! / prod n_a!).
+    pub log10_distinct_permutations: f64,
+    /// (1+b)/(1+B) under the declared tie rule T_perm >= T - sqrt(eps)|T|.
+    pub p_value: Option<f64>,
+    /// Counts every numerically undecidable draw as a tie.
+    pub p_value_conservative: Option<f64>,
+    pub n_at_least_observed: usize,
+    pub n_permutations_executed: usize,
+    /// Draws within twice the rounding estimate of the tie threshold.
+    pub n_undecidable: usize,
+    pub backend_version: String,
+}
+
+/// PCA monitoring of rows against a reference PCA (Methods ABI 2.20
+/// `n4m_stats_pca_monitor`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcaMonitorRequest {
+    pub reference: Vec<Vec<f64>>,
+    pub monitored: Vec<Vec<f64>>,
+    /// Requested components; the effective number is the numerical rank.
+    pub max_components: usize,
+    /// Reference row i is evaluated out of fold i mod n_folds.
+    pub n_folds: usize,
+    pub alpha: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcaMonitorDiagnostics {
+    /// Smallest number of components above the eigenvalue resolution in the
+    /// fold and full fits, capped.
+    pub effective_components: usize,
+    /// The effective_components eigenvalues (ddof 1).
+    pub eigenvalues: Vec<f64>,
+    /// Out-of-fold reference statistics; T² is None when no component.
+    pub reference_t2: Vec<Option<f64>>,
+    pub reference_q: Vec<f64>,
+    pub monitored_t2: Vec<Option<f64>>,
+    pub monitored_q: Vec<f64>,
+    /// Type-7 (1 - alpha) quantiles of the out-of-fold reference values.
+    pub t2_limit: Option<f64>,
+    pub q_limit: f64,
+    /// Conservative relative tolerance tau = 16 m eps cond (an estimate, not
+    /// a proven bound), the condition lambda_1 / lambda_k, the Q tolerance
+    /// scale S (Q tolerance = tau S) and the eigenvalue resolution.
+    pub tolerance: f64,
+    pub condition: f64,
+    pub q_tolerance_scale: f64,
+    pub eigenvalue_resolution: f64,
+    /// Monitored rows above a limit by more than the tolerance, and rows
+    /// within the tolerance of it (numerically undetermined).
+    pub n_beyond_t2: usize,
+    pub n_beyond_q: usize,
+    pub n_beyond_either: usize,
+    pub n_near_t2: usize,
+    pub n_near_q: usize,
+    pub n_near_either: usize,
+    pub reference_total_variance: f64,
+    pub monitored_total_variance: Option<f64>,
+    pub centroid_distance: f64,
+    pub centroid_subspace_distance: f64,
+    pub centroid_residual_distance: f64,
+    pub centroid_t2: Option<f64>,
+    pub retained_fraction: Option<f64>,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -1965,10 +2112,26 @@ pub trait MethodsProvider {
             "FREEDMAN_LANE_PROVIDER_NOT_CONFIGURED",
         ))
     }
+    fn energy_distance(
+        &self,
+        _request: &EnergyDistanceRequest,
+    ) -> Result<EnergyDistanceDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "ENERGY_DISTANCE_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+    fn pca_monitor(
+        &self,
+        _request: &PcaMonitorRequest,
+    ) -> Result<PcaMonitorDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "PCA_MONITOR_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 19] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 21] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -1988,6 +2151,8 @@ pub const METHODS_CAPABILITY_IDS: [&str; 19] = [
     "methods.permanova",
     "methods.permdisp",
     "methods.permanova_freedman_lane",
+    "methods.energy_distance",
+    "methods.pca_monitor",
 ];
 
 pub struct UnavailableMethodsProvider;

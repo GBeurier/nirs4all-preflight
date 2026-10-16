@@ -47,7 +47,10 @@ enum Reply<T> {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WireError {
-    Methods { methods_status: i32, message: String },
+    Methods {
+        methods_status: i32,
+        message: String,
+    },
     Adapter(ProviderError),
 }
 impl MethodsProvider for CallbackProvider<'_> {
@@ -142,6 +145,15 @@ impl MethodsProvider for CallbackProvider<'_> {
         r: &FreedmanLaneRequest,
     ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
         self.invoke("permanova_freedman_lane", r)
+    }
+    fn energy_distance(
+        &self,
+        r: &EnergyDistanceRequest,
+    ) -> Result<EnergyDistanceDiagnostics, ProviderError> {
+        self.invoke("energy_distance", r)
+    }
+    fn pca_monitor(&self, r: &PcaMonitorRequest) -> Result<PcaMonitorDiagnostics, ProviderError> {
+        self.invoke("pca_monitor", r)
     }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {

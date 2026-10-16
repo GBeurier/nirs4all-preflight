@@ -122,6 +122,35 @@ type Permdisp = unsafe extern "C" fn(
     *mut i64,
     *mut i32,
 ) -> i32;
+type Energy = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    i32,
+    i32,
+    u64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut i64,
+) -> i32;
+type PcaMonitor = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const MatrixView,
+    i32,
+    i32,
+    f64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut i32,
+    *mut i64,
+    *mut f64,
+) -> i32;
 type FreedmanLane = unsafe extern "C" fn(
     *mut c_void,
     *const MatrixView,
@@ -210,6 +239,8 @@ pub struct NativeMethodsProvider {
     permanova_fn: Permanova,
     permdisp_fn: Permdisp,
     freedman_lane_fn: FreedmanLane,
+    energy_fn: Energy,
+    monitor_fn: PcaMonitor,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -299,6 +330,12 @@ impl NativeMethodsProvider {
             let freedman_lane_fn = *library
                 .get::<FreedmanLane>(b"n4m_stats_permanova_freedman_lane\0")
                 .map_err(err)?;
+            let energy_fn = *library
+                .get::<Energy>(b"n4m_stats_energy_distance\0")
+                .map_err(err)?;
+            let monitor_fn = *library
+                .get::<PcaMonitor>(b"n4m_stats_pca_monitor\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -331,6 +368,8 @@ impl NativeMethodsProvider {
                 permanova_fn,
                 permdisp_fn,
                 freedman_lane_fn,
+                energy_fn,
+                monitor_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -1173,6 +1212,149 @@ impl MethodsProvider for NativeMethodsProvider {
             f_numerically_unresolved: out[13] == 1.0,
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn energy_distance(
+        &self,
+        r: &EnergyDistanceRequest,
+    ) -> Result<EnergyDistanceDiagnostics, ProviderError> {
+        let n = r.matrix.len();
+        let p = r.matrix.first().map_or(0, Vec::len);
+        let g = r.n_groups;
+        if r.group_codes.len() != n
+            || g < 2
+            || g > n
+            || r.n_permutations > 1_000_000
+            || r.group_codes.iter().any(|&c| c < 0 || c as usize >= g)
+        {
+            return Err(ProviderError::internal("INVALID_ENERGY_DISTANCE_REQUEST"));
+        }
+        // The Methods budgets, checked here before any allocation (the g x g
+        // outputs included), with checked products.
+        let pairs = n.checked_mul(n - 1).map(|v| v / 2);
+        let within = |v: Option<usize>, limit: usize| v.is_some_and(|v| v <= limit);
+        let work = pairs.and_then(|q| q.checked_mul(p.checked_add(r.n_permutations)? + 1));
+        if !(within(pairs, 20_000_000)
+            && within(n.checked_mul(p), 10_000_000)
+            && within(g.checked_mul(g), 10_000_000)
+            && within(work, 2_500_000_000))
+        {
+            return Err(ProviderError::unsupported("ENERGY_DISTANCE_WORK_BUDGET"));
+        }
+        let (mut x, _, _) = flatten(&r.matrix)?;
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut energy = vec![f64::NAN; g * g];
+        let mut bounds = vec![f64::NAN; g * g];
+        let mut mean = vec![f64::NAN; g * g];
+        let mut out = [f64::NAN; 5];
+        let mut counts = [0i64; 3];
+        // SAFETY: X is an owned n x p buffer, codes hold n elements and the
+        // outputs hold g x g (three), 5 and 3 elements as documented.
+        self.check(unsafe {
+            (self.energy_fn)(
+                self.context,
+                &xv,
+                r.group_codes.as_ptr(),
+                g as i32,
+                r.n_permutations as i32,
+                r.seed,
+                energy.as_mut_ptr(),
+                bounds.as_mut_ptr(),
+                mean.as_mut_ptr(),
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+            )
+        })?;
+        let rows = |v: &[f64]| v.chunks(g).map(<[f64]>::to_vec).collect();
+        Ok(EnergyDistanceDiagnostics {
+            energy: rows(&energy),
+            energy_bounds: rows(&bounds),
+            mean_distances: rows(&mean),
+            statistic: out[0],
+            statistic_bound: out[1],
+            log10_distinct_permutations: out[2],
+            p_value: out[3].is_finite().then_some(out[3]),
+            p_value_conservative: out[4].is_finite().then_some(out[4]),
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            n_undecidable: counts[2].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn pca_monitor(&self, r: &PcaMonitorRequest) -> Result<PcaMonitorDiagnostics, ProviderError> {
+        let (n_r, n_m) = (r.reference.len(), r.monitored.len());
+        let p = r.reference.first().map_or(0, Vec::len);
+        let k = r.max_components;
+        if k == 0 || k > p || r.n_folds < 2 || r.n_folds > n_r || k > i32::MAX as usize {
+            return Err(ProviderError::internal("INVALID_PCA_MONITOR_REQUEST"));
+        }
+        let cells = n_r.checked_add(n_m).and_then(|rows| rows.checked_mul(p));
+        if cells.is_none_or(|c| c > 10_000_000) {
+            return Err(ProviderError::unsupported("PCA_MONITOR_WORK_BUDGET"));
+        }
+        let (mut reference, _, _) = flatten(&r.reference)?;
+        let (mut monitored, _, p_m) = flatten(&r.monitored)?;
+        if p_m != p {
+            return Err(ProviderError::internal("INVALID_PCA_MONITOR_REQUEST"));
+        }
+        let rv = MatrixView::new(&mut reference, n_r, p);
+        let mv = MatrixView::new(&mut monitored, n_m, p);
+        let mut eigen = vec![f64::NAN; k];
+        let (mut rt, mut rq) = (vec![f64::NAN; n_r], vec![f64::NAN; n_r]);
+        let (mut mt, mut mq) = (vec![f64::NAN; n_m], vec![f64::NAN; n_m]);
+        let mut effective = 0i32;
+        let mut counts = [0i64; 6];
+        let mut out = [f64::NAN; 13];
+        // SAFETY: both views own their buffers; outputs hold k, n_r, n_m, 1, 6
+        // and 13 elements as documented.
+        self.check(unsafe {
+            (self.monitor_fn)(
+                self.context,
+                &rv,
+                &mv,
+                k as i32,
+                r.n_folds as i32,
+                r.alpha,
+                eigen.as_mut_ptr(),
+                rt.as_mut_ptr(),
+                rq.as_mut_ptr(),
+                mt.as_mut_ptr(),
+                mq.as_mut_ptr(),
+                &mut effective,
+                counts.as_mut_ptr(),
+                out.as_mut_ptr(),
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        let effective = effective.max(0) as usize;
+        eigen.truncate(effective);
+        Ok(PcaMonitorDiagnostics {
+            effective_components: effective,
+            eigenvalues: eigen,
+            reference_t2: rt.into_iter().map(finite).collect(),
+            reference_q: rq,
+            monitored_t2: mt.into_iter().map(finite).collect(),
+            monitored_q: mq,
+            t2_limit: finite(out[0]),
+            q_limit: out[1],
+            tolerance: out[9],
+            condition: out[10],
+            q_tolerance_scale: out[11],
+            eigenvalue_resolution: out[12],
+            n_beyond_t2: counts[0].max(0) as usize,
+            n_beyond_q: counts[1].max(0) as usize,
+            n_beyond_either: counts[2].max(0) as usize,
+            n_near_t2: counts[3].max(0) as usize,
+            n_near_q: counts[4].max(0) as usize,
+            n_near_either: counts[5].max(0) as usize,
+            reference_total_variance: out[2],
+            monitored_total_variance: finite(out[3]),
+            centroid_distance: out[4],
+            centroid_subspace_distance: out[5],
+            centroid_residual_distance: out[6],
+            centroid_t2: finite(out[7]),
+            retained_fraction: finite(out[8]),
             backend_version: self.version.clone(),
         })
     }

@@ -52,7 +52,7 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane', 'energy_distance', 'pca_monitor'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
@@ -153,6 +153,23 @@ export async function createQualificationRuntime(options = {}) {
         const x = matrix(request.matrix);
         const output = methods.statsPermdisp(x, request.group_codes, request.n_permutations, BigInt(request.seed));
         result = { distance_binary_exponent: output.distanceExponent, distances: Array.from(output.distances), group_mean_distances: Array.from(output.groupMeanDistances), f: nullable(output.f), df1: output.df1, df2: output.df2, n_groups: output.nGroups, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'energy_distance': {
+        // Same budgets as the native adapter, before any WASM allocation.
+        const n = request.matrix.length, g = request.n_groups;
+        const pairs = n * (n - 1) / 2;
+        if (pairs > 20_000_000 || g * g > 10_000_000 || pairs * ((request.matrix[0]?.length ?? 0) + request.n_permutations + 1) > 2.5e9) throw limit('ENERGY_DISTANCE_WORK_BUDGET');
+        const output = methods.statsEnergyDistance(matrix(request.matrix), request.group_codes, g, request.n_permutations, BigInt(request.seed));
+        result = { energy: nested(output.energy, g), energy_bounds: nested(output.energyBounds, g), mean_distances: nested(output.meanDistances, g), statistic: output.statistic, statistic_bound: output.statisticBound, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), p_value_conservative: nullable(output.pValueConservative), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, n_undecidable: output.nUndecidable, backend_version };
+        break;
+      }
+      case 'pca_monitor': {
+        const reference = matrix(request.reference), monitored = matrix(request.monitored);
+        if ((reference.rows + monitored.rows) * reference.cols > 10_000_000) throw limit('PCA_MONITOR_WORK_BUDGET');
+        const output = methods.statsPcaMonitor(reference, monitored, request.max_components, request.n_folds, request.alpha);
+        const k = output.effectiveComponents;
+        result = { effective_components: k, eigenvalues: Array.from(output.eigenvalues.slice(0, k)), reference_t2: Array.from(output.referenceT2, nullable), reference_q: Array.from(output.referenceQ), monitored_t2: Array.from(output.monitoredT2, nullable), monitored_q: Array.from(output.monitoredQ), t2_limit: nullable(output.t2Limit), q_limit: output.qLimit, tolerance: output.tolerance, condition: output.condition, q_tolerance_scale: output.qToleranceScale, eigenvalue_resolution: output.eigenvalueResolution, n_beyond_t2: output.nBeyondT2, n_beyond_q: output.nBeyondQ, n_beyond_either: output.nBeyondEither, n_near_t2: output.nNearT2, n_near_q: output.nNearQ, n_near_either: output.nNearEither, reference_total_variance: output.referenceTotalVariance, monitored_total_variance: nullable(output.monitoredTotalVariance), centroid_distance: output.centroidDistance, centroid_subspace_distance: output.centroidSubspaceDistance, centroid_residual_distance: output.centroidResidualDistance, centroid_t2: nullable(output.centroidT2), retained_fraction: nullable(output.retainedFraction), backend_version };
         break;
       }
       case 'holm_adjust': {
