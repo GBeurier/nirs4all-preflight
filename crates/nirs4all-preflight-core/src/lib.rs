@@ -1222,8 +1222,9 @@ pub trait MethodsProvider {
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Start of the Methods error message for that refusal (status UNSUPPORTED).
 pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
-/// Supported numerical domain of the Methods clustering kernels (rule 13).
-pub const NUMERICAL_DOMAIN: &str = "finite values; every nonzero |x| in [2^-256, 2^256]; max/min nonzero |x| <= 2^64 per input array; refused as unsupported (NUMERICAL_DOMAIN_EXCEEDED) outside";
+/// Supported numerical domain of the Methods clustering kernels (rules 13/15,
+/// Methods `N4M_DOMAIN_MAX_MAGNITUDE_LOG2` and `N4M_DOMAIN_MAX_SPREAD_LOG2`).
+pub const NUMERICAL_DOMAIN: &str = "finite values; every nonzero |x| in [2^-256, 2^256]; max/min nonzero |x| <= 2^32 per input array; refused as unsupported (NUMERICAL_DOMAIN_EXCEEDED) outside";
 
 /// Methods operations a complete provider exposes, in report order.
 pub const METHODS_CAPABILITY_IDS: [&str; 16] = [

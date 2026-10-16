@@ -104,19 +104,23 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
         .enumerate()
         .all(|(i, &l)| l == result.labels[i % 2]));
     assert!(result.tree[0].parent.is_none() && result.tree[0].birth_distance.is_none());
-    // Rule 13: Methods refuses inputs outside its numerical domain; the
-    // adapter reports the reason instead of a status number.
-    for matrix in [
-        vec![vec![0.0], vec![1e155], vec![2e155], vec![3e155]],
-        vec![vec![1.0], vec![2.0], vec![2f64.powi(65)], vec![3.0]],
+    // Rules 13/15: Methods refuses inputs outside its numerical domain; the
+    // adapter reports the reason instead of a status number. Spread edge:
+    // max/min nonzero |x| = 2^32 is accepted, one ulp more is refused.
+    let spread = 2f64.powi(32);
+    let column = |values: &[f64]| HdbscanRequest {
+        matrix: values.iter().map(|&v| vec![v]).collect(),
+        min_cluster_size: 2,
+        min_samples: 2,
+        selection: ClusterSelection::Eom,
+        allow_single_cluster: false,
+    };
+    assert!(provider.hdbscan(&column(&[1.0, 2.0, spread, 3.0])).is_ok());
+    for values in [
+        vec![0.0, 1e155, 2e155, 3e155],
+        vec![1.0, 2.0, spread * (1.0 + f64::EPSILON), 3.0],
     ] {
-        let refused = provider.hdbscan(&HdbscanRequest {
-            matrix,
-            min_cluster_size: 2,
-            min_samples: 2,
-            selection: ClusterSelection::Eom,
-            allow_single_cluster: false,
-        });
+        let refused = provider.hdbscan(&column(&values));
         assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
     }
     let refused = provider.linear_sum_assignment(&LinearAssignmentRequest {
