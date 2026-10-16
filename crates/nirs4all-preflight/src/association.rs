@@ -19,11 +19,7 @@ const DESCRIPTIVE_ID: &str = "association.metadata_target";
 const TEST_ID: &str = "association.metadata_target_test";
 const FAMILY_ID: &str = "association.metadata_target_family";
 
-/// Per-test seed from the shared derivation with this protocol's domain.
-pub(crate) fn derive_seed(root: u64, target_id: &str, metadata: &str) -> u64 {
-    nirs4all_preflight_core::derive_seed(root, &seed_domain(target_id, metadata))
-}
-
+/// Seed-derivation domain of one association test (shared `derive_seed`).
 fn seed_domain(target_id: &str, metadata: &str) -> String {
     format!("nirs4all-preflight\0methods\0{PROTOCOL}\0{target_id}\0{metadata}")
 }
@@ -327,7 +323,7 @@ impl Pair<'_> {
             reduced_model: None,
             draw_method: draw_method.into(),
             rng_algorithm: "methods_pcg64_numpy_seedsequence_permutation".into(),
-            seed: derive_seed(self.input.options.seed, target_id, metadata),
+            seed: derive_seed(self.input.options.seed, &seed_domain(target_id, metadata)),
             seed_derivation: format!(
                 "splitmix64_finalizer(options.seed XOR fnv1a64({:?}))",
                 seed_domain(target_id, metadata)
@@ -523,7 +519,10 @@ fn analyze_pair(
         pair.unavailable(report, status, reason, rows.len());
         return None;
     }
-    let seed = derive_seed(input.options.seed, &target.target_id, factor.name);
+    let seed = derive_seed(
+        input.options.seed,
+        &seed_domain(&target.target_id, factor.name),
+    );
     let descriptive = match design {
         Design::CategoricalMetadata => describe_categorical(&pair, &rows, seed, provider),
         Design::MetadataByClass => describe_by_class(&pair, &rows, seed, provider),

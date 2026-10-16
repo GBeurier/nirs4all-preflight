@@ -1,7 +1,19 @@
 # Changelog
 
 ## 0.1.0 — unreleased
-- Domain shift becomes available but unqualified (`domain_shift`, protocol `domain_shift.v2`, PF-06 second half). New metrics: `domain_shift.design`, `domain_shift.distribution_distance`, `domain_shift.center_shift`, `domain_shift.dispersion`, `domain_shift.coverage`, `domain_shift.target_change`, `domain_shift.energy_test` (with a `PermutationPlan`) and `domain_shift.test_family`; the estimand is the distribution of independence-unit mean spectra, with compositions published and the test refused for unequal unit compositions. Findings: `domain_shift.detected.v1`, `domain_shift.aliased_domains.v1`, `domain_shift.external_domain_audit.v1`, all with confidence `unknown`. New optional input `options.domain_shift` (`external_domain_audit`, `intended_use.new_levels` / `seen_levels`, categorical factors only) and blocking validation code `INVALID_INTENDED_USE`. Retained-test X is read only under the declared audit, which refuses components spanning partitions and sources without development units; retained-test Y is never read. Inputs outside the supported numerical domain (nonzero |x| in [2^-256, 2^256], spread ≤ 2^32) give `unsupported` metrics with `NUMERICAL_DOMAIN_EXCEEDED`. Energies carry conservative rounding estimates; the energy test p-value follows the declared relative tie rule, with undecidable draws and a conservative p-value published apart; coverage counts separate units beyond a limit by more than a conservative tolerance from units within it (never certified). Requires Methods ABI 2.20 (`n4m_stats_energy_distance`, `n4m_stats_pca_monitor`). The example `examples/domain_shift.json` exercises the protocol.
+
+Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require Methods 1.3.7 (ABI 2.20; the native and WASM providers refuse older libraries with `METHODS_ABI_2_20_REQUIRED`) and, for the validation probe, dag-ml 0.3.42 (`nested_selection`; until it is published, local builds use the override `.cargo/dag-ml-local.toml`, see README). Every engine capability — `noise_proxy`, `snv_sensitivity`, `quasi_duplicates`, `duplicate_reference_conflicts`, `metadata_association_tests`, `clustering`, `confounding`, `domain_shift`, `repeatability_uncertainty` and `validation_probe` — is available but unqualified (exploratory); none is `PROTOCOL_NOT_IMPLEMENTED`.
+
+### Shared contracts
+
+- One structured provider error, `ProviderError { kind, reason, detail? }` (kinds `unsupported`, `numerical`, `internal`), with one mapping of Methods failures, `ProviderError::from_methods_error(status, message)`, used by the native adapter (status and `n4m_context_last_error`) and by the WASM bridge (the worker forwards the `N4mError` status and message unchanged). A Methods `N4M_ERR_UNSUPPORTED` whose message contains `METHODS_DOMAIN_MESSAGE` ("input outside the supported numerical domain") becomes `unsupported` with reason `NUMERICAL_DOMAIN_EXCEEDED`; numerical and convergence failures are `error`.
+- Supported numerical domain (lead rules 13 and 15, Methods `N4M_DOMAIN_MAX_MAGNITUDE_LOG2 = 256`, `N4M_DOMAIN_MAX_SPREAD_LOG2 = 32`): finite values, every nonzero |x| in [2^-256, 2^256] and, where a statistic depends on differences, max/min nonzero |x| <= 2^32. Summaries, nearest neighbours and group means keep the magnitude bound only, Holm/BH p-values accept nonzero p >= 2^-1022, labels are not checked, and the canonical PCA uses [2^-128, 2^128]. Every metric that uses a Methods kernel publishes its domain in `numerical_domain`.
+- One seed derivation (`derive_seed`: SplitMix64 finalizer of the root seed XOR FNV-1a of the domain string), one identity-component builder (`independence_components`, `IdentityKey`) and one versioned `PermutationPlan` shared by the association, confounding and domain-shift tests.
+- Provider errors are structured (`ProviderError { kind, reason }`, kinds `unsupported`, `numerical`, `internal`). Only absent capabilities and declared limits are reported `unsupported`; numerical and internal provider failures are now `error`, with stable `METHODS_<STATUS>` reasons identical in the native and WASM adapters (previously every failure was `unsupported`, with `METHODS_STATUS_<n>` natively and `METHODS_CALLBACK_FAILED` in WASM). The WASM callback replies `{ok}` or `{provider_error}`.
+
+### Integrity, noise proxy, SNV sensitivity and quasi-duplicates
+
+- `noise_proxy`, `snv_sensitivity` and `quasi_duplicates` change from `PROTOCOL_NOT_IMPLEMENTED` to available but unqualified (exploratory). New metrics: `measurement.noise_proxy`, `measurement.noise_proxy_pooled`, `structure.snv_pca_eigenvalues`, `structure.snv_effective_dimension`, `structure.snv_sensitivity`, `integrity.quasi_duplicate_pairs` and `integrity.cross_partition_quasi_duplicate_pairs`. New optional inputs: `options.noise_proxy`, `options.snv_sensitivity` and `options.quasi_duplicates` (the tolerance has no default). Requires Methods ABI 2.19 (`n4m_preflight_noise_proxy_compute`, `n4m_preflight_pairs_within_tolerance`) and the existing Methods SNV transform. Input schema version 1 gains only optional fields.
 - Spectral duplicates with incompatible references (spec §5.5, exploratory, unqualified). The new capability `duplicate_reference_conflicts` and the new optional input `options.reference_contradiction_tolerances` map a target ID to `absolute`/`relative` (continuous) or `different_class` (categorical). There is no default. New metrics `reference.exact_duplicate_conflicts` and `reference.quasi_duplicate_conflicts` (per source × target) compare exact, consistent development references of spectrally identical or quasi-identical sample pairs. Each comparison counts once per sample pair. They report counts, rates, affected samples and observations and a bounded listing. Retained-test Y is never read. New finding `reference.verify_reference_or_pairing.v1` (confidence unknown). New reason codes: `REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED` and `SUSPECT_PAIR_BUDGET_EXCEEDED`. New blocking validation codes: `UNKNOWN_CONTRADICTION_TARGET`, `CONTRADICTION_TOLERANCE_KIND_MISMATCH` and `INVALID_CONTRADICTION_TOLERANCE`.
 - Fixes from the independent review of the noise-proxy, SNV-sensitivity and tolerance-pair block (requires the Methods fixes of `fix/preflight-numerics`, ABI 2.20):
   - `options.noise_proxy` fields are u64 and validated without overflow. `polyorder` near the integer maximum used to panic on CPU and wrap to a valid order in WASM. The window is bounded to odd values in [3, 1001] and the polyorder to at most min(10, window − 2), the verified Savitzky–Golay domain.
@@ -14,8 +26,48 @@
 - Supported numerical domain (lead rules 13/15): spectra with a nonzero |x| outside [2^-256, 2^256], or with a max/min nonzero |x| above 2^32, are refused explicitly by the Methods SNV, noise-proxy and tolerance-pair kernels. The dependent metrics are `unsupported` with the new reason `NUMERICAL_DOMAIN_EXCEEDED` and publish the domain in `numerical_domain`. Inside the domain, the noise proxy keeps exact second differences with double-double weights; its residual precision is stated honestly as `2 W eps sum|c_k| max|w_k|`. The same refusal applies to the Methods nearest-neighbour and local-contrast kernels. The summary kernel refuses only magnitudes outside [2^-256, 2^256], e.g. `target.continuous_distribution` for a target of 2^300, and has no spread bound. Each metric publishes the domain of its own operation in `numerical_domain`, on success and on refusal. The neighbours keep only the magnitude bound, so rank-deficient spectra, whose PCA scores contain rounding-level components, still get a local contrast.
 - Methods round 3 (`fix/preflight-numerics`, ABI 2.20): tolerance-pair thresholds are decided exactly, and the noise proxy computes window-local residuals that a huge value outside the evaluable windows cannot erase. The metric `numerical_domain` parameters state both rules.
 - `options.quasi_duplicates.context` accepts `instrument`, which pairs observations of one instrument across campaigns. Listed quasi-duplicate pairs carry descriptive `concordant_indices`: instrument, campaign, individual, independence group and, for development pairs, per-target reference identity and shared reference IDs. The example `examples/quasi_duplicates.json` exercises both features. It needs no new Methods symbol.
-Requires Methods ABI 2.20 (`n4m_cluster_jaccard_matrix`, `n4m_linear_sum_assignment`, `n4m_random_permutations`, `n4m_random_multivariate_normal`, and the HDBSCAN distance guard). Clustering protocol `clustering.v3`, exploratory and unqualified.
 
+### PCA resolution
+
+- PCA resolution (Methods ABI 2.20, rule-14 accuracy contract).
+  - The native and WASM providers call
+    `n4m_preflight_pca_compute_resolved` and require Methods ABI 2.20.
+  - `structure.pca_eigenvalues`, `structure.snv_pca_eigenvalues` and
+    `structure.pca_scores` publish `eigenvalue_resolution` (absolute accuracy
+    threshold, `16 * max(n,p) * eps * lambda_max`) and
+    `unresolved_components` (indices of components not above it, whose
+    variance and scores are 0). `structure.explained_variance_retained` adds
+    the `n_resolved_components` denominator, and the SNV sensitivity view adds
+    `n_resolved_components`.
+  - Numerical rank counts resolved components only: when none is resolved,
+    the PCA geometry is reported as `ZERO_NUMERICAL_RANK`.
+  - Unresolved components are dropped by one helper,
+    `PcaDiagnostics::resolved()`, before any downstream use of the scores: the
+    structure metrics, clustering (including its subsample PCAs), local
+    contrast and the SNV sensitivity PCA. Confounding reads the resolved canonical
+    scores, the repeatability sensitivity PCA calls the helper too, and the
+    domain-shift monitor uses Methods `n4m_stats_pca_monitor`, which keeps only
+    the components above its own eigenvalue resolution. Rounding-level score columns
+    (e.g. ~1e-16 next to 10 on rank-deficient spectra) therefore never reach
+    kernels that would see a spread above 2^32. The PCA metrics publish
+    `k_requested` and `k_resolved`, and `structure.pca_scores` has
+    `k_resolved` columns.
+- Methods 1.3.7 refuses canonical PCA inputs outside [2^-128, 2^128] or with a spread above 2^32 (`NUMERICAL_DOMAIN_EXCEEDED`, formerly `METHODS_NUMERICAL_FAILURE` or a convergence failure). The SNV-view PCA of rows that differ only by rounding residue (entries ~1e-17 next to ~1.4) is refused the same way and is never reported as structure.
+
+### Clustering
+
+- Clustering capability (PF-05, exploratory, unqualified). Methods ABI 2.19
+  `n4m_cluster_hdbscan` runs on the same eligible samples and canonical
+  PCA scores as `structure.*`. It reports per-sample labels, membership
+  strengths and GLOSH scores, candidate cluster count, noise fraction,
+  per-cluster persistence and the condensed tree. Stability uses 50 seeded
+  subsamples without replacement of 80 % of independent units. Each subsample
+  repeats centering, PCA and HDBSCAN, with scaled and constant parameters. It
+  reports ARI (Methods `n4m_preflight_adjusted_rand_index`) on samples
+  assigned in both partitions, assigned/noise agreement, intersection size,
+  compared fraction, cluster counts and noise fractions, summarized by Methods.
+  Findings never state a firm number of clusters.
+Requires Methods ABI 2.20 (`n4m_cluster_jaccard_matrix`, `n4m_linear_sum_assignment`, `n4m_random_permutations`, `n4m_random_multivariate_normal`, and the HDBSCAN distance guard). Clustering protocol `clustering.v3`, exploratory and unqualified.
 - Cluster appearance frequency (`clustering.cluster_appearance_frequency` and `_constant_parameters`, `cluster_matching.v1`): Jaccard on drawn identities, one-to-one maximum-Jaccard assignment with the SciPy tie order, appearance when the matched Jaccard is above 0.5, per-cluster evaluable/appearance counts and matched-Jaccard and drawn-member summaries.
 - Unimodal Gaussian null model (`clustering.gaussian_null_model`): covariance `diag(λ) + 1e-6 mean(λ) I` in the canonical PCA space and 99 seeded replicates. Observed and simulated scores go through the same frozen-projection protocol (same 50 plans, no PCA refit, score grid, HDBSCAN). The pre-specified coverage-weighted stability (median of `ARI × assigned-in-both fraction`) gets an exploratory fitted-null tail fraction `(1 + #null ≥ observed)/(1 + B)`. The test is decisional only for single-row, declared-independent units; otherwise, and for every marginal tail and the joint dominance count, the comparison is descriptive. Limitations are declared.
 - `clustering.partition_assessment`: published criteria and thresholds (declared, not validated); final naming in the third-review item below. All findings have confidence `unknown`; none states a firm number of clusters.
@@ -31,27 +83,10 @@ Requires Methods ABI 2.20 (`n4m_cluster_jaccard_matrix`, `n4m_linear_sum_assignm
 - Full-chain golden `crates/nirs4all-preflight/tests/fixtures/clustering_v3_golden.json` (generator `scripts/generate_clustering_golden.py`, NumPy 2.4.6, SciPy 1.18.1, scikit-learn 1.9.1, seven datasets including grouped units and `p > 10`), checked by the native and WASM tests.
 - Native, canonical and supervised structures are not compared yet: only the canonical view is clustered and no supervised latent space exists.
 
+### Metadata associations
 
-
-- Grouped validation probe (`validation_probe.v1`, PF-04, exploratory, unqualified). Nested grouped selection runs in DAG-ML (`dag_ml_core::execute_nested_selection`, next release after 0.3.41). PLS/PCR come from Methods through DAG-ML controllers: native role controllers on CPU, and `N4mWasmRegressionController` in the browser through dag-ml-wasm `execute_nested_selection_json`.
-  - Preflight owns the population, the shared `independence_components`, the plan (outer `min(5, G)`, inner `min(3, outer − 1)`, and a grid bounded by bands, numerical rank and the smallest inner training pool), the fit budget, the refusals before any fit, and the statuses and findings.
-  - Preflight re-verifies every returned fold, selection (minimum inner RMSE, ties to fewer components), fold-ID uniqueness, fit count and score, and refuses contradictions with `PROVIDER_*` reasons.
-  - Methods kernels compute repeat aggregation (`n4m_stats_group_means`), fold-train means (`summary`) and every published score (`n4m_stats_regression_scores`). Domains stay structured `(instrument, campaign)` pairs.
-  - DAG-ML errors keep their taxonomy code, are reported as `error`, and carry the fold and candidate in `provider_error_detail` (new optional `ProviderError::detail`).
-  - Methods refusals outside the declared domain are `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` (`METHODS_DOMAIN_MESSAGE`).
-- New API and options:
-  - `ValidationProvider` (`ProbeRequest`, `ProbeResult`, `UnavailableValidationProvider`), `analyze_with_validation`, `capabilities_with_validation`;
-  - `dagml::{nested_probe, probe_result, DagMlValidationProvider}`;
-  - `MethodsProvider::group_means` and `MethodsProvider::regression_scores`, with capabilities `methods.group_means` and `methods.regression_scores`;
-  - option `options.validation_probe` (`enabled`, `estimators`, `max_fits`).
-- Metrics: `probe.plan`, `probe.folds`, `probe.oof_predictions`, `probe.rmse`, `probe.mae`, `probe.r2_oof`, `probe.skill_vs_train_mean`, `probe.train_mean_rmse`, `probe.train_mean_mae` and `probe.domain_scores`, all with `numerical_domain`. Finding: `probe.no_skill_over_train_mean.v1`.
-- Capabilities: `validation_probe`, which requires a validation provider and the four Methods kernels and is no longer `PROTOCOL_NOT_IMPLEMENTED`; `validation.nested_grouped_probe`; and `validation_probe.classification`, unavailable with `CLASSIFICATION_PROBE_NOT_QUALIFIED`.
-- The CLI (`--methods-library`), the C ABI and Python run the probe with `DagMlValidationProvider`. The npm package depends on `dag-ml-wasm` and accepts `dagMlWasmModule`.
-- Until the dag-ml release, local builds use `cargo --config .cargo/dag-ml-local.toml` against a sibling `../dag-ml`.
-- Example: `examples/validation_probe.json`.
-
+- Metadata–target associations become available but unqualified (`metadata_association_tests`). New metrics: `association.metadata_target` (eta² or Cramér V, ANOVA F or χ², per-level Y coverage), `association.metadata_target_test` (permutation p-value, Holm-adjusted p-value and a versioned `PermutationPlan`), and `association.metadata_target_family` (Holm family). The new input option `exchangeable_units` declares unit exchangeability; without it, tests are `not_identifiable`. Requires Methods ABI 2.19. The example `examples/metadata_association.json` exercises the protocol.
 Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, `n4m_stats_factor_association_exact`, `n4m_stats_correlation_exact`); the native and WASM providers refuse older libraries (`METHODS_ABI_2_20_REQUIRED`). All capabilities stay exploratory and unqualified.
-
 - Typed metadata in the input contract (schema version 1, optional fields only): `metadata.columns` (`name`, `kind` categorical/continuous, `unit`) and `metadata.values` (`sample_id` → column → JSON string level or JSON number, `null` = missing), validated at the boundary (`INVALID_METADATA_COLUMN`, `UNKNOWN_METADATA_COLUMN`, `METADATA_TYPE_MISMATCH`, `INVALID_METADATA_VALUE`, `UNKNOWN_SAMPLE`; warnings `UNKNOWN_METADATA_UNIT`, `METADATA_VARIES_WITHIN_INDEPENDENCE_UNIT`). Accessors `QualificationInput::metadata_factors()` and `metadata_value()` expose instrument, campaign and declared columns; `independence_components()` exposes the identity components.
 - `metadata_association_tests` covers continuous metadata: Spearman's rho with Pearson's r descriptive against continuous targets, eta²/F of the metadata across classes of categorical targets, with the same permutation machinery and Holm family. New parameters `metadata_kind`, `metadata_origin`, `metadata_unit`, `association_type`; new reason codes `CONSTANT_METADATA_VALUE` and `SATURATED_DESIGN`.
 - Exploratory Benjamini–Hochberg view (`p_value_bh_exploratory`, family `exploratory_secondary`), never used for findings.
@@ -60,6 +95,9 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
 - Third review fixes: retained-test target content is kept as unparsed JSON text (`RawValue`), so tokens such as `1e400` are never decoded (textual fixtures through the CLI, the C ABI and the new WASM `analyzeJson`/`validateJson`); identity components and local-contrast groups use structured keys (`IdentityKey`), removing false `REFERENCE_LEAKAGE` from identifiers containing separators; association metrics declare their `numerical_domain`, with CPU and WASM magnitude sweeps from 2^-1060 to 2^1000 and translations by 1e300.
 - Supported numerical domain (rule 13): Methods refusals of inputs outside [2^-256, 2^256] with a per-array spread above 2^32 (rule 15) are reported as `unsupported` with reason `NUMERICAL_DOMAIN_EXCEEDED` (native and WASM providers), and every association metric publishes the domain in `numerical_domain` (Holm/BH p-values have no spread limit; nonzero p must be normal).
 - `examples/metadata_association.json` declares `site` and `temperature` (degC).
+
+### Confounding
+
 - Confounding becomes available but unqualified (PF-06 first half, exploratory). Requires Methods ABI 2.20 (`n4m_stats_permanova`, `n4m_stats_permdisp`). On the canonical PCA scores of `structure.*`, aggregated per independence unit, it reports `confounding.design` (levels, crossings, nominal and identifiable df given the other factors, aliasing), `confounding.variance_partition` (marginal, unique and all-cell R², never summed), `confounding.dispersion` (PERMDISP), and permutation tests `confounding.permanova_marginal_test` (free), `confounding.permanova_conditional_test` (within the other factors' cells) and `confounding.permdisp_test` with `permutation_plan.v1` and per-source Holm families; draws count `F_perm >= F_obs − sqrt(eps)` as vegan. Units are the shared `independence_components`, projected onto the structure rows; factors come from `metadata_factors()`. Aliased factors are `not_identifiable` (`FACTOR_ALIASED_WITH_OTHER_FACTORS`); unit `reference_group` without a resolved reference group is `not_identifiable` (`REFERENCE_GROUP_UNRESOLVED`). New findings: `confounding.aliased_factors.v1`, `confounding.marginal_structure.v1`, `confounding.conditional_structure.v1`, `confounding.dispersion_heterogeneity.v1`, all with confidence `unknown`. The permutation plan gains the `within_blocks` restriction; seed derivation is shared through `derive_seed`. Example: `examples/confounding.json`.
 - `confounding.permanova_freedman_lane_test`: partial PERMANOVA of each factor given the additive main effects of the other factors, by Freedman–Lane permutation of the reduced-model residuals (Methods `n4m_stats_permanova_freedman_lane`), next to the within-cells test whose null also excludes interactions. The plan carries `reduced_model`; saturated reduced models (`REDUCED_MODEL_SATURATED`), aliased factors and designs without residual df (`SATURATED_DESIGN`, also for the other PERMANOVA tests) are `not_identifiable`. New finding `confounding.main_effect_structure.v1`. The within-cells plan no longer fills `reduced_model`.
 - Confounding robustness: the design separates `aliased_with_other_factor_cells` (relative to the cells of the other factors, interactions included) from `identifiable_under_additive_model`; a factor aliased only by cells gives the info finding `confounding.aliased_with_other_cells.v1`, and `confounding.aliased_factors.v1` now means neither model separates it. Unit coordinates are running means. Metrics carry `numerical_domain`; Methods kernels compute explicit residual sums of squares, choose scales from centred variation and fail explicitly on unrepresentable values. Requires the Methods robustness commit.
@@ -67,7 +105,12 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
 - Confounding supported numerical domain (rule 13): the Methods PERMANOVA, Freedman–Lane and PERMDISP kernels refuse unit coordinates outside D (nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^32 since rule 15); the refusal is reported as `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` through the shared `ProviderError::from_methods_error` (native context message, WASM `N4mError` status and message forwarded in the structured callback reply). `numerical_domain` is now the structured object shared with the association metrics. Native and WASM tests cover both sides of D.
 - Confounding convergence policy (rule 15): the supported domain spread is now 2^32 (`N4M_DOMAIN_MAX_SPREAD_LOG2`, also for the association metrics; Holm p-values keep only the magnitude bounds), so the former 2^60 offset-stratum and 2^64 dyadic cases are refused while a 2^31 offset stratum gives the rational SS_A = 2, SS_res = 3, F = 10/3. A pseudo-F (or dispersion F) is undefined only for an exactly zero residual SS; otherwise it is published with its resolution (`numerically_unresolved`, `residual_ss_resolution_ratio`: the Methods error estimate of the residual SS over it) in the variance partition (`pseudo_f_*_resolution`), the dispersion metric (`anova_f_resolution`) and every test value (`statistic_resolution`). The Freedman–Lane partial R² uses SS_term + SS_residual of one projection (24- and 32-row dyadic references R² = 0.5, F = 21 and 29).
 - Confounding Holm failure: when the permutations succeed but Holm is unavailable, each test keeps its execution record (`executed`, `n_permutations_executed`, raw `p_value`, `n_at_least_observed`) and reports `multiplicity_available = false` with `multiplicity_reason_code`, `p_value_holm` and `rejects_null_at_family_alpha` null and no finding; the family metric carries `holm_available` and `holm_reason_code` (same pattern as the association block).
-- Provider errors are structured (`ProviderError { kind, reason }`, kinds `unsupported`, `numerical`, `internal`). Only absent capabilities and declared limits are reported `unsupported`; numerical and internal provider failures are now `error`, with stable `METHODS_<STATUS>` reasons identical in the native and WASM adapters (previously every failure was `unsupported`, with `METHODS_STATUS_<n>` natively and `METHODS_CALLBACK_FAILED` in WASM). The WASM callback replies `{ok}` or `{provider_error}`.
+
+### Domain shift
+
+- Domain shift becomes available but unqualified (`domain_shift`, protocol `domain_shift.v2`, PF-06 second half). New metrics: `domain_shift.design`, `domain_shift.distribution_distance`, `domain_shift.center_shift`, `domain_shift.dispersion`, `domain_shift.coverage`, `domain_shift.target_change`, `domain_shift.energy_test` (with a `PermutationPlan`) and `domain_shift.test_family`; the estimand is the distribution of independence-unit mean spectra, with compositions published and the test refused for unequal unit compositions. Findings: `domain_shift.detected.v1`, `domain_shift.aliased_domains.v1`, `domain_shift.external_domain_audit.v1`, all with confidence `unknown`. New optional input `options.domain_shift` (`external_domain_audit`, `intended_use.new_levels` / `seen_levels`, categorical factors only) and blocking validation code `INVALID_INTENDED_USE`. Retained-test X is read only under the declared audit, which refuses components spanning partitions and sources without development units; retained-test Y is never read. Inputs outside the supported numerical domain (nonzero |x| in [2^-256, 2^256], spread ≤ 2^32) give `unsupported` metrics with `NUMERICAL_DOMAIN_EXCEEDED`. Energies carry conservative rounding estimates; the energy test p-value follows the declared relative tie rule, with undecidable draws and a conservative p-value published apart; coverage counts separate units beyond a limit by more than a conservative tolerance from units within it (never certified). Requires Methods ABI 2.20 (`n4m_stats_energy_distance`, `n4m_stats_pca_monitor`). The example `examples/domain_shift.json` exercises the protocol.
+
+### Repeatability uncertainty
 
 - `repeatability_uncertainty` (PF-10) changes from `PROTOCOL_NOT_IMPLEMENTED` to available but unqualified (exploratory). It requires Methods ABI 2.20 (`n4m_stats_variance_components_reml`, `n4m_stats_variance_components_intervals`); the native and WASM providers now require ABI 2.20 and expose `methods.variance_components`.
 - New metrics per technical context:
@@ -90,49 +133,24 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
   - Bootstrap plans move to `bootstrap_plan.v2`.
 - Lead rules 13 and 15: Methods refuses inputs outside the supported domain (nonzero |x| in [2^-256, 2^256], spread <= 2^32 over values and over pairwise differences, measured on sorted raw values). The five repeatability metrics are then `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` and publish `numerical_domain`, through the shared `METHODS_DOMAIN_MESSAGE` mapping (native and WASM). The band status 6 and the interval status are removed, since every variance is representable inside the domain. The balanced-repeat sensitivity applies the magnitude and spread bounds per band, and its means use a Neumaier compensated sum (review b9fix: the former residual-mean correction gave 0 instead of 1/3 for [2^60, 1, −2^60]). The REML grid limitation is documented with a polynomial degree bound (4K-3 stationary points for K distinct group sizes; balanced designs are unimodal), and the estimator label says that only the candidates detected by the grid are refined. A balanced band with no variation gives the exact F interval `undefined` / `ZERO_TOTAL_VARIANCE` instead of `UNBALANCED_BAND`; insufficient bands give `INSUFFICIENT_GROUPS_OR_REPEATS`.
 
+### Validation probe
 
-
-Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.
-
-- PCA resolution (Methods ABI 2.20, rule-14 accuracy contract).
-  - The native and WASM providers call
-    `n4m_preflight_pca_compute_resolved` and require Methods ABI 2.20.
-  - `structure.pca_eigenvalues`, `structure.snv_pca_eigenvalues` and
-    `structure.pca_scores` publish `eigenvalue_resolution` (absolute accuracy
-    threshold, `16 * max(n,p) * eps * lambda_max`) and
-    `unresolved_components` (indices of components not above it, whose
-    variance and scores are 0). `structure.explained_variance_retained` adds
-    the `n_resolved_components` denominator, and the SNV sensitivity view adds
-    `n_resolved_components`.
-  - Numerical rank counts resolved components only: when none is resolved,
-    the PCA geometry is reported as `ZERO_NUMERICAL_RANK`.
-  - Unresolved components are dropped by one helper,
-    `PcaDiagnostics::resolved()`, before any downstream use of the scores: the
-    structure metrics, clustering (including its subsample PCAs), local
-    contrast and the SNV sensitivity PCA. Confounding and the domain-shift
-    monitor must call it too when they merge. Rounding-level score columns
-    (e.g. ~1e-16 next to 10 on rank-deficient spectra) therefore never reach
-    kernels that would see a spread above 2^32. The PCA metrics publish
-    `k_requested` and `k_resolved`, and `structure.pca_scores` has
-    `k_resolved` columns.
-
-- Clustering capability (PF-05, exploratory, unqualified). Methods ABI 2.19
-  `n4m_cluster_hdbscan` runs on the same eligible samples and canonical
-  PCA scores as `structure.*`. It reports per-sample labels, membership
-  strengths and GLOSH scores, candidate cluster count, noise fraction,
-  per-cluster persistence and the condensed tree. Stability uses 50 seeded
-  subsamples without replacement of 80 % of independent units. Each subsample
-  repeats centering, PCA and HDBSCAN, with scaled and constant parameters. It
-  reports ARI (Methods `n4m_preflight_adjusted_rand_index`) on samples
-  assigned in both partitions, assigned/noise agreement, intersection size,
-  compared fraction, cluster counts and noise fractions, summarized by Methods.
-  Cluster appearance frequency (matching not qualified) and the Gaussian null
-  model are reported as unavailable. Findings never state a firm number of
-  clusters. The native and WASM providers require Methods ABI 2.19.
-
-- `noise_proxy`, `snv_sensitivity` and `quasi_duplicates` change from `PROTOCOL_NOT_IMPLEMENTED` to available but unqualified (exploratory). New metrics: `measurement.noise_proxy`, `measurement.noise_proxy_pooled`, `structure.snv_pca_eigenvalues`, `structure.snv_effective_dimension`, `structure.snv_sensitivity`, `integrity.quasi_duplicate_pairs` and `integrity.cross_partition_quasi_duplicate_pairs`. New optional inputs: `options.noise_proxy`, `options.snv_sensitivity` and `options.quasi_duplicates` (the tolerance has no default). Requires Methods ABI 2.19 (`n4m_preflight_noise_proxy_compute`, `n4m_preflight_pairs_within_tolerance`) and the existing Methods SNV transform. Input schema version 1 gains only optional fields.
-
-- Metadata–target associations become available but unqualified (`metadata_association_tests`). New metrics: `association.metadata_target` (eta² or Cramér V, ANOVA F or χ², per-level Y coverage), `association.metadata_target_test` (permutation p-value, Holm-adjusted p-value and a versioned `PermutationPlan`), and `association.metadata_target_family` (Holm family). The new input option `exchangeable_units` declares unit exchangeability; without it, tests are `not_identifiable`. Requires Methods ABI 2.19. The example `examples/metadata_association.json` exercises the protocol.
+- Grouped validation probe (`validation_probe.v1`, PF-04, exploratory, unqualified). Nested grouped selection runs in DAG-ML (`dag_ml_core::execute_nested_selection`, dag-ml 0.3.42). PLS/PCR come from Methods through DAG-ML controllers: native role controllers on CPU, and `N4mWasmRegressionController` in the browser through dag-ml-wasm `execute_nested_selection_json`.
+  - Preflight owns the population, the shared `independence_components`, the plan (outer `min(5, G)`, inner `min(3, outer − 1)`, and a grid bounded by bands, numerical rank and the smallest inner training pool), the fit budget, the refusals before any fit, and the statuses and findings.
+  - Preflight re-verifies every returned fold, selection (minimum inner RMSE, ties to fewer components), fold-ID uniqueness, fit count and score, and refuses contradictions with `PROVIDER_*` reasons.
+  - Methods kernels compute repeat aggregation (`n4m_stats_group_means`), fold-train means (`summary`) and every published score (`n4m_stats_regression_scores`). Domains stay structured `(instrument, campaign)` pairs.
+  - DAG-ML errors keep their taxonomy code, are reported as `error`, and carry the fold and candidate in `provider_error_detail` (new optional `ProviderError::detail`).
+  - Methods refusals outside the declared domain are `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` (`METHODS_DOMAIN_MESSAGE`).
+- New API and options:
+  - `ValidationProvider` (`ProbeRequest`, `ProbeResult`, `UnavailableValidationProvider`), `analyze_with_validation`, `capabilities_with_validation`;
+  - `dagml::{nested_probe, probe_result, DagMlValidationProvider}`;
+  - `MethodsProvider::group_means` and `MethodsProvider::regression_scores`, with capabilities `methods.group_means` and `methods.regression_scores`;
+  - option `options.validation_probe` (`enabled`, `estimators`, `max_fits`).
+- Metrics: `probe.plan`, `probe.folds`, `probe.oof_predictions`, `probe.rmse`, `probe.mae`, `probe.r2_oof`, `probe.skill_vs_train_mean`, `probe.train_mean_rmse`, `probe.train_mean_mae` and `probe.domain_scores`, all with `numerical_domain`. Finding: `probe.no_skill_over_train_mean.v1`.
+- Capabilities: `validation_probe`, which requires a validation provider and the four Methods kernels and is no longer `PROTOCOL_NOT_IMPLEMENTED`; `validation.nested_grouped_probe`; and `validation_probe.classification`, unavailable with `CLASSIFICATION_PROBE_NOT_QUALIFIED`.
+- The CLI (`--methods-library`), the C ABI and Python run the probe with `DagMlValidationProvider`. The npm package depends on `dag-ml-wasm` and accepts `dagMlWasmModule`.
+- Until the dag-ml release, local builds use `cargo --config .cargo/dag-ml-local.toml` against a sibling `../dag-ml`.
+- Example: `examples/validation_probe.json`.
 
 ## 0.1.0-alpha.1 — 2026-10-13
 
