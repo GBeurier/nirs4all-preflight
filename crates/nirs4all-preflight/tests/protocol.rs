@@ -617,6 +617,20 @@ fn unresolved_components_are_labelled_and_not_counted_as_rank() {
     let k = eigen.parameters["n_components"].as_u64().unwrap() as usize;
     assert!(k >= 2);
     assert_eq!(eigen.parameters["eigenvalue_resolution"], 1e-12);
+    assert_eq!(eigen.parameters["k_requested"], k);
+    assert_eq!(eigen.parameters["k_resolved"], 1);
+    assert_eq!(eigen.value, Some(serde_json::json!([1.0])));
+    let scores = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "structure.pca_scores")
+        .expect("scores metric");
+    assert_eq!(scores.parameters["score_columns"], 1);
+    assert!(scores.value.as_ref().unwrap()["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r.as_array().unwrap().len() == 1));
     assert_eq!(
         eigen.parameters["unresolved_components"],
         serde_json::json!((1..k).collect::<Vec<_>>())

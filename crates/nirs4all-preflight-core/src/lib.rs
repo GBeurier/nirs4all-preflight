@@ -795,6 +795,32 @@ pub struct PcaDiagnostics {
     pub backend_version: String,
 }
 
+impl PcaDiagnostics {
+    /// The components above Methods' published resolution (rule-14 accuracy
+    /// contract). Unresolved components, whose variance and scores are 0 and
+    /// which are not numerical rank, are dropped, so no downstream use of the
+    /// scores (structure, clustering, confounding, local contrast,
+    /// domain-shift, SNV sensitivity) sees them. The result has `k_resolved`
+    /// columns; `full_moments`, `resolution` and the version are kept.
+    pub fn resolved(&self) -> PcaDiagnostics {
+        let keep: Vec<usize> = (0..self.eigenvalues.len())
+            .filter(|&a| !self.unresolved.get(a).copied().unwrap_or(false))
+            .collect();
+        PcaDiagnostics {
+            eigenvalues: keep.iter().map(|&a| self.eigenvalues[a]).collect(),
+            scores: self
+                .scores
+                .iter()
+                .map(|row| keep.iter().map(|&a| row[a]).collect())
+                .collect(),
+            full_moments: self.full_moments,
+            resolution: self.resolution,
+            unresolved: vec![false; keep.len()],
+            backend_version: self.backend_version.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepeatabilityRequest {
     pub source_id: String,

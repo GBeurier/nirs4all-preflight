@@ -16,6 +16,15 @@ Engine, crates, Python and npm binding move together to 0.1.0, following the pla
     `n_resolved_components`.
   - Numerical rank counts resolved components only: when none is resolved,
     the PCA geometry is reported as `ZERO_NUMERICAL_RANK`.
+  - Unresolved components are dropped by one helper,
+    `PcaDiagnostics::resolved()`, before any downstream use of the scores: the
+    structure metrics, clustering (including its subsample PCAs), local
+    contrast and the SNV sensitivity PCA. Confounding and the domain-shift
+    monitor must call it too when they merge. Rounding-level score columns
+    (e.g. ~1e-16 next to 10 on rank-deficient spectra) therefore never reach
+    kernels that would see a spread above 2^32. The PCA metrics publish
+    `k_requested` and `k_resolved`, and `structure.pca_scores` has
+    `k_resolved` columns.
 
 - Clustering capability (PF-05, exploratory, unqualified). Methods ABI 2.19
   `n4m_cluster_hdbscan` runs on the same eligible samples and canonical

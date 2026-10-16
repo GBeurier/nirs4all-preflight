@@ -434,9 +434,16 @@ fn stability(
                     && result
                         .scores
                         .iter()
-                        .all(|s| s.len() == k && s.iter().all(|v| v.is_finite())) =>
+                        .all(|s| s.len() == k && s.iter().all(|v| v.is_finite()))
+                    && result.unresolved.len() == k =>
             {
-                result.scores
+                // Same rule as the canonical PCA: unresolved components are
+                // dropped before the scores reach HDBSCAN.
+                let resolved = result.resolved();
+                if resolved.eigenvalues.is_empty() {
+                    return fail(Availability::Undefined, "ZERO_NUMERICAL_RANK");
+                }
+                resolved.scores
             }
             Ok(_) => return fail(Availability::Error, "INVALID_PROVIDER_RESULT"),
             Err(e) => return fail(Availability::Unsupported, &e.0),

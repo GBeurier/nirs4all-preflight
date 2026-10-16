@@ -578,7 +578,10 @@ fn analyze_source(
             n_components: k,
         };
         match provider.pca(&req) {
-            Ok(result) if pca_result_valid(&result, k, req.matrix.len()) => {
+            Ok(raw) if pca_result_valid(&raw, k, req.matrix.len()) => {
+                // Unresolved components are dropped before any downstream use.
+                let result = raw.resolved();
+                let k_resolved = result.eigenvalues.len();
                 let mut metric = Metric::computed(
                     "structure.pca_eigenvalues",
                     json!(result.eigenvalues),
@@ -593,9 +596,8 @@ fn analyze_source(
                 metric
                     .parameters
                     .insert("backend_version".into(), json!(result.backend_version));
-                insert_resolution(&mut metric, &result);
+                insert_resolution(&mut metric, &raw);
                 report.metrics.push(metric);
-                let n_resolved = result.unresolved.iter().filter(|u| !**u).count();
                 let [sum, sum2] = result.full_moments;
                 let mut moments = Metric::computed(
                     "structure.full_variance_moments",
@@ -611,7 +613,7 @@ fn analyze_source(
                 report.metrics.push(moments);
                 // Numerical rank counts resolved components only: an
                 // unresolved one is below the decomposition's accuracy.
-                if sum > 0.0 && n_resolved > 0 {
+                if sum > 0.0 && k_resolved > 0 {
                     let retained: f64 = result.eigenvalues.iter().sum();
                     let mut ratio = Metric::computed(
                         "structure.explained_variance_retained",
@@ -623,7 +625,7 @@ fn analyze_source(
                     ratio.denominators.insert("n_components_retained".into(), k);
                     ratio
                         .denominators
-                        .insert("n_resolved_components".into(), n_resolved);
+                        .insert("n_resolved_components".into(), k_resolved);
                     report.metrics.push(ratio);
                     if req.matrix.len().saturating_mul(k) <= 100_000 {
                         let mut scores = Metric::computed(
@@ -636,8 +638,10 @@ fn analyze_source(
                         scores
                             .denominators
                             .insert("n_aggregated_samples".into(), req.matrix.len());
-                        scores.parameters.insert("score_columns".into(), json!(k));
-                        insert_resolution(&mut scores, &result);
+                        scores
+                            .parameters
+                            .insert("score_columns".into(), json!(k_resolved));
+                        insert_resolution(&mut scores, &raw);
                         report.metrics.push(scores);
                     } else {
                         report.metrics.push(Metric::unavailable(
@@ -783,6 +787,13 @@ fn pca_result_valid(result: &PcaDiagnostics, k: usize, n: usize) -> bool {
 /// Methods' absolute accuracy contract for a PCA metric: the resolution bound
 /// and the components below it, which are not numerical rank.
 fn insert_resolution(metric: &mut Metric, result: &PcaDiagnostics) {
+    let k_resolved = result.unresolved.iter().filter(|u| !**u).count();
+    metric
+        .parameters
+        .insert("k_requested".into(), json!(result.unresolved.len()));
+    metric
+        .parameters
+        .insert("k_resolved".into(), json!(k_resolved));
     metric
         .parameters
         .insert("eigenvalue_resolution".into(), json!(result.resolution));
@@ -1402,7 +1413,7 @@ fn analyze_snv(
         matrix,
         n_components: k,
     };
-    let result = match provider.pca(&req) {
+    let raw = match provider.pca(&req) {
         Ok(r) if pca_result_valid(&r, k, n) => r,
         Ok(_) => {
             push_unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
@@ -1413,6 +1424,7 @@ fn analyze_snv(
             return;
         }
     };
+    let result = raw.resolved();
     let mut eigen = Metric::computed(
         "structure.snv_pca_eigenvalues",
         json!(result.eigenvalues),
@@ -1425,7 +1437,7 @@ fn analyze_snv(
     eigen
         .parameters
         .insert("backend_version".into(), json!(result.backend_version));
-    insert_resolution(&mut eigen, &result);
+    insert_resolution(&mut eigen, &raw);
     report.metrics.push(eigen);
     let [sum, sum2] = result.full_moments;
     let mut dimension = match (sum2 > 0.0).then(|| sum * sum / sum2) {
