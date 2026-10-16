@@ -227,18 +227,26 @@ test('WASM refuses inputs outside the supported numerical domain explicitly',()=
  const beyond=Object.fromEntries(analyze(2**33).metrics.map(m=>[m.metric_id,m]));
  for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(beyond[id].reason_code,'NUMERICAL_DOMAIN_EXCEEDED',id);
 });
-test('WASM target summary refuses continuous targets outside the numerical domain',()=>{
+test('WASM summary and contrast publish their own numerical domains',()=>{
+ // Review b14fix5: Y = [1, 2, 2^33, 3, 4, 5] is summarized (magnitude bound only)
+ // but the continuous contrast refuses it (global target spread above 2^32).
  const ids=['a','b','c','d','e','f'];
- const run=(big)=>runtime.analyze({schema_version:1,
-  sources:[{source_id:'x',observation_ids:ids,sample_ids:ids,x:ids.map((_,i)=>[i,i*i,1]),axis:[1,2,3],axis_unit:'nm',signal_unit:'abs'}],
+ const x=[[1,4,2,7],[2,1,5,3],[3,6,1,4],[5,2,4,1],[4,5,3,6],[6,3,6,2]];
+ const run=(y3)=>Object.fromEntries(runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids,sample_ids:ids,x,axis:[1,2,3,4],axis_unit:'nm',signal_unit:'abs'}],
   samples:ids.map(id=>({sample_id:id,physical_sample_id:id})),
-  targets:[{target_id:'y',kind:'continuous',values:ids.map((id,i)=>({sample_id:id,value:[1,2,big,3,4,5][i],status:'exact'}))}],
-  options:{independence_unit:'sample'}}).metrics.find(m=>m.metric_id==='target.continuous_distribution');
- const outside=run(2**300);
- assert.equal(outside.status,'unsupported');
- assert.equal(outside.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
- assert.ok(outside.parameters.numerical_domain.startsWith('every nonzero |x| in [2^-256, 2^256]'));
- assert.equal(run(2**64).status,'computed');
- // No spread bound for the summary: 1e-20 next to 1 is summarized.
- assert.equal(run(1e-20).status,'computed');
+  targets:[{target_id:'y',kind:'continuous',values:ids.map((id,i)=>({sample_id:id,value:[1,2,y3,3,4,5][i],status:'exact'}))}],
+  options:{independence_unit:'sample'}}).metrics.map(m=>[m.metric_id,m]));
+ const wide=run(2**33);
+ assert.equal(wide['target.continuous_distribution'].status,'computed');
+ assert.ok(wide['target.continuous_distribution'].parameters.numerical_domain.startsWith('every nonzero |value| in [2^-256, 2^256]; no spread bound'));
+ assert.equal(wide['local.global_contrast'].status,'unsupported');
+ assert.equal(wide['local.global_contrast'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+ assert.ok(wide['local.global_contrast'].parameters.numerical_domain.includes('over the whole target vector'));
+ const plain=run(6);
+ assert.equal(plain['local.global_contrast'].status,'computed');
+ assert.ok(plain['local.global_contrast'].parameters.numerical_domain.includes('per row of PCA scores'));
+ const huge=run(2**300)['target.continuous_distribution'];
+ assert.equal(huge.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+ assert.equal(run(1e-20)['target.continuous_distribution'].status,'computed');
 });

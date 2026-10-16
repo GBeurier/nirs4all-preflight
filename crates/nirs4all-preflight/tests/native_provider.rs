@@ -832,7 +832,7 @@ fn native_target_summary_and_local_contrast_refuse_targets_outside_the_domain() 
         .unwrap();
     assert_eq!(m.status_wire(), "unsupported");
     assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
-    assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN);
+    assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN_SUMMARY);
     // The summary has no spread bound: 1e-20 next to 1 is summarized.
     for value in [2f64.powi(64), 1e-20] {
         let report = build(value);
@@ -842,5 +842,99 @@ fn native_target_summary_and_local_contrast_refuse_targets_outside_the_domain() 
             .find(|m| m.metric_id == "target.continuous_distribution")
             .unwrap();
         assert_eq!(m.status_wire(), "computed", "{value}");
+    }
+}
+
+#[test]
+fn native_metrics_publish_their_operation_specific_numerical_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b14fix5: Y = [1, 2, 2^33, 3, 4, 5] is a valid summary input
+    // (magnitude bound only) but exceeds the global 2^32 target spread of the
+    // continuous local contrast. Both metrics publish their own domain.
+    let build = |y3: f64| {
+        let ids = ["a", "b", "c", "d", "e", "f"];
+        let mut input = input_with(
+            // Full-rank spectra, so no PCA score is a rounding residue.
+            ids.iter()
+                .zip([
+                    [1.0, 4.0, 2.0, 7.0],
+                    [2.0, 1.0, 5.0, 3.0],
+                    [3.0, 6.0, 1.0, 4.0],
+                    [5.0, 2.0, 4.0, 1.0],
+                    [4.0, 5.0, 3.0, 6.0],
+                    [6.0, 3.0, 6.0, 2.0],
+                ])
+                .map(|(id, x)| (*id, Partition::Development, x.to_vec()))
+                .collect(),
+            vec![1., 2., 3., 4.],
+        );
+        input.options.noise_proxy = NoiseProxyOptions {
+            window_bands: 3,
+            polyorder: 1,
+        };
+        input.options.independence_unit = IndependenceUnit::Sample;
+        input.targets = vec![Target {
+            target_id: "y".into(),
+            kind: TargetKind::Continuous,
+            values: ids
+                .iter()
+                .zip([1.0, 2.0, y3, 3.0, 4.0, 5.0])
+                .map(|(id, v)| TargetValue {
+                    sample_id: (*id).into(),
+                    value: Some(v),
+                    category: None,
+                    status: ReferenceStatus::Exact,
+                    reference_id: None,
+                    reference_group_id: None,
+                })
+                .collect(),
+            unit: None,
+        }];
+        analyze(&input, &provider)
+    };
+    let report = build(2f64.powi(33));
+    let summary = metric(&report, "target.continuous_distribution");
+    assert_eq!(summary.status_wire(), "computed");
+    assert_eq!(
+        summary.parameters["numerical_domain"],
+        NUMERICAL_DOMAIN_SUMMARY
+    );
+    let contrast = metric(&report, "local.global_contrast");
+    assert_eq!(contrast.status_wire(), "unsupported");
+    assert_eq!(
+        contrast.reason_code.as_deref(),
+        Some(NUMERICAL_DOMAIN_EXCEEDED)
+    );
+    assert_eq!(
+        contrast.parameters["numerical_domain"],
+        NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+    );
+    let report = build(6.0);
+    for (id, domain) in [
+        ("target.continuous_distribution", NUMERICAL_DOMAIN_SUMMARY),
+        ("local.global_contrast", NUMERICAL_DOMAIN_LOCAL_CONTINUOUS),
+        ("measurement.noise_proxy_pooled", NUMERICAL_DOMAIN),
+        ("structure.snv_pca_eigenvalues", NUMERICAL_DOMAIN),
+    ] {
+        let m = metric(&report, id);
+        eprintln!(
+            "{id} {:?} {:?}",
+            m.reason_code,
+            report
+                .metrics
+                .iter()
+                .find(|x| x.metric_id == "structure.pca_scores")
+                .map(|x| x.value.clone())
+        );
+        assert_eq!(m.status_wire(), "computed", "{id}");
+        assert!(
+            m.parameters["numerical_domain"]
+                .as_str()
+                .unwrap()
+                .starts_with(domain.split(';').next().unwrap()),
+            "{id}"
+        );
     }
 }

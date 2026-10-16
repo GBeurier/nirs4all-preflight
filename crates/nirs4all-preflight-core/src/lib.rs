@@ -11,9 +11,17 @@ pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0-alpha.3";
 /// Reason code of a metric whose input lies outside the supported numerical
 /// domain of its Methods kernel (explicit refusal, never a silent value).
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
-/// Supported numerical domain of the Methods Preflight kernels (SNV, noise
-/// proxy, tolerance pairs), published in the `numerical_domain` parameter.
-pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^32 (value summaries: magnitude bound only); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Supported numerical domains of the Methods kernels behind each metric,
+/// published in the `numerical_domain` parameter on success and on refusal
+/// (inputs outside are refused with NUMERICAL_DOMAIN_EXCEEDED).
+/// Spectra kernels (SNV, noise proxy, tolerance pairs).
+pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Value summaries: magnitude bound only.
+pub const NUMERICAL_DOMAIN_SUMMARY: &str = "every nonzero |value| in [2^-256, 2^256]; no spread bound; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Local contrast of a continuous target over neighbours in PCA score space.
+pub const NUMERICAL_DOMAIN_LOCAL_CONTINUOUS: &str = "neighbours: every nonzero |score| in [2^-256, 2^256] and, per row of PCA scores, max/min nonzero |score| <= 2^32; contrast: every nonzero |y| in [2^-256, 2^256] and, over the whole target vector, max/min nonzero |y| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Local contrast of a categorical target: category codes are labels.
+pub const NUMERICAL_DOMAIN_LOCAL_CATEGORICAL: &str = "neighbours: every nonzero |score| in [2^-256, 2^256] and, per row of PCA scores, max/min nonzero |score| <= 2^32; category codes exempt (labels); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

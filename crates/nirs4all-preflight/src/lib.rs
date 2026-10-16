@@ -247,10 +247,47 @@ pub fn analyze(input: &QualificationInput, provider: &impl MethodsProvider) -> Q
         analyze_target(target, &samples, input, provider, &mut report);
     }
     association::analyze_metadata_associations(input, &samples, provider, &mut report);
+    // Operation-specific numerical domain on success and on refusal.
+    let categorical: BTreeSet<&str> = input
+        .targets
+        .iter()
+        .filter(|t| t.kind == TargetKind::Categorical)
+        .map(|t| t.target_id.as_str())
+        .collect();
     for m in &mut report.metrics {
-        if m.reason_code.as_deref() == Some(NUMERICAL_DOMAIN_EXCEEDED) {
+        let domain = match m.metric_id.as_str() {
+            "target.continuous_distribution" => Some(NUMERICAL_DOMAIN_SUMMARY),
+            "local.global_contrast"
+            | "local.observed_same_class_fraction"
+            | "local.expected_same_class_fraction" => Some(
+                if m.target_id
+                    .as_deref()
+                    .is_some_and(|t| categorical.contains(t))
+                {
+                    NUMERICAL_DOMAIN_LOCAL_CATEGORICAL
+                } else {
+                    NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+                },
+            ),
+            "structure.snv_pca_eigenvalues"
+            | "structure.snv_effective_dimension"
+            | "structure.snv_sensitivity"
+            | "measurement.noise_proxy"
+            | "measurement.noise_proxy_pooled"
+            | "integrity.quasi_duplicate_pairs"
+            | "integrity.cross_partition_quasi_duplicate_pairs"
+            | "reference.quasi_duplicate_conflicts" => Some(NUMERICAL_DOMAIN),
+            _ if m.reason_code.as_deref() == Some(NUMERICAL_DOMAIN_EXCEEDED) => {
+                Some(NUMERICAL_DOMAIN)
+            }
+            _ => None,
+        };
+        let published = matches!(m.status, Availability::Computed)
+            || m.reason_code.as_deref() == Some(NUMERICAL_DOMAIN_EXCEEDED);
+        if let (Some(domain), true) = (domain, published) {
             m.parameters
-                .insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
+                .entry("numerical_domain".into())
+                .or_insert_with(|| json!(domain));
         }
     }
     report
