@@ -545,21 +545,76 @@ fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
     let m = metric(&report, "structure.snv_sensitivity");
     assert_eq!(m.status_wire(), "undefined");
     assert_eq!(m.reason_code.as_deref(), Some("ZERO_SNV_TOTAL_VARIANCE"));
-    // [1e200, 0, -1e200] standardizes to sqrt(3/2) * [1, 0, -1] instead of zeros.
+    // Domain edges 2^256 and 2^-256: [a, 0, -a] standardizes to
+    // sqrt(3/2) [1, 0, -1] instead of zeros.
+    let (hi, lo) = (2f64.powi(256), 2f64.powi(-256));
     let snv = provider
         .snv(&SnvRequest {
             group_ids: None,
-            matrix: vec![
-                vec![1e200, 0., -1e200],
-                vec![0.1; 3],
-                // Review b1fix #1: halving 2^-1074 used to zero the deviations.
-                vec![f64::from_bits(1), 0., -f64::from_bits(1)],
-            ],
+            matrix: vec![vec![hi, 0., -hi], vec![0.1; 3], vec![lo, 0., -lo]],
         })
         .unwrap();
-    assert!(near(snv.matrix[0][0], 1.5f64.sqrt()) && near(snv.matrix[0][2], -(1.5f64.sqrt())));
+    for i in [0, 2] {
+        assert!(near(snv.matrix[i][0], 1.5f64.sqrt()) && near(snv.matrix[i][2], -(1.5f64.sqrt())));
+    }
     assert!(snv.matrix[1].iter().all(|v| *v == 0.0) && snv.error_bounds[1] == 0.0);
-    assert!(near(snv.matrix[2][0], 1.5f64.sqrt()) && near(snv.matrix[2][2], -(1.5f64.sqrt())));
+    // Just outside the supported domain: explicit refusal, never a value.
+    for row in [
+        vec![1e200, 0., -1e200],
+        vec![f64::from_bits(1), 0., 0.],
+        vec![1.0, 2f64.powi(65)],
+    ] {
+        let err = provider
+            .snv(&SnvRequest {
+                group_ids: None,
+                matrix: vec![row],
+            })
+            .unwrap_err();
+        assert_eq!(err.0, NUMERICAL_DOMAIN_EXCEEDED);
+    }
+}
+
+#[test]
+fn native_metrics_report_inputs_outside_the_numerical_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // One spectrum with a value 2^300: noise proxy, SNV sensitivity and
+    // quasi-duplicates refuse it explicitly and publish the domain.
+    let mut input = input_with(
+        vec![
+            ("a", Partition::Development, vec![1., 2., 3., 4., 5.]),
+            ("b", Partition::Development, vec![2., 1., 3., 5., 4.]),
+            (
+                "c",
+                Partition::Development,
+                vec![1., 3., 2., 2f64.powi(300), 5.],
+            ),
+            ("d", Partition::Development, vec![5., 4., 3., 2., 1.]),
+        ],
+        vec![1., 2., 3., 4., 5.],
+    );
+    input.options.noise_proxy = NoiseProxyOptions {
+        window_bands: 3,
+        polyorder: 1,
+    };
+    input.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.5,
+        view: QuasiDuplicateView::Native,
+        context: ComparisonContext::Source,
+    });
+    let report = analyze(&input, &provider);
+    for id in ["measurement.noise_proxy", "integrity.quasi_duplicate_pairs"] {
+        let m = metric(&report, id);
+        assert_eq!(m.status_wire(), "unsupported", "{id}");
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some(NUMERICAL_DOMAIN_EXCEEDED),
+            "{id}"
+        );
+        assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN, "{id}");
+        assert!(m.value.is_none());
+    }
 }
 
 #[test]

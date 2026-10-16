@@ -258,7 +258,7 @@ impl NativeMethodsProvider {
             return Ok(());
         }
         // SAFETY: live provider context; error string copied before next call.
-        let _message = unsafe {
+        let message = unsafe {
             let p = (self.last_error)(self.context);
             if p.is_null() {
                 String::new()
@@ -266,6 +266,11 @@ impl NativeMethodsProvider {
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
+        // N4M_ERR_UNSUPPORTED with the shared domain message: explicit refusal
+        // of an input outside the supported numerical domain.
+        if status == 10 && message.starts_with("input outside the supported numerical domain") {
+            return Err(ProviderError(NUMERICAL_DOMAIN_EXCEEDED.into()));
+        }
         Err(ProviderError(format!("METHODS_STATUS_{status}")))
     }
 }

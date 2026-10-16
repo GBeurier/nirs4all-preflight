@@ -20,7 +20,14 @@ impl CallbackProvider<'_> {
                 &JsValue::from_str(operation),
                 &JsValue::from_str(&request),
             )
-            .map_err(|_| ProviderError("METHODS_CALLBACK_FAILED".into()))?;
+            .map_err(|e| {
+                // The bridge throws this bare string for a Methods refusal of an
+                // input outside the supported numerical domain.
+                ProviderError(match e.as_string().as_deref() {
+                    Some(NUMERICAL_DOMAIN_EXCEEDED) => NUMERICAL_DOMAIN_EXCEEDED.into(),
+                    _ => "METHODS_CALLBACK_FAILED".into(),
+                })
+            })?;
         let text = result
             .as_string()
             .ok_or_else(|| ProviderError("METHODS_CALLBACK_MUST_RETURN_JSON_STRING".into()))?;

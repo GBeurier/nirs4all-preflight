@@ -8,6 +8,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0-alpha.3";
+/// Reason code of a metric whose input lies outside the supported numerical
+/// domain of its Methods kernel (explicit refusal, never a silent value).
+pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
+/// Supported numerical domain of the Methods Preflight kernels (SNV, noise
+/// proxy, tolerance pairs), published in the `numerical_domain` parameter.
+pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^64; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

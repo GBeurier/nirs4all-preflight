@@ -30,6 +30,17 @@ export async function createQualificationRuntime(options = {}) {
     reason: `${backend_version}; alpha protocol`,
   }));
   const callback = (operation, payload) => {
+    try {
+      return dispatch(operation, payload);
+    } catch (error) {
+      // Methods refuses inputs outside the supported numerical domain with
+      // N4M_ERR_UNSUPPORTED (10); the Rust engine maps this string to an
+      // unsupported metric with reason NUMERICAL_DOMAIN_EXCEEDED.
+      if (error?.status === 10 && /outside the supported numerical domain/.test(error.message)) throw 'NUMERICAL_DOMAIN_EXCEEDED';
+      throw error;
+    }
+  };
+  const dispatch = (operation, payload) => {
     const request = JSON.parse(payload);
     let result;
     switch (operation) {

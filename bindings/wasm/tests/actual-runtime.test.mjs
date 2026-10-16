@@ -192,15 +192,36 @@ test('WASM exact reference comparisons and unbalanced SNV repeats',()=>{
  assert.ok(['ZERO_SNV_TOTAL_VARIANCE','SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED'].includes(m.reason_code));
  assert.ok(m.parameters.snv_rms_band_deviation<=m.parameters.numerical_resolution_threshold);
 });
-test('WASM noise proxy ignores a masked huge value outside every evaluable window',()=>{
+test('WASM noise proxy ignores a value outside every evaluable window',()=>{
  // Review b14fix2 #2: [H,0,0,0,0,1,0,0,0,0,0], index 1 masked, window 3 / order 1.
- for(const H of [0,1e16,1e300]){
-  const report=runtime.analyze({schema_version:1,
-   sources:[{source_id:'x',observation_ids:['o'],sample_ids:['s'],x:[[H,null,0,0,0,1,0,0,0,0,0]],valid_mask:[[true,false,true,true,true,true,true,true,true,true,true]],axis:Array.from({length:11},(_,j)=>1000+j),axis_unit:'nm',signal_unit:'abs'}],
+ const run=(H,mask)=>Object.fromEntries(runtime.analyze({schema_version:1,
+   sources:[{source_id:'x',observation_ids:['o'],sample_ids:['s'],x:[[H,null,0,0,0,1,0,0,0,0,0]],valid_mask:[mask],axis:Array.from({length:11},(_,j)=>1000+j),axis_unit:'nm',signal_unit:'abs'}],
    samples:[{sample_id:'s',physical_sample_id:'s'}],
-   options:{noise_proxy:{window_bands:3,polyorder:1},snv_sensitivity:false}});
-  const m=Object.fromEntries(report.metrics.map(x=>[x.metric_id,x]));
+   options:{noise_proxy:{window_bands:3,polyorder:1},snv_sensitivity:false}}).metrics.map(x=>[x.metric_id,x]));
+ const valid0=[true,false,true,true,true,true,true,true,true,true,true];
+ const masked0=[false,false,true,true,true,true,true,true,true,true,true];
+ for(const [H,mask] of [[0,valid0],[1e16,valid0],[2**64,valid0],[1e300,masked0],[Number.MAX_VALUE,masked0]]){
+  const m=run(H,mask);
   assert.ok(Math.abs(m['measurement.noise_proxy'].value[5]-Math.sqrt(2/3))<=1e-15*Math.sqrt(2/3),`H ${H}`);
   assert.ok(Math.abs(m['measurement.noise_proxy_pooled'].value-1/Math.sqrt(7))<=1e-15/Math.sqrt(7),`H ${H}`);
  }
+ // A valid 1e300 next to 1 leaves the supported domain: explicit refusal.
+ assert.equal(run(1e300,valid0)['measurement.noise_proxy'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+});
+test('WASM refuses inputs outside the supported numerical domain explicitly',()=>{
+ // Rule 13: nonzero |x| in [2^-256, 2^256], per-row spread <= 2^64; one row at 2^300.
+ const analyze=(big)=>runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:['a','b','c','d'],sample_ids:['a','b','c','d'],
+   x:[[1,2,3,4,5],[2,1,3,5,4],[1,3,2,big,5],[5,4,3,2,1]],axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'abs'}],
+  samples:['a','b','c','d'].map(id=>({sample_id:id,physical_sample_id:id})),
+  options:{noise_proxy:{window_bands:3,polyorder:1},quasi_duplicates:{tolerance:0.5,context:'source'}}});
+ const outside=Object.fromEntries(analyze(2**300).metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']){
+  assert.equal(outside[id].status,'unsupported',id);
+  assert.equal(outside[id].reason_code,'NUMERICAL_DOMAIN_EXCEEDED',id);
+  assert.ok(outside[id].parameters.numerical_domain.startsWith('every nonzero |x| in [2^-256, 2^256]'));
+ }
+ // Spread exactly 2^64 within the row (2^64 next to 1) stays inside the domain.
+ const inside=Object.fromEntries(analyze(2**64).metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(inside[id].status,'computed',id);
 });
