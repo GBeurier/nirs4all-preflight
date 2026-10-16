@@ -231,6 +231,16 @@ type VarianceIntervals = unsafe extern "C" fn(
     *mut f64,
     *mut i64,
 ) -> i32;
+type GroupMeans = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    i64,
+    *mut f64,
+    *mut i64,
+) -> i32;
+type RegressionScoresFn =
+    unsafe extern "C" fn(*mut c_void, *const f64, *const f64, i64, *mut f64) -> i32;
 
 /// Each provider owns one context, and stays on its creating thread.
 pub struct NativeMethodsProvider {
@@ -263,6 +273,8 @@ pub struct NativeMethodsProvider {
     monitor_fn: PcaMonitor,
     reml_fn: VarianceReml,
     intervals_fn: VarianceIntervals,
+    group_means_fn: GroupMeans,
+    regression_scores_fn: RegressionScoresFn,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -364,6 +376,12 @@ impl NativeMethodsProvider {
             let intervals_fn = *library
                 .get::<VarianceIntervals>(b"n4m_stats_variance_components_intervals\0")
                 .map_err(err)?;
+            let group_means_fn = *library
+                .get::<GroupMeans>(b"n4m_stats_group_means\0")
+                .map_err(err)?;
+            let regression_scores_fn = *library
+                .get::<RegressionScoresFn>(b"n4m_stats_regression_scores\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -400,6 +418,8 @@ impl NativeMethodsProvider {
                 monitor_fn,
                 reml_fn,
                 intervals_fn,
+                group_means_fn,
+                regression_scores_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -1134,6 +1154,66 @@ impl MethodsProvider for NativeMethodsProvider {
             f_numerically_unresolved: out[14] == 1.0,
             n_at_least_observed: counts[0].max(0) as usize,
             n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn group_means(&self, r: &GroupMeansRequest) -> Result<GroupMeansDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        let g = r.n_groups;
+        if g == 0
+            || g > n
+            || r.group_codes.len() != n
+            || r.group_codes.iter().any(|&c| c < 0 || c as usize >= g)
+        {
+            return Err(ProviderError::internal("INVALID_GROUP_MEANS_REQUEST"));
+        }
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut means = vec![f64::NAN; g * p];
+        let mut counts = vec![0i64; g];
+        // SAFETY: the view owns n x p values; outputs hold g x p and g values.
+        self.check(unsafe {
+            (self.group_means_fn)(
+                self.context,
+                &xv,
+                r.group_codes.as_ptr(),
+                g as i64,
+                means.as_mut_ptr(),
+                counts.as_mut_ptr(),
+            )
+        })?;
+        Ok(GroupMeansDiagnostics {
+            means: means.chunks(p).map(<[f64]>::to_vec).collect(),
+            counts: counts.into_iter().map(|c| c.max(0) as usize).collect(),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn regression_scores(
+        &self,
+        r: &RegressionScoresRequest,
+    ) -> Result<RegressionScores, ProviderError> {
+        let n = r.y_true.len();
+        if n == 0
+            || n != r.y_pred.len()
+            || n > 10_000_000
+            || r.y_true.iter().chain(&r.y_pred).any(|v| !v.is_finite())
+        {
+            return Err(ProviderError::internal("INVALID_REGRESSION_SCORES_REQUEST"));
+        }
+        let mut out = [f64::NAN; 3];
+        // SAFETY: both inputs hold n finite values; out holds three doubles.
+        self.check(unsafe {
+            (self.regression_scores_fn)(
+                self.context,
+                r.y_true.as_ptr(),
+                r.y_pred.as_ptr(),
+                n as i64,
+                out.as_mut_ptr(),
+            )
+        })?;
+        Ok(RegressionScores {
+            rmse: out[0],
+            mae: out[1],
+            r2: out[2].is_finite().then_some(out[2]),
             backend_version: self.version.clone(),
         })
     }

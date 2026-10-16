@@ -161,6 +161,49 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<VarianceComponentsDiagnostics, ProviderError> {
         self.invoke("variance_components", r)
     }
+    fn group_means(&self, r: &GroupMeansRequest) -> Result<GroupMeansDiagnostics, ProviderError> {
+        self.invoke("group_means", r)
+    }
+    fn regression_scores(
+        &self,
+        r: &RegressionScoresRequest,
+    ) -> Result<RegressionScores, ProviderError> {
+        self.invoke("regression_scores", r)
+    }
+}
+/// Browser validation: the Rust engine translates the probe once
+/// (`dagml::nested_probe`); the worker runs dag-ml-wasm
+/// `execute_nested_selection_json` with the Methods JS controller and
+/// returns the outcome, which Rust maps back and re-verifies.
+impl ValidationProvider for CallbackProvider<'_> {
+    fn capabilities(&self) -> Vec<Capability> {
+        self.invoke("validation_capabilities", &serde_json::json!({}))
+            .unwrap_or_else(|e| {
+                vec![Capability {
+                    capability_id: VALIDATION_CAPABILITY_ID.into(),
+                    available: false,
+                    qualified: false,
+                    reason: Some(e.reason),
+                }]
+            })
+    }
+    fn probe(&self, request: &ProbeRequest) -> Result<ProbeResult, ProviderError> {
+        let probe = dagml::nested_probe(request, dagml::ControllerKind::JavaScript)?;
+        let rows = serde_json::json!({
+            "sample_ids": probe.rows.keys().collect::<Vec<_>>(),
+            "x": probe.rows.values().map(|(x, _)| x).collect::<Vec<_>>(),
+            "y": probe.rows.values().map(|(_, y)| y).collect::<Vec<_>>(),
+        });
+        let outcome: dagml::NestedSelectionOutcome = self.invoke(
+            "nested_selection",
+            &serde_json::json!({"request": probe.request, "envelope": probe.envelope, "rows": rows}),
+        )?;
+        dagml::probe_result(
+            &probe,
+            &outcome,
+            "dag-ml-wasm with the Methods JS RolePipeline controller",
+        )
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {
@@ -176,13 +219,20 @@ pub fn validate_json(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn analyze_json(input: &str, methods_callback: &Function) -> Result<String, JsValue> {
     let input: QualificationInput = parse(input)?;
-    serde_json::to_string(&analyze(&input, &CallbackProvider(methods_callback)))
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    serde_json::to_string(&analyze_with_validation(
+        &input,
+        &CallbackProvider(methods_callback),
+        &CallbackProvider(methods_callback),
+    ))
+    .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 #[wasm_bindgen]
 pub fn capabilities_json(methods_callback: &Function) -> Result<String, JsValue> {
-    serde_json::to_string(&capabilities(&CallbackProvider(methods_callback)))
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    serde_json::to_string(&capabilities_with_validation(
+        &CallbackProvider(methods_callback),
+        &CallbackProvider(methods_callback),
+    ))
+    .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 #[wasm_bindgen]
 pub fn report_html_json(input: &str) -> Result<String, JsValue> {

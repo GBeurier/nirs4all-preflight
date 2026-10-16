@@ -17,7 +17,8 @@ def test_actual_methods_provider_and_reserved_test_exclusion():
     assert metric['structure.effective_dimension']['status'] == 'computed'
     assert metric['target.continuous_distribution']['value']['count'] == 5
     assert '<!doctype html>' in report_html(report)
-    assert not any(c['available'] for c in report['capabilities'] if c['capability_id'] == 'validation_probe')
+    probe = next(c for c in report['capabilities'] if c['capability_id'] == 'validation_probe')
+    assert probe['available'] and not probe['qualified']
 
 
 def test_input_nan_fails_before_crossing_ffi():

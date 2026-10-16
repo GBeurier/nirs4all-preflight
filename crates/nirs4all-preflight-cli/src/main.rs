@@ -1,5 +1,6 @@
 use nirs4all_preflight::{
-    analyze, capabilities, report_html, validate_input, QualificationInput,
+    analyze, analyze_with_validation, capabilities, capabilities_with_validation,
+    dagml::DagMlValidationProvider, report_html, validate_input, QualificationInput,
     UnavailableMethodsProvider,
 };
 use std::{
@@ -32,9 +33,10 @@ fn run() -> Result<(), String> {
             }
         }
         let value = if let Some(path) = native_path {
-            capabilities(
-                &nirs4all_preflight::native::NativeMethodsProvider::load(path)
+            capabilities_with_validation(
+                &nirs4all_preflight::native::NativeMethodsProvider::load(&path)
                     .map_err(|e| e.reason)?,
+                &DagMlValidationProvider::load(&path).map_err(|e| e.reason)?,
             )
         } else {
             capabilities(&provider)
@@ -89,9 +91,11 @@ fn run() -> Result<(), String> {
         }
     }
     let report = if let Some(path) = native_path {
-        analyze(
+        analyze_with_validation(
             &input,
-            &nirs4all_preflight::native::NativeMethodsProvider::load(path).map_err(|e| e.reason)?,
+            &nirs4all_preflight::native::NativeMethodsProvider::load(&path)
+                .map_err(|e| e.reason)?,
+            &DagMlValidationProvider::load(&path).map_err(|e| e.reason)?,
         )
     } else {
         analyze(&input, &provider)

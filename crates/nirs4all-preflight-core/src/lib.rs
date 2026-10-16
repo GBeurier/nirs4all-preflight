@@ -402,6 +402,9 @@ pub struct Options {
     pub quasi_duplicates: Option<QuasiDuplicateOptions>,
     #[serde(default)]
     pub domain_shift: DomainShiftOptions,
+    /// Grouped PLS/PCR predictability probe executed by the validation provider.
+    #[serde(default)]
+    pub validation_probe: ValidationProbeOptions,
 }
 
 impl Default for Options {
@@ -417,6 +420,7 @@ impl Default for Options {
             snv_sensitivity: true,
             quasi_duplicates: None,
             domain_shift: DomainShiftOptions::default(),
+            validation_probe: ValidationProbeOptions::default(),
         }
     }
 }
@@ -444,6 +448,35 @@ pub struct IntendedUse {
     pub new_levels: Vec<String>,
     #[serde(default)]
     pub seen_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationProbeOptions {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Fixed recipes; each one is a separate probe.
+    #[serde(default = "default_probe_estimators")]
+    pub estimators: Vec<ProbeEstimator>,
+    /// Upper bound on estimator fits per probe (outer × (grid × inner + 1)).
+    #[serde(default = "default_probe_max_fits")]
+    pub max_fits: usize,
+}
+
+impl Default for ValidationProbeOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            estimators: default_probe_estimators(),
+            max_fits: default_probe_max_fits(),
+        }
+    }
+}
+fn default_probe_estimators() -> Vec<ProbeEstimator> {
+    vec![ProbeEstimator::Pls, ProbeEstimator::Pcr]
+}
+fn default_probe_max_fits() -> usize {
+    500
 }
 fn default_true() -> bool {
     true
@@ -649,6 +682,18 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             "INVALID_QUASI_DUPLICATE_TOLERANCE",
             "options.quasi_duplicates.tolerance",
             "Quasi-duplicate tolerance must be finite and positive",
+            true,
+        );
+    }
+    let probe = &input.options.validation_probe;
+    if probe.estimators.is_empty()
+        || probe.estimators.iter().collect::<BTreeSet<_>>().len() != probe.estimators.len()
+        || probe.max_fits == 0
+    {
+        out.add(
+            "INVALID_VALIDATION_PROBE_OPTIONS",
+            "options.validation_probe",
+            "Probe estimators must be nonempty and unique, with a positive fit budget",
             true,
         );
     }
@@ -1306,6 +1351,10 @@ pub const DIFFERENCE_NUMERICAL_DOMAIN: &str =
 pub struct ProviderError {
     pub kind: ProviderErrorKind,
     pub reason: String,
+    /// Optional diagnostic context (for example the outer fold and candidate
+    /// of a validation failure); never part of the stable reason code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl ProviderError {
@@ -1313,19 +1362,26 @@ impl ProviderError {
         Self {
             kind: ProviderErrorKind::Unsupported,
             reason: reason.into(),
+            detail: None,
         }
     }
     pub fn numerical(reason: impl Into<String>) -> Self {
         Self {
             kind: ProviderErrorKind::Numerical,
             reason: reason.into(),
+            detail: None,
         }
     }
     pub fn internal(reason: impl Into<String>) -> Self {
         Self {
             kind: ProviderErrorKind::Internal,
             reason: reason.into(),
+            detail: None,
         }
+    }
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
     /// Report status of a metric that this error prevented.
     pub fn availability(&self) -> Availability {
@@ -2041,6 +2097,13 @@ pub struct PcaMonitorDiagnostics {
     pub backend_version: String,
 }
 
+/// Provider reason for a Methods refusal of inputs outside the supported
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32 where
+/// differences matter).
+pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
+/// Prefix of the Methods context message for that refusal.
+pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
@@ -2180,10 +2243,184 @@ pub trait MethodsProvider {
             "VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED",
         ))
     }
+    fn group_means(
+        &self,
+        _request: &GroupMeansRequest,
+    ) -> Result<GroupMeansDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "GROUP_MEANS_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+    fn regression_scores(
+        &self,
+        _request: &RegressionScoresRequest,
+    ) -> Result<RegressionScores, ProviderError> {
+        Err(ProviderError::unsupported(
+            "REGRESSION_SCORES_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
+}
+
+/// Equal-weight per-group column means (Methods `n4m_stats_group_means`).
+/// Both probe kernels refuse values outside the declared numerical domain
+/// (`NUMERICAL_DOMAIN_EXCEEDED`, see `PROBE_NUMERICAL_DOMAIN`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMeansRequest {
+    pub matrix: Vec<Vec<f64>>,
+    /// One code per row in `[0, n_groups)`; every group is nonempty.
+    pub group_codes: Vec<i64>,
+    pub n_groups: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMeansDiagnostics {
+    pub means: Vec<Vec<f64>>,
+    pub counts: Vec<usize>,
+    pub backend_version: String,
+}
+
+/// Paired targets and predictions scored by Methods
+/// (`n4m_stats_regression_scores`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegressionScoresRequest {
+    pub y_true: Vec<f64>,
+    pub y_pred: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegressionScores {
+    pub rmse: f64,
+    pub mae: f64,
+    /// `None` (undefined) when the target is constant.
+    pub r2: Option<f64>,
+    pub backend_version: String,
+}
+
+/// Fixed estimator recipe of the validation probe, declared before Y is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeEstimator {
+    /// Methods `models.pls.pls_regression`, NIPALS, X and Y centered, no scaling.
+    Pls,
+    /// Methods `models.pls.pcr`, X and Y centered, no scaling.
+    Pcr,
+}
+
+impl ProbeEstimator {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Pls => "pls",
+            Self::Pcr => "pcr",
+        }
+    }
+}
+
+/// A complete grouped probe: the provider owns the outer and inner grouped
+/// loops and the component selection from inner OOF only. Rows are
+/// aggregated samples; `group_ids` are indivisible identity components that
+/// never cross a fold boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeRequest {
+    pub probe_id: String,
+    pub estimator: ProbeEstimator,
+    /// Candidate numbers of components, ascending; ties select the smallest.
+    pub components: Vec<usize>,
+    pub sample_ids: Vec<String>,
+    pub group_ids: Vec<String>,
+    pub matrix: Vec<Vec<f64>>,
+    pub targets: Vec<f64>,
+    pub outer_splits: usize,
+    pub inner_splits: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeFoldAssignment {
+    pub fold_id: String,
+    pub train_sample_ids: Vec<String>,
+    pub validation_sample_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeCandidateScore {
+    pub n_components: usize,
+    /// Pooled inner-OOF RMSE on the outer training pool.
+    pub inner_rmse: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeOuterFold {
+    pub fold: ProbeFoldAssignment,
+    pub inner_folds: Vec<ProbeFoldAssignment>,
+    pub candidates: Vec<ProbeCandidateScore>,
+    pub selected_components: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeOofRow {
+    pub sample_id: String,
+    pub fold_id: String,
+    pub y_true: f64,
+    pub prediction: f64,
+}
+
+/// Pooled outer-OOF scores reported by the validation provider.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ProbeScores {
+    pub mse: f64,
+    pub rmse: f64,
+    pub mae: f64,
+    pub r2: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeResult {
+    pub outer_folds: Vec<ProbeOuterFold>,
+    /// One row per requested sample.
+    pub oof: Vec<ProbeOofRow>,
+    pub model: ProbeScores,
+    /// Estimator fits executed by the provider.
+    pub n_fits: usize,
+    pub backend_version: String,
+}
+
+/// Grouped validation executed by DAG-ML. Preflight never runs its own CV
+/// loop; it re-verifies the returned evidence with Methods kernels.
+pub trait ValidationProvider {
+    fn capabilities(&self) -> Vec<Capability>;
+    fn probe(&self, request: &ProbeRequest) -> Result<ProbeResult, ProviderError>;
+}
+
+pub const VALIDATION_CAPABILITY_ID: &str = "validation.nested_grouped_probe";
+
+/// Declared numerical domain of the Methods kernels used by the probe
+/// (lead rule 13); outside it they refuse with `NUMERICAL_DOMAIN_EXCEEDED`.
+pub const PROBE_NUMERICAL_DOMAIN: &str = "finite values, every nonzero |x| in [2^-256, 2^256] (spectra aggregation, a summary); targets and predictions also spread max|x|/min nonzero |x| <= 2^32 per array (rule 15); outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; means and scores from double-double sums of explicit residuals, error of order n eps; the Methods NIPALS PLS estimator may refuse strongly scaled data with NumericalFailure (reported as error)";
+
+/// Explicitly unavailable validation, with the host-specific reason.
+pub struct UnavailableValidationProvider(pub &'static str);
+impl Default for UnavailableValidationProvider {
+    fn default() -> Self {
+        Self("VALIDATION_PROVIDER_NOT_CONFIGURED")
+    }
+}
+impl ValidationProvider for UnavailableValidationProvider {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![Capability {
+            capability_id: VALIDATION_CAPABILITY_ID.into(),
+            available: false,
+            qualified: false,
+            reason: Some(self.0.into()),
+        }]
+    }
+    fn probe(&self, _: &ProbeRequest) -> Result<ProbeResult, ProviderError> {
+        Err(ProviderError::unsupported(self.0))
+    }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 22] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 24] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -2206,6 +2443,8 @@ pub const METHODS_CAPABILITY_IDS: [&str; 22] = [
     "methods.energy_distance",
     "methods.pca_monitor",
     "methods.variance_components",
+    "methods.group_means",
+    "methods.regression_scores",
 ];
 
 pub struct UnavailableMethodsProvider;
