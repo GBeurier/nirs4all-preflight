@@ -245,8 +245,20 @@ test('WASM summary and contrast publish their own numerical domains',()=>{
  assert.ok(wide['local.global_contrast'].parameters.numerical_domain.includes('over the whole target vector'));
  const plain=run(6);
  assert.equal(plain['local.global_contrast'].status,'computed');
- assert.ok(plain['local.global_contrast'].parameters.numerical_domain.includes('per row of PCA scores'));
+ assert.ok(plain['local.global_contrast'].parameters.numerical_domain.startsWith('neighbours: magnitude bound only'));
  const huge=run(2**300)['target.continuous_distribution'];
  assert.equal(huge.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
  assert.equal(run(1e-20)['target.continuous_distribution'].status,'computed');
+});
+test('WASM local contrast is computed on rank-deficient spectra',()=>{
+ // Rank 2: PCA scores carry rounding-level components next to large ones;
+ // the neighbours have no spread bound, so the contrast is computed.
+ const ids=['a','b','c','d','e','f'];
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids,sample_ids:ids,x:ids.map((_,i)=>[i,i*i+1,2*i+3,7-i]),axis:[1,2,3,4],axis_unit:'nm',signal_unit:'abs'}],
+  samples:ids.map(id=>({sample_id:id,physical_sample_id:id})),
+  targets:[{target_id:'y',kind:'continuous',values:ids.map((id,i)=>({sample_id:id,value:[1,2,6,3,4,5][i],status:'exact'}))}],
+  options:{independence_unit:'sample'}});
+ const m=report.metrics.find(x=>x.metric_id==='local.global_contrast');
+ assert.equal(m.status,'computed');
 });

@@ -19,9 +19,9 @@ pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, pe
 /// Value summaries: magnitude bound only.
 pub const NUMERICAL_DOMAIN_SUMMARY: &str = "every nonzero |value| in [2^-256, 2^256]; no spread bound; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 /// Local contrast of a continuous target over neighbours in PCA score space.
-pub const NUMERICAL_DOMAIN_LOCAL_CONTINUOUS: &str = "neighbours: every nonzero |score| in [2^-256, 2^256] and, per row of PCA scores, max/min nonzero |score| <= 2^32; contrast: every nonzero |y| in [2^-256, 2^256] and, over the whole target vector, max/min nonzero |y| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+pub const NUMERICAL_DOMAIN_LOCAL_CONTINUOUS: &str = "neighbours: magnitude bound only (every nonzero |score| in [2^-256, 2^256], no spread bound); contrast: every nonzero |y| in [2^-256, 2^256] and, over the whole target vector, max/min nonzero |y| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 /// Local contrast of a categorical target: category codes are labels.
-pub const NUMERICAL_DOMAIN_LOCAL_CATEGORICAL: &str = "neighbours: every nonzero |score| in [2^-256, 2^256] and, per row of PCA scores, max/min nonzero |score| <= 2^32; category codes exempt (labels); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+pub const NUMERICAL_DOMAIN_LOCAL_CATEGORICAL: &str = "neighbours: magnitude bound only (every nonzero |score| in [2^-256, 2^256], no spread bound); category codes exempt (labels); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

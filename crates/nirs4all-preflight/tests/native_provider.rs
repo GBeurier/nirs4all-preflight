@@ -938,3 +938,63 @@ fn native_metrics_publish_their_operation_specific_numerical_domain() {
         );
     }
 }
+
+#[test]
+fn native_local_contrast_is_computed_on_rank_deficient_spectra() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Rank 2 (columns affine in i and i^2): the PCA scores carry components
+    // around 1e-16 next to values around 10. The neighbours have no spread
+    // bound, so the local contrast is computed (lead decision).
+    let ids = ["a", "b", "c", "d", "e", "f"];
+    let mut input = input_with(
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let v = i as f64;
+                (
+                    *id,
+                    Partition::Development,
+                    vec![v, v * v + 1.0, 2.0 * v + 3.0, 7.0 - v],
+                )
+            })
+            .collect(),
+        vec![1., 2., 3., 4.],
+    );
+    input.options.independence_unit = IndependenceUnit::Sample;
+    input.targets = vec![Target {
+        target_id: "y".into(),
+        kind: TargetKind::Continuous,
+        values: ids
+            .iter()
+            .zip([1.0, 2.0, 6.0, 3.0, 4.0, 5.0])
+            .map(|(id, v)| TargetValue {
+                sample_id: (*id).into(),
+                value: Some(v),
+                category: None,
+                status: ReferenceStatus::Exact,
+                reference_id: None,
+                reference_group_id: None,
+            })
+            .collect(),
+        unit: None,
+    }];
+    let report = analyze(&input, &provider);
+    let scores = metric(&report, "structure.pca_scores")
+        .value
+        .clone()
+        .unwrap();
+    let rows = scores["scores"].as_array().unwrap();
+    assert!(rows.iter().any(|r| r
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_f64().unwrap().abs() < 1e-12 && v.as_f64().unwrap() != 0.0)));
+    let m = metric(&report, "local.global_contrast");
+    assert_eq!(m.status_wire(), "computed");
+    assert_eq!(
+        m.parameters["numerical_domain"],
+        NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+    );
+}
