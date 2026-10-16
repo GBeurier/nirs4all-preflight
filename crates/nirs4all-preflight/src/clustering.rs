@@ -94,7 +94,7 @@ fn hdbscan(
     match provider.hdbscan(request) {
         Ok(result) if valid(&result, request.matrix.len()) => Ok(result),
         Ok(_) => Err((Availability::Error, "INVALID_PROVIDER_RESULT".into())),
-        Err(e) => Err((Availability::Unsupported, e.0)),
+        Err(e) => Err((e.availability(), e.reason)),
     }
 }
 
@@ -439,7 +439,7 @@ fn stability(
                 result.scores
             }
             Ok(_) => return fail(Availability::Error, "INVALID_PROVIDER_RESULT"),
-            Err(e) => return fail(Availability::Unsupported, &e.0),
+            Err(e) => return fail(e.availability(), &e.reason),
         };
         let sub = match hdbscan(provider, &request(&scores, sub_size, sub_samples)) {
             Ok(result) => result,
@@ -473,7 +473,7 @@ fn stability(
                     ari.extend(result.ari)
                 }
                 Ok(_) => return fail(Availability::Error, "INVALID_PROVIDER_RESULT"),
-                Err(e) => return fail(Availability::Unsupported, &e.0),
+                Err(e) => return fail(e.availability(), &e.reason),
             }
         }
     }
@@ -502,7 +502,7 @@ fn stability(
     })();
     let value = match value {
         Ok(value) => value,
-        Err(e) => return fail(Availability::Unsupported, &e.0),
+        Err(e) => return fail(e.availability(), &e.reason),
     };
     let mut metric = Metric::computed(id, value, Some(source_id), None);
     metric.view_id = "canonical:centered".into();

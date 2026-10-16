@@ -452,7 +452,7 @@ impl MethodsProvider for GroupCapture {
         r: &NearestNeighborsRequest,
     ) -> Result<NearestNeighborsDiagnostics, ProviderError> {
         *self.0.borrow_mut() = r.query_group_ids.clone();
-        Err(ProviderError("captured".into()))
+        Err(ProviderError::unsupported("captured"))
     }
 }
 
@@ -576,17 +576,17 @@ impl MethodsProvider for Recorder {
         vec![]
     }
     fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
     fn repeatability(
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
     fn noise_proxy(&self, _: &NoiseProxyRequest) -> Result<NoiseProxyDiagnostics, ProviderError> {
         self.noise.set(self.noise.get() + 1);
-        Err(ProviderError("NOT_UNDER_TEST".into()))
+        Err(ProviderError::unsupported("NOT_UNDER_TEST"))
     }
     fn tolerance_pairs(
         &self,

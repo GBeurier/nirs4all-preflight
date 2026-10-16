@@ -19,18 +19,9 @@ const DESCRIPTIVE_ID: &str = "association.metadata_target";
 const TEST_ID: &str = "association.metadata_target_test";
 const FAMILY_ID: &str = "association.metadata_target_family";
 
-/// Stable per-test seed: SplitMix64 finalizer of the root seed XOR the
-/// FNV-1a 64 hash of a provider-specific derivation domain.
+/// Per-test seed from the shared derivation with this protocol's domain.
 pub(crate) fn derive_seed(root: u64, target_id: &str, metadata: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in seed_domain(target_id, metadata).bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    let mut z = root ^ hash;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
+    nirs4all_preflight_core::derive_seed(root, &seed_domain(target_id, metadata))
 }
 
 fn seed_domain(target_id: &str, metadata: &str) -> String {
@@ -261,7 +252,7 @@ fn unit_label(unit: IndependenceUnit) -> &'static str {
     }
 }
 
-/// Numerical domain published with every association metric (rule 13).
+/// Numerical domain published with every association metric (rules 13 and 15).
 fn numerical_domain() -> Value {
     json!({"supported_domain": {
                "nonzero_abs_min": "2^-256", "nonzero_abs_max": "2^256",
@@ -386,7 +377,7 @@ fn summarize(provider: &impl MethodsProvider, values: Vec<f64>) -> (Value, Optio
             None,
         ),
         Ok(_) => (Value::Null, Some("INVALID_PROVIDER_RESULT".into())),
-        Err(e) => (Value::Null, Some(e.0)),
+        Err(e) => (Value::Null, Some(e.reason)),
     }
 }
 
@@ -640,8 +631,8 @@ fn invalid() -> (Availability, String) {
     (Availability::Error, "INVALID_PROVIDER_RESULT".into())
 }
 
-fn unsupported(e: ProviderError) -> (Availability, String) {
-    (Availability::Unsupported, e.0)
+fn provider_failure(e: ProviderError) -> (Availability, String) {
+    (e.availability(), e.reason)
 }
 
 /// A zero-permutation factor-association result consistent with its request.
@@ -711,7 +702,7 @@ fn describe_categorical(
         n_permutations: 0,
         seed,
     };
-    let d = provider.association(&request).map_err(unsupported)?;
+    let d = provider.association(&request).map_err(provider_failure)?;
     if !valid_association(&d, level_codes.len()) {
         return Err(invalid());
     }
@@ -782,7 +773,7 @@ fn describe_by_class(
         n_permutations: 0,
         seed,
     };
-    let d = provider.association(&request).map_err(unsupported)?;
+    let d = provider.association(&request).map_err(provider_failure)?;
     if !valid_association(&d, classes.len()) {
         return Err(invalid());
     }
@@ -841,10 +832,10 @@ fn describe_correlation(
         seed,
     };
     let spearman = request(CorrelationMethod::Spearman);
-    let rho = provider.correlation(&spearman).map_err(unsupported)?;
+    let rho = provider.correlation(&spearman).map_err(provider_failure)?;
     let r = provider
         .correlation(&request(CorrelationMethod::Pearson))
-        .map_err(unsupported)?;
+        .map_err(provider_failure)?;
     let valid = |d: &CorrelationDiagnostics| {
         d.n_distinct_x == rho.n_distinct_x
             && d.n_distinct_y == rho.n_distinct_y
@@ -949,7 +940,7 @@ fn resolve(provider: &impl MethodsProvider, c: &Candidate) -> Resolution {
             ..bound
         },
         Err(e) => Resolution {
-            exact_reason: Some(e.0),
+            exact_reason: Some(e.reason),
             ..bound
         },
     }
@@ -997,7 +988,7 @@ fn finish_family(
                 Ok(Some(k))
             }
             Ok(_) => Err(invalid()),
-            Err(e) => Err(unsupported(e)),
+            Err(e) => Err(provider_failure(e)),
         };
         outcomes.push((resolution, outcome));
     }
@@ -1020,7 +1011,7 @@ fn finish_family(
     }) {
         Ok(h) if adjusted_ok(&h.adjusted) => Ok(h.adjusted),
         Ok(_) => Err(invalid()),
-        Err(e) => Err(unsupported(e)),
+        Err(e) => Err(provider_failure(e)),
     };
     // Exploratory secondary view; never used for findings.
     let bh = match provider.bh_adjust(&BhRequest {
@@ -1028,7 +1019,7 @@ fn finish_family(
     }) {
         Ok(b) if adjusted_ok(&b.adjusted) => Ok(b.adjusted),
         Ok(_) => Err("INVALID_PROVIDER_RESULT".to_string()),
-        Err(e) => Err(e.0),
+        Err(e) => Err(e.reason),
     };
     let members: Vec<_> = candidates
         .iter()

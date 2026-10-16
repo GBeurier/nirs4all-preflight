@@ -3,12 +3,26 @@
 import init, * as rust from './native/nirs4all_preflight_wasm.js';
 import * as methods from '@nirs4all/methods';
 
+/** Adapter refusals carry the provider error kind and the same stable
+ * reason as the native adapter: `unsupported` for a declared limit,
+ * `internal` for a request that breaks the provider contract. */
+const limit = reason => Object.assign(new RangeError(reason), { providerKind: 'unsupported' });
+const invalid = reason => Object.assign(new TypeError(reason), { providerKind: 'internal' });
+
+/** Methods exceptions keep their status and context message, mapped to kind
+ * and reason by the Rust engine exactly as the native adapter maps
+ * n4m_status_t and n4m_context_last_error. */
+function providerError(error) {
+  if (error instanceof methods.N4mError) return { methods_status: error.status, message: error.message };
+  if (error?.providerKind) return { kind: error.providerKind, reason: error.message };
+  return { kind: 'internal', reason: 'METHODS_CALLBACK_FAILED' };
+}
+
 function matrix(rows) {
   const n = rows.length;
   const p = rows[0]?.length ?? 0;
-  if (!n || !p || n * p > 10_000_000 || rows.some(row => row.length !== p)) {
-    throw new RangeError('PROVIDER_MATRIX_BUDGET_OR_SHAPE');
-  }
+  if (!n || !p || rows.some(row => row.length !== p)) throw invalid('INVALID_PROVIDER_MATRIX');
+  if (n * p > 10_000_000) throw limit('PROVIDER_MEMORY_BUDGET_EXCEEDED');
   return { data: Float64Array.from(rows.flat()), rows: n, cols: p };
 }
 function nested(values, width) {
@@ -17,9 +31,6 @@ function nested(values, width) {
   return rows;
 }
 const nullable = value => Number.isFinite(value) ? value : null;
-
-const DOMAIN_MESSAGE = 'input outside the supported numerical domain';
-const NUMERICAL_DOMAIN_EXCEEDED = 'NUMERICAL_DOMAIN_EXCEEDED';
 
 /** The u64 root seed travels as a decimal string: bigint and safe-integer
  * numbers are converted, unsafe numbers are refused (they are already
@@ -41,22 +52,10 @@ export async function createQualificationRuntime(options = {}) {
   const abi = methods.abiVersion();
   if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
-  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact'].map(id => ({
+  const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust', 'correlation', 'bh_adjust', 'association_exact', 'correlation_exact', 'permanova', 'permdisp', 'permanova_freedman_lane'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
     reason: `${backend_version}; alpha protocol`,
   }));
-  const callback = (operation, payload) => {
-    try {
-      return dispatch(operation, payload);
-    } catch (error) {
-      // Methods refusals outside the supported numerical domain keep their
-      // reason; every other failure stays a generic callback error.
-      if (error?.name === 'N4mError' && error.status === 10 && String(error.message).includes(DOMAIN_MESSAGE)) {
-        throw new Error(NUMERICAL_DOMAIN_EXCEEDED);
-      }
-      throw error;
-    }
-  };
   const dispatch = (operation, payload) => {
     const request = JSON.parse(payload);
     let result;
@@ -73,14 +72,14 @@ export async function createQualificationRuntime(options = {}) {
         break;
       }
       case 'summary': {
-        if (!request.values.length || request.values.length > 10_000_000) throw new RangeError('SUMMARY_WORK_BUDGET');
+        if (!request.values.length || request.values.length > 10_000_000) throw invalid('INVALID_SUMMARY_VALUES');
         const output = methods.preflightSummary(Float64Array.from(request.values));
         result = { count: output[0], min: output[1], max: output[2], mean: output[3], sample_sd: nullable(output[4]), q25: output[5], median: output[6], q75: output[7], backend_version };
         break;
       }
       case 'nearest_neighbors': {
         const query = matrix(request.query), reference = matrix(request.reference);
-        if (query.rows * reference.rows * query.cols > 250_000_000 || request.k > 100) throw new RangeError('KNN_WORK_BUDGET');
+        if (query.rows * reference.rows * query.cols > 250_000_000 || request.k > 100) throw limit('KNN_SHAPE_OR_WORK_BUDGET_EXCEEDED');
         const output = methods.preflightNearestNeighbors(query, reference, request.k, request.query_group_ids, request.reference_group_ids);
         result = { indices: nested(output.indices, output.k), distances: nested(Array.from(output.distances, nullable), output.k), backend_version };
         break;
@@ -92,7 +91,7 @@ export async function createQualificationRuntime(options = {}) {
       }
       case 'hdbscan': {
         const x = matrix(request.matrix);
-        if (x.rows * x.rows * x.cols > 2.5e9) throw new RangeError('HDBSCAN_WORK_BUDGET');
+        if (x.rows * x.rows * x.cols > 2.5e9) throw limit('HDBSCAN_SHAPE_OR_WORK_BUDGET');
         const output = methods.clusterHdbscan(x, { minClusterSize: request.min_cluster_size, minSamples: request.min_samples, selection: request.selection, allowSingleCluster: request.allow_single_cluster });
         const tree = output.tree.map(node => ({
           parent: node.parent < 0 ? null : node.parent, size: node.size, label: node.label < 0 ? null : node.label,
@@ -102,7 +101,7 @@ export async function createQualificationRuntime(options = {}) {
         break;
       }
       case 'adjusted_rand_index': {
-        if (request.labels_a.length > 10_000_000) throw new RangeError('ARI_WORK_BUDGET');
+        if (request.labels_a.length > 10_000_000) throw limit('ARI_SHAPE_OR_WORK_BUDGET');
         result = { ari: nullable(methods.preflightAdjustedRandIndex(request.labels_a, request.labels_b)), backend_version };
         break;
       }
@@ -127,7 +126,7 @@ export async function createQualificationRuntime(options = {}) {
         const query = matrix(request.query);
         const reference = request.reference ? matrix(request.reference) : undefined;
         const n = query.rows, work = reference ? n * reference.rows : n * (n - 1) / 2;
-        if (work * query.cols > 250_000_000 || request.max_pairs > 1_000_000) throw new RangeError('TOLERANCE_PAIRS_WORK_BUDGET');
+        if (work * query.cols > 250_000_000 || request.max_pairs > 1_000_000) throw limit('TOLERANCE_PAIRS_SHAPE_OR_WORK_BUDGET_EXCEEDED');
         const output = methods.preflightPairsWithinTolerance(query, request.tolerance, request.max_pairs, reference, request.query_group_ids, reference ? request.reference_group_ids : undefined);
         result = { pairs: nested(output.pairs, 2), distances: Array.from(output.distances), query_flags: Array.from(output.queryFlags, Boolean), reference_flags: Array.from(output.referenceFlags, Boolean), total_pairs: output.totalPairs, candidate_pairs: output.candidatePairs, backend_version };
         break;
@@ -136,6 +135,24 @@ export async function createQualificationRuntime(options = {}) {
         // Seeds travel as decimal strings so no u64 is rounded by JSON.
         const output = methods.preflightFactorAssociation(request.factor_codes, Float64Array.from(request.targets), request.categorical, request.n_permutations, BigInt(request.seed));
         result = { effect_size: nullable(output.effectSize), statistic: nullable(output.statistic), df1: nullable(output.df1), df2: nullable(output.df2), n_levels: output.nLevels, n_target_values: output.nTargetValues, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'permanova': {
+        const x = matrix(request.matrix);
+        const output = methods.statsPermanova(x, request.term_codes, request.strata_codes ?? undefined, request.n_permutations, BigInt(request.seed));
+        result = { ss_binary_exponent: output.ssExponent, ss_total: output.ssTotal, ss_strata: output.ssStrata, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, n_levels: output.nLevels, n_strata: output.nStrata, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'permanova_freedman_lane': {
+        const x = matrix(request.matrix);
+        const output = methods.statsPermanovaFreedmanLane(x, request.term_codes, request.condition_codes, request.n_permutations, BigInt(request.seed));
+        result = { ss_binary_exponent: output.ssExponent, ss_total: output.ssTotal, ss_reduced: output.ssReduced, ss_term: output.ssTerm, ss_residual: output.ssResidual, r2: nullable(output.r2), partial_r2: nullable(output.partialR2), pseudo_f: nullable(output.pseudoF), df_term: output.dfTerm, df_residual: output.dfResidual, rank_reduced: output.rankReduced, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
+        break;
+      }
+      case 'permdisp': {
+        const x = matrix(request.matrix);
+        const output = methods.statsPermdisp(x, request.group_codes, request.n_permutations, BigInt(request.seed));
+        result = { distance_binary_exponent: output.distanceExponent, distances: Array.from(output.distances), group_mean_distances: Array.from(output.groupMeanDistances), f: nullable(output.f), df1: output.df1, df2: output.df2, n_groups: output.nGroups, log10_distinct_permutations: output.log10DistinctPermutations, p_value: nullable(output.pValue), residual_resolution: nullable(output.residualResolution), f_numerically_unresolved: output.fNumericallyUnresolved, n_at_least_observed: output.nAtLeastObserved, n_permutations_executed: output.nPermutationsExecuted, backend_version };
         break;
       }
       case 'holm_adjust': {
@@ -161,9 +178,16 @@ export async function createQualificationRuntime(options = {}) {
         result = { adjusted: Array.from(methods.statsBhAdjust(Float64Array.from(request.p_values))), backend_version };
         break;
       }
-      default: throw new Error(`METHODS_OPERATION_UNSUPPORTED: ${operation}`);
+      default: throw limit('METHODS_OPERATION_UNSUPPORTED');
     }
-    return JSON.stringify(result);
+    return result;
+  };
+  const callback = (operation, payload) => {
+    try {
+      return JSON.stringify({ ok: dispatch(operation, payload) });
+    } catch (error) {
+      return JSON.stringify({ provider_error: providerError(error) });
+    }
   };
   return {
     analyze: input => JSON.parse(rust.analyze_json(JSON.stringify(seedAsDecimal(input)), callback)),

@@ -113,6 +113,72 @@ test('WASM refuses leakage through a prediction bridge',async()=>{
   assert.ok(result.issues.some(i=>i.code==='REFERENCE_LEAKAGE'));
   assert.equal(runtime.analyze(input).status,'failed');
 });
+// Same NumPy 2.2.6 goldens as the native engine test on examples/confounding.json.
+test('WASM confounding matches the native engine goldens',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/confounding.json',import.meta.url),'utf8'));
+  const report=runtime.analyze(fixture);
+  const find=(id,factor)=>report.metrics.find(m=>m.metric_id===id&&(factor===undefined||m.parameters.factor===factor));
+  const partition=find('confounding.variance_partition').value;
+  assert.ok(Math.abs(partition.factors[1].r2_unique_given_other_factors-0.07913593861176811)<1e-10);
+  assert.equal(partition.shares_are_not_additive,true);
+  const conditional=find('confounding.permanova_conditional_test','campaign');
+  assert.equal(conditional.value.n_at_least_observed,121);
+  assert.equal(conditional.parameters.permutation_plan.restrictions,'within_blocks');
+  assert.equal(conditional.parameters.permutation_plan.seed,'744331944044608949');
+  assert.equal(find('confounding.permanova_marginal_test','campaign').value.n_at_least_observed,35);
+  assert.equal(find('confounding.permdisp_test','campaign').value.n_at_least_observed,456);
+  const fl=find('confounding.permanova_freedman_lane_test','campaign');
+  assert.equal(fl.value.n_at_least_observed,101);
+  assert.ok(fl.parameters.permutation_plan.reduced_model.startsWith('intercept + main effects of instrument'));
+  assert.equal(find('confounding.design').value.factors[0].df_identifiable_given_other_factors,1);
+  assert.equal(find('confounding.design').value.factors[0].aliased_with_other_factor_cells,false);
+  assert.equal(find('confounding.design').value.factors[0].identifiable_under_additive_model,true);
+  assert.equal(find('confounding.variance_partition').parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^32');
+  assert.equal(find('confounding.variance_partition').value.ss_binary_exponent,0);
+  assert.equal(find('confounding.dispersion','campaign').value.distance_binary_exponent,0);
+  // Every published F carries its numerical resolution; these are resolved.
+  assert.equal(fl.value.statistic_resolution.numerically_unresolved,false);
+  assert.ok(fl.value.statistic_resolution.residual_ss_resolution_ratio<1e-6);
+  assert.equal(partition.factors[1].pseudo_f_marginal_resolution.numerically_unresolved,false);
+  assert.equal(find('confounding.dispersion','campaign').value.anova_f_resolution.numerically_unresolved,false);
+  assert.ok(runtime.capabilities().some(c=>c.capability_id==='confounding'&&c.available&&!c.qualified));
+});
+// Rule 13 (native test native_engine_partition_is_scale_invariant_inside_the_domain):
+// spectra scaled by 2^k inside D give the same R2 and counts; at 2^-258 the
+// unit coordinates fall below 2^-256 and the Methods refusal crosses the
+// bridge as unsupported NUMERICAL_DOMAIN_EXCEEDED.
+test('WASM confounding follows the supported numerical domain',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/confounding.json',import.meta.url),'utf8'));
+  const run=k=>{
+    const input=structuredClone(fixture);
+    input.sources[0].x=input.sources[0].x.map(row=>row.map(v=>v===null?v:v*2**k));
+    const report=runtime.analyze(input);
+    const find=(id,factor)=>report.metrics.find(m=>m.metric_id===id&&(factor===undefined||m.parameters.factor===factor));
+    return {partition:find('confounding.variance_partition'),test:find('confounding.permanova_marginal_test','campaign')};
+  };
+  const base=run(0);
+  for(const k of [-200,200]){
+    const r=run(k);
+    assert.equal(r.partition.status,'computed');
+    r.partition.value.factors.forEach((f,i)=>assert.ok(Math.abs(f.r2_marginal-base.partition.value.factors[i].r2_marginal)<=1e-8));
+    assert.equal(r.test.value.n_at_least_observed,base.test.value.n_at_least_observed);
+  }
+  for(const k of [-258,-262]){
+    const {partition}=run(k);
+    assert.equal(partition.status,'unsupported');
+    assert.equal(partition.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+    assert.equal(partition.value,null);
+  }
+});
+// A Methods numerical failure keeps its kind and reason across hosts (the
+// native test native_numerical_failure_is_reported_as_error).
+test('WASM reports Methods numerical failures as errors with the native reason',()=>{
+  const huge=structuredClone(input);
+  huge.sources[0].x=huge.sources[0].x.map((row,i)=>row.map((_,j)=>(i+j)%2?-1.7e308:1.7e308));
+  const pca=runtime.analyze(huge).metrics.find(m=>m.metric_id==='structure.pca');
+  assert.equal(pca.status,'error');
+  assert.equal(pca.reason_code,'METHODS_NUMERICAL_FAILURE');
+});
 test('WASM rejects identity leakage before diagnostics',()=>{
  const bad=structuredClone(input);
  bad.samples.at(-1).physical_sample_id=bad.samples[0].physical_sample_id;

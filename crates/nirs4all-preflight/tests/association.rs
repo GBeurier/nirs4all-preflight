@@ -40,13 +40,13 @@ impl MethodsProvider for Scripted {
         .collect()
     }
     fn pca(&self, _: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_SCRIPTED".into()))
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
     }
     fn repeatability(
         &self,
         _: &RepeatabilityRequest,
     ) -> Result<RepeatabilityDiagnostics, ProviderError> {
-        Err(ProviderError("NOT_SCRIPTED".into()))
+        Err(ProviderError::unsupported("NOT_SCRIPTED"))
     }
     fn summary(&self, r: &SummaryRequest) -> Result<SummaryDiagnostics, ProviderError> {
         Ok(SummaryDiagnostics {
@@ -85,7 +85,7 @@ impl MethodsProvider for Scripted {
         // Identity adjustment: exact only for single-hypothesis families,
         // which are the only families whose adjusted values are asserted.
         if self.holm_fails {
-            return Err(ProviderError("HOLM_SCRIPTED_FAILURE".into()));
+            return Err(ProviderError::unsupported("HOLM_SCRIPTED_FAILURE"));
         }
         Ok(HolmDiagnostics {
             adjusted: r.p_values.clone(),
@@ -1046,7 +1046,7 @@ fn real_methods_example_matches_the_wasm_goldens() {
 
 #[test]
 fn real_methods_association_follows_the_supported_numerical_domain() {
-    // Rule 13: inside D (nonzero |x| in [2^-256, 2^256], spread <= 2^32, rule 15)
+    // Rules 13/15: inside D (nonzero |x| in [2^-256, 2^256], spread <= 2^32)
     // metadata and targets scaled by 2^k or shifted by 2^200 give the same
     // effects, counts and plans; outside D every metric of the affected pair
     // is unsupported with NUMERICAL_DOMAIN_EXCEEDED.

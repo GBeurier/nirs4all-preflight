@@ -42,7 +42,7 @@ pub unsafe extern "C" fn n4pf_analyze_json(
                 let path = CStr::from_ptr(methods_library)
                     .to_str()
                     .map_err(|e| e.to_string())?;
-                let provider = native::NativeMethodsProvider::load(path).map_err(|e| e.0)?;
+                let provider = native::NativeMethodsProvider::load(path).map_err(|e| e.reason)?;
                 analyze(&parsed, &provider)
             };
             serde_json::to_vec(&report).map_err(|e| e.to_string())

@@ -33,7 +33,8 @@ fn run() -> Result<(), String> {
         }
         let value = if let Some(path) = native_path {
             capabilities(
-                &nirs4all_preflight::native::NativeMethodsProvider::load(path).map_err(|e| e.0)?,
+                &nirs4all_preflight::native::NativeMethodsProvider::load(path)
+                    .map_err(|e| e.reason)?,
             )
         } else {
             capabilities(&provider)
@@ -90,7 +91,7 @@ fn run() -> Result<(), String> {
     let report = if let Some(path) = native_path {
         analyze(
             &input,
-            &nirs4all_preflight::native::NativeMethodsProvider::load(path).map_err(|e| e.0)?,
+            &nirs4all_preflight::native::NativeMethodsProvider::load(path).map_err(|e| e.reason)?,
         )
     } else {
         analyze(&input, &provider)

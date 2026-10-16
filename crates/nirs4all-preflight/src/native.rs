@@ -99,6 +99,41 @@ type AssociationExact =
     unsafe extern "C" fn(*mut c_void, *const i64, *const f64, i64, i32, i64, *mut f64) -> i32;
 type CorrelationExact =
     unsafe extern "C" fn(*mut c_void, *const f64, *const f64, i64, i32, i64, *mut f64) -> i32;
+type Permanova = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    *const i64,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+    *mut i32,
+) -> i32;
+type Permdisp = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    i32,
+    u64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut i64,
+    *mut i32,
+) -> i32;
+type FreedmanLane = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    *const i64,
+    i32,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+    *mut i32,
+) -> i32;
 type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
 type SnvDestroy = unsafe extern "C" fn(*mut c_void);
 type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
@@ -172,6 +207,9 @@ pub struct NativeMethodsProvider {
     bh_fn: PAdjust,
     association_exact_fn: AssociationExact,
     correlation_exact_fn: CorrelationExact,
+    permanova_fn: Permanova,
+    permdisp_fn: Permdisp,
+    freedman_lane_fn: FreedmanLane,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -182,12 +220,12 @@ impl NativeMethodsProvider {
         // alive longer than its function pointers and the owned context.
         unsafe {
             let library = Library::new(path.as_ref())
-                .map_err(|_| ProviderError("METHODS_LIBRARY_LOAD_FAILED".into()))?;
+                .map_err(|_| ProviderError::unsupported("METHODS_LIBRARY_LOAD_FAILED"))?;
             let compat = *library
                 .get::<unsafe extern "C" fn(u32, u32) -> i32>(b"n4m_check_abi_compatibility\0")
                 .map_err(err)?;
             if compat(2, 20) != 0 {
-                return Err(ProviderError("METHODS_ABI_2_20_REQUIRED".into()));
+                return Err(ProviderError::unsupported("METHODS_ABI_2_20_REQUIRED"));
             }
             let create = *library
                 .get::<Create>(b"n4m_context_create\0")
@@ -252,6 +290,15 @@ impl NativeMethodsProvider {
             let correlation_exact_fn = *library
                 .get::<CorrelationExact>(b"n4m_stats_correlation_exact\0")
                 .map_err(err)?;
+            let permanova_fn = *library
+                .get::<Permanova>(b"n4m_stats_permanova\0")
+                .map_err(err)?;
+            let permdisp_fn = *library
+                .get::<Permdisp>(b"n4m_stats_permdisp\0")
+                .map_err(err)?;
+            let freedman_lane_fn = *library
+                .get::<FreedmanLane>(b"n4m_stats_permanova_freedman_lane\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -263,7 +310,7 @@ impl NativeMethodsProvider {
             };
             let mut context = std::ptr::null_mut();
             if create(&mut context) != 0 || context.is_null() {
-                return Err(ProviderError("METHODS_CONTEXT_CREATE_FAILED".into()));
+                return Err(ProviderError::internal("METHODS_CONTEXT_CREATE_FAILED"));
             }
             Ok(Self {
                 _library: library,
@@ -281,6 +328,9 @@ impl NativeMethodsProvider {
                 bh_fn,
                 association_exact_fn,
                 correlation_exact_fn,
+                permanova_fn,
+                permdisp_fn,
+                freedman_lane_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -306,11 +356,7 @@ impl NativeMethodsProvider {
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
-        // N4M_ERR_UNSUPPORTED (10) outside the supported numerical domain.
-        if status == 10 && message.starts_with(METHODS_DOMAIN_MESSAGE) {
-            return Err(ProviderError(NUMERICAL_DOMAIN_EXCEEDED.into()));
-        }
-        Err(ProviderError(format!("METHODS_STATUS_{status}")))
+        Err(ProviderError::from_methods_error(status, &message))
     }
 }
 impl NativeMethodsProvider {
@@ -326,7 +372,7 @@ impl NativeMethodsProvider {
     }
 }
 fn err(_e: libloading::Error) -> ProviderError {
-    ProviderError("METHODS_LIBRARY_LOAD_FAILED".into())
+    ProviderError::unsupported("METHODS_LIBRARY_LOAD_FAILED")
 }
 fn flatten(matrix: &[Vec<f64>]) -> Result<(Vec<f64>, usize, usize), ProviderError> {
     let n = matrix.len();
@@ -337,10 +383,12 @@ fn flatten(matrix: &[Vec<f64>]) -> Result<(Vec<f64>, usize, usize), ProviderErro
             .iter()
             .any(|row| row.len() != p || row.iter().any(|v| !v.is_finite()))
     {
-        return Err(ProviderError("INVALID_PROVIDER_MATRIX".into()));
+        return Err(ProviderError::internal("INVALID_PROVIDER_MATRIX"));
     }
     if n.checked_mul(p).is_none_or(|cells| cells > 10_000_000) {
-        return Err(ProviderError("PROVIDER_MEMORY_BUDGET_EXCEEDED".into()));
+        return Err(ProviderError::unsupported(
+            "PROVIDER_MEMORY_BUDGET_EXCEEDED",
+        ));
     }
     Ok((matrix.iter().flatten().copied().collect(), n, p))
 }
@@ -367,7 +415,7 @@ impl MethodsProvider for NativeMethodsProvider {
         let (mut x, n, p) = flatten(&r.matrix)?;
         let k = r.n_components;
         if k == 0 || k > n.min(p) || k > i32::MAX as usize {
-            return Err(ProviderError("INVALID_PCA_COMPONENTS".into()));
+            return Err(ProviderError::internal("INVALID_PCA_COMPONENTS"));
         }
         let mut scores = vec![0.; n * k];
         let mut loadings = vec![0.; k * p];
@@ -404,7 +452,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.valid_mask.len() != n
             || r.valid_mask.iter().any(|row| row.len() != p)
         {
-            return Err(ProviderError("INVALID_REPEATABILITY_SHAPE".into()));
+            return Err(ProviderError::internal("INVALID_REPEATABILITY_SHAPE"));
         }
         let mask: Vec<u8> = r
             .valid_mask
@@ -445,7 +493,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.values.len() > 10_000_000
             || r.values.iter().any(|v| !v.is_finite())
         {
-            return Err(ProviderError("INVALID_SUMMARY_VALUES".into()));
+            return Err(ProviderError::internal("INVALID_SUMMARY_VALUES"));
         }
         let mut out = [0.; 8];
         self.check(unsafe {
@@ -485,7 +533,9 @@ impl MethodsProvider for NativeMethodsProvider {
                 .and_then(|v| v.checked_mul(p))
                 .is_none_or(|v| v > 250_000_000)
         {
-            return Err(ProviderError("KNN_SHAPE_OR_WORK_BUDGET_EXCEEDED".into()));
+            return Err(ProviderError::unsupported(
+                "KNN_SHAPE_OR_WORK_BUDGET_EXCEEDED",
+            ));
         }
         let qv = MatrixView::new(&mut query, n, p);
         let rv = MatrixView::new(&mut reference, nr, p);
@@ -527,7 +577,9 @@ impl MethodsProvider for NativeMethodsProvider {
             || n.checked_mul(n).is_none_or(|v| v > 250_000_000)
             || r.targets.iter().any(|v| !v.is_finite())
         {
-            return Err(ProviderError("LOCAL_CONTRAST_SHAPE_OR_WORK_BUDGET".into()));
+            return Err(ProviderError::unsupported(
+                "LOCAL_CONTRAST_SHAPE_OR_WORK_BUDGET",
+            ));
         }
         let indices: Vec<i64> = r.neighbor_indices.iter().flatten().copied().collect();
         let mut out = [f64::NAN; 4];
@@ -559,7 +611,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.min_samples > n
             || (n as f64) * (n as f64) * (p as f64) > 2.5e9
         {
-            return Err(ProviderError("HDBSCAN_SHAPE_OR_WORK_BUDGET".into()));
+            return Err(ProviderError::unsupported("HDBSCAN_SHAPE_OR_WORK_BUDGET"));
         }
         let xv = MatrixView::new(&mut x, n, p);
         let mut labels = vec![0i64; n];
@@ -620,7 +672,7 @@ impl MethodsProvider for NativeMethodsProvider {
         r: &AdjustedRandRequest,
     ) -> Result<AdjustedRandDiagnostics, ProviderError> {
         if r.labels_a.len() != r.labels_b.len() || r.labels_a.len() > 10_000_000 {
-            return Err(ProviderError("ARI_SHAPE_OR_WORK_BUDGET".into()));
+            return Err(ProviderError::unsupported("ARI_SHAPE_OR_WORK_BUDGET"));
         }
         let mut ari = f64::NAN;
         self.check(unsafe {
@@ -656,7 +708,7 @@ impl MethodsProvider for NativeMethodsProvider {
             }
         };
         if status != 0 {
-            return Err(ProviderError(format!("METHODS_STATUS_{status}")));
+            return Err(ProviderError::from_methods_status(status));
         }
         Ok(SnvDiagnostics {
             matrix: out.chunks(p).map(<[f64]>::to_vec).collect(),
@@ -671,7 +723,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.window_length > i32::MAX as usize
             || r.polyorder > i32::MAX as usize
         {
-            return Err(ProviderError("INVALID_NOISE_PROXY_SHAPE".into()));
+            return Err(ProviderError::internal("INVALID_NOISE_PROXY_SHAPE"));
         }
         // Masked cells are never read by Methods; zero keeps the buffer finite.
         let masked: Vec<Vec<f64>> = r
@@ -737,8 +789,8 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.max_pairs > 1_000_000
             || work.is_none_or(|v| v > 250_000_000)
         {
-            return Err(ProviderError(
-                "TOLERANCE_PAIRS_SHAPE_OR_WORK_BUDGET_EXCEEDED".into(),
+            return Err(ProviderError::unsupported(
+                "TOLERANCE_PAIRS_SHAPE_OR_WORK_BUDGET_EXCEEDED",
             ));
         }
         let qv = MatrixView::new(&mut query, n, p);
@@ -797,7 +849,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.n_permutations > 1_000_000
             || r.targets.iter().any(|v| !v.is_finite())
         {
-            return Err(ProviderError("INVALID_ASSOCIATION_REQUEST".into()));
+            return Err(ProviderError::internal("INVALID_ASSOCIATION_REQUEST"));
         }
         let mut out = [f64::NAN; 8];
         let mut counts = [0i64; 2];
@@ -832,7 +884,7 @@ impl MethodsProvider for NativeMethodsProvider {
     }
     fn holm_adjust(&self, r: &HolmRequest) -> Result<HolmDiagnostics, ProviderError> {
         if r.p_values.is_empty() || r.p_values.iter().any(|p| !(0.0..=1.0).contains(p)) {
-            return Err(ProviderError("INVALID_HOLM_REQUEST".into()));
+            return Err(ProviderError::internal("INVALID_HOLM_REQUEST"));
         }
         let mut adjusted = vec![f64::NAN; r.p_values.len()];
         // SAFETY: input and output buffers both hold m elements.
@@ -856,7 +908,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || r.n_permutations > 1_000_000
             || r.x.iter().chain(&r.y).any(|v| !v.is_finite())
         {
-            return Err(ProviderError("INVALID_CORRELATION_REQUEST".into()));
+            return Err(ProviderError::internal("INVALID_CORRELATION_REQUEST"));
         }
         let method = match r.method {
             CorrelationMethod::Pearson => 0,
@@ -900,7 +952,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || !(1..=10_000_000).contains(&r.max_arrangements)
             || r.targets.iter().any(|v| !v.is_finite())
         {
-            return Err(ProviderError("INVALID_EXACT_PERMUTATION_REQUEST".into()));
+            return Err(ProviderError::internal("INVALID_EXACT_PERMUTATION_REQUEST"));
         }
         let mut out = [f64::NAN; 4];
         // SAFETY: input slices have n elements; the output is an owned array.
@@ -927,7 +979,7 @@ impl MethodsProvider for NativeMethodsProvider {
             || !(1..=10_000_000).contains(&r.max_arrangements)
             || r.x.iter().chain(&r.y).any(|v| !v.is_finite())
         {
-            return Err(ProviderError("INVALID_EXACT_PERMUTATION_REQUEST".into()));
+            return Err(ProviderError::internal("INVALID_EXACT_PERMUTATION_REQUEST"));
         }
         let mut out = [f64::NAN; 4];
         // SAFETY: input slices have n elements; the output is an owned array.
@@ -946,7 +998,7 @@ impl MethodsProvider for NativeMethodsProvider {
     }
     fn bh_adjust(&self, r: &BhRequest) -> Result<BhDiagnostics, ProviderError> {
         if r.p_values.is_empty() || r.p_values.iter().any(|p| !(0.0..=1.0).contains(p)) {
-            return Err(ProviderError("INVALID_BH_REQUEST".into()));
+            return Err(ProviderError::internal("INVALID_BH_REQUEST"));
         }
         let mut adjusted = vec![f64::NAN; r.p_values.len()];
         // SAFETY: input and output buffers both hold m elements.
@@ -960,6 +1012,167 @@ impl MethodsProvider for NativeMethodsProvider {
         })?;
         Ok(BhDiagnostics {
             adjusted,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn permanova(&self, r: &PermanovaRequest) -> Result<PermanovaDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        if n < 2
+            || r.term_codes.len() != n
+            || r.strata_codes.as_ref().is_some_and(|s| s.len() != n)
+            || r.n_permutations > 1_000_000
+        {
+            return Err(ProviderError::internal("INVALID_PERMANOVA_REQUEST"));
+        }
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut out = [f64::NAN; 15];
+        let mut counts = [0i64; 2];
+        let mut exponent = 0i32;
+        // SAFETY: the view owns n x p values; code arrays hold n elements;
+        // outputs are owned fixed arrays of the documented sizes.
+        self.check(unsafe {
+            (self.permanova_fn)(
+                self.context,
+                &xv,
+                r.term_codes.as_ptr(),
+                r.strata_codes
+                    .as_ref()
+                    .map_or(std::ptr::null(), |s| s.as_ptr()),
+                r.n_permutations as i32,
+                r.seed,
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+                &mut exponent,
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        Ok(PermanovaDiagnostics {
+            ss_binary_exponent: exponent,
+            ss_total: out[0],
+            ss_strata: out[1],
+            ss_term: out[2],
+            ss_residual: out[3],
+            r2: finite(out[4]),
+            partial_r2: finite(out[5]),
+            pseudo_f: finite(out[6]),
+            df_term: out[7] as usize,
+            df_residual: out[8] as usize,
+            n_levels: out[9] as usize,
+            n_strata: out[10] as usize,
+            log10_distinct_permutations: out[11],
+            p_value: finite(out[12]),
+            residual_resolution: finite(out[13]),
+            f_numerically_unresolved: out[14] == 1.0,
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn permdisp(&self, r: &PermdispRequest) -> Result<PermdispDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        if n < 2 || r.group_codes.len() != n || r.n_permutations > 1_000_000 {
+            return Err(ProviderError::internal("INVALID_PERMDISP_REQUEST"));
+        }
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut distances = vec![f64::NAN; n];
+        let mut means = vec![f64::NAN; n];
+        let mut out = [f64::NAN; 8];
+        let mut counts = [0i64; 2];
+        let mut exponent = 0i32;
+        // SAFETY: the view owns n x p values; per-row outputs hold n values.
+        self.check(unsafe {
+            (self.permdisp_fn)(
+                self.context,
+                &xv,
+                r.group_codes.as_ptr(),
+                r.n_permutations as i32,
+                r.seed,
+                distances.as_mut_ptr(),
+                means.as_mut_ptr(),
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+                &mut exponent,
+            )
+        })?;
+        let groups = (out[3] as usize).min(n);
+        means.truncate(groups);
+        Ok(PermdispDiagnostics {
+            distance_binary_exponent: exponent,
+            distances,
+            group_mean_distances: means,
+            f: out[0].is_finite().then_some(out[0]),
+            df1: out[1] as usize,
+            df2: out[2] as usize,
+            n_groups: groups,
+            log10_distinct_permutations: out[4],
+            p_value: out[5].is_finite().then_some(out[5]),
+            residual_resolution: out[6].is_finite().then_some(out[6]),
+            f_numerically_unresolved: out[7] == 1.0,
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
+            backend_version: self.version.clone(),
+        })
+    }
+    fn permanova_freedman_lane(
+        &self,
+        r: &FreedmanLaneRequest,
+    ) -> Result<FreedmanLaneDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        let c = r.condition_codes.len();
+        if n < 2
+            || r.term_codes.len() != n
+            || c > 64
+            || r.condition_codes.iter().any(|codes| codes.len() != n)
+            || r.n_permutations > 1_000_000
+        {
+            return Err(ProviderError::internal("INVALID_FREEDMAN_LANE_REQUEST"));
+        }
+        let conditions: Vec<i64> = (0..n)
+            .flat_map(|i| r.condition_codes.iter().map(move |codes| codes[i]))
+            .collect();
+        let xv = MatrixView::new(&mut x, n, p);
+        let mut out = [f64::NAN; 14];
+        let mut counts = [0i64; 2];
+        let mut exponent = 0i32;
+        // SAFETY: the view owns n x p values; term codes hold n and the
+        // row-major condition codes n x c elements; outputs are fixed arrays.
+        self.check(unsafe {
+            (self.freedman_lane_fn)(
+                self.context,
+                &xv,
+                r.term_codes.as_ptr(),
+                if c == 0 {
+                    std::ptr::null()
+                } else {
+                    conditions.as_ptr()
+                },
+                c as i32,
+                r.n_permutations as i32,
+                r.seed,
+                out.as_mut_ptr(),
+                counts.as_mut_ptr(),
+                &mut exponent,
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        Ok(FreedmanLaneDiagnostics {
+            ss_binary_exponent: exponent,
+            ss_total: out[0],
+            ss_reduced: out[1],
+            ss_term: out[2],
+            ss_residual: out[3],
+            r2: finite(out[4]),
+            partial_r2: finite(out[5]),
+            pseudo_f: finite(out[6]),
+            df_term: out[7] as usize,
+            df_residual: out[8] as usize,
+            rank_reduced: out[9] as usize,
+            log10_distinct_permutations: out[10],
+            p_value: finite(out[11]),
+            residual_resolution: finite(out[12]),
+            f_numerically_unresolved: out[13] == 1.0,
+            n_at_least_observed: counts[0].max(0) as usize,
+            n_permutations_executed: counts[1].max(0) as usize,
             backend_version: self.version.clone(),
         })
     }
