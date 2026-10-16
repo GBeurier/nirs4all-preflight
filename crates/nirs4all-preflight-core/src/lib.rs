@@ -782,9 +782,16 @@ pub struct PcaRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcaDiagnostics {
+    /// Variances; 0 for an unresolved component.
     pub eigenvalues: Vec<f64>,
     pub scores: Vec<Vec<f64>>,
     pub full_moments: [f64; 2],
+    /// Absolute accuracy bound of every eigenvalue (Methods ABI 2.20:
+    /// 16 * max(n,p) * eps * lambda_max).
+    pub resolution: f64,
+    /// Per component: variance not above `resolution`. Published as 0 with
+    /// zero scores; never counted as numerical rank.
+    pub unresolved: Vec<bool>,
     pub backend_version: String,
 }
 

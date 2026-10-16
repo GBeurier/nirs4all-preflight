@@ -23,7 +23,7 @@ export async function createQualificationRuntime(options = {}) {
   await init(options.wasmModule ? { module_or_path: options.wasmModule } : undefined);
   await methods.loadModule();
   const abi = methods.abiVersion();
-  if (abi[0] !== 2 || abi[1] < 19) throw new Error('METHODS_ABI_2_19_REQUIRED');
+  if (abi[0] !== 2 || abi[1] < 20) throw new Error('METHODS_ABI_2_20_REQUIRED');
   const backend_version = methods.version();
   const methodsCapabilities = ['pca', 'repeatability', 'summary', 'nearest_neighbors', 'local_contrast', 'hdbscan', 'adjusted_rand_index', 'snv', 'noise_proxy', 'tolerance_pairs', 'association', 'holm_adjust'].map(id => ({
     capability_id: `methods.${id}`, available: true, qualified: false,
@@ -36,7 +36,7 @@ export async function createQualificationRuntime(options = {}) {
       case 'capabilities': result = methodsCapabilities; break;
       case 'pca': {
         const output = methods.preflightPca(matrix(request.matrix), request.n_components);
-        result = { eigenvalues: Array.from(output.eigenvalues), scores: nested(output.scores.data, output.scores.cols), full_moments: output.fullMoments, backend_version };
+        result = { eigenvalues: Array.from(output.eigenvalues), scores: nested(output.scores.data, output.scores.cols), full_moments: output.fullMoments, resolution: output.resolution, unresolved: Array.from(output.unresolved, Boolean), backend_version };
         break;
       }
       case 'repeatability': {

@@ -593,7 +593,9 @@ fn analyze_source(
                 metric
                     .parameters
                     .insert("backend_version".into(), json!(result.backend_version));
+                insert_resolution(&mut metric, &result);
                 report.metrics.push(metric);
+                let n_resolved = result.unresolved.iter().filter(|u| !**u).count();
                 let [sum, sum2] = result.full_moments;
                 let mut moments = Metric::computed(
                     "structure.full_variance_moments",
@@ -607,7 +609,9 @@ fn analyze_source(
                     json!("methods_full_centered_covariance_ddof_1"),
                 );
                 report.metrics.push(moments);
-                if sum > 0.0 {
+                // Numerical rank counts resolved components only: an
+                // unresolved one is below the decomposition's accuracy.
+                if sum > 0.0 && n_resolved > 0 {
                     let retained: f64 = result.eigenvalues.iter().sum();
                     let mut ratio = Metric::computed(
                         "structure.explained_variance_retained",
@@ -617,6 +621,9 @@ fn analyze_source(
                     );
                     ratio.view_id = "canonical:centered".into();
                     ratio.denominators.insert("n_components_retained".into(), k);
+                    ratio
+                        .denominators
+                        .insert("n_resolved_components".into(), n_resolved);
                     report.metrics.push(ratio);
                     if req.matrix.len().saturating_mul(k) <= 100_000 {
                         let mut scores = Metric::computed(
@@ -630,6 +637,7 @@ fn analyze_source(
                             .denominators
                             .insert("n_aggregated_samples".into(), req.matrix.len());
                         scores.parameters.insert("score_columns".into(), json!(k));
+                        insert_resolution(&mut scores, &result);
                         report.metrics.push(scores);
                     } else {
                         report.metrics.push(Metric::unavailable(
@@ -762,6 +770,32 @@ fn pca_result_valid(result: &PcaDiagnostics, k: usize, n: usize) -> bool {
             .iter()
             .all(|v| v.is_finite() && *v >= 0.0)
         && result.eigenvalues.iter().sum::<f64>() <= result.full_moments[0] * (1.0 + 1e-8) + 1e-12
+        && result.resolution.is_finite()
+        && result.resolution >= 0.0
+        && result.unresolved.len() == k
+        && result
+            .unresolved
+            .iter()
+            .zip(&result.eigenvalues)
+            .all(|(u, v)| !u || *v == 0.0)
+}
+
+/// Methods' absolute accuracy contract for a PCA metric: the resolution bound
+/// and the components below it, which are not numerical rank.
+fn insert_resolution(metric: &mut Metric, result: &PcaDiagnostics) {
+    metric
+        .parameters
+        .insert("eigenvalue_resolution".into(), json!(result.resolution));
+    metric.parameters.insert(
+        "unresolved_components".into(),
+        json!(result
+            .unresolved
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| **u)
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()),
+    );
 }
 
 /// Eigenvalue shares of the full spectrum and the full-moment effective dimension.
@@ -772,6 +806,7 @@ fn pca_structure(result: &PcaDiagnostics) -> serde_json::Value {
         "eigenvalue_shares": shares,
         "first_component_share": shares.first(),
         "retained_share": shares.iter().sum::<f64>(),
+        "n_resolved_components": result.unresolved.iter().filter(|u| !**u).count(),
         "effective_dimension": (sum2 > 0.0).then(|| sum * sum / sum2).filter(|v| v.is_finite()),
     })
 }
@@ -1390,6 +1425,7 @@ fn analyze_snv(
     eigen
         .parameters
         .insert("backend_version".into(), json!(result.backend_version));
+    insert_resolution(&mut eigen, &result);
     report.metrics.push(eigen);
     let [sum, sum2] = result.full_moments;
     let mut dimension = match (sum2 > 0.0).then(|| sum * sum / sum2) {

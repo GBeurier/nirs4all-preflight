@@ -14,6 +14,10 @@ test('actual Rust WASM + Methods WASM computes canonical report',()=>{
   assert.equal(report.profile_status,'exploratory');
   assert.equal(metrics['population.development_real_samples'].value,5);
   assert.equal(metrics['structure.effective_dimension'].status,'computed');
+  // Methods ABI 2.20 accuracy contract travels through the WASM provider.
+  const eigen=metrics['structure.pca_eigenvalues'];
+  assert.ok(eigen.parameters.eigenvalue_resolution>0);
+  assert.ok(Array.isArray(eigen.parameters.unresolved_components));
   assert.equal(metrics['target.continuous_distribution'].value.count,5);
   assert.equal(metrics['local.global_contrast'].status,'computed');
   assert.ok(runtime.reportHtml(report).includes('<!doctype html>'));

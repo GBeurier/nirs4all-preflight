@@ -19,6 +19,8 @@ impl MethodsProvider for Mock {
                 .map(|row| row[..r.n_components].to_vec())
                 .collect(),
             full_moments: [r.n_components as f64, r.n_components as f64],
+            resolution: 0.0,
+            unresolved: vec![false; r.n_components],
             backend_version: "mock".into(),
         })
     }

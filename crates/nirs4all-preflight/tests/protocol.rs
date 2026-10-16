@@ -13,6 +13,8 @@ impl MethodsProvider for Spy {
             eigenvalues: vec![1.0; req.n_components],
             scores: vec![vec![1.0; req.n_components]; req.matrix.len()],
             full_moments: [2.0, 2.0],
+            resolution: 0.0,
+            unresolved: vec![false; req.n_components],
             backend_version: "spy".into(),
         })
     }
@@ -339,6 +341,8 @@ impl MethodsProvider for LocalSpy {
                 .map(|i| vec![i as f64; r.n_components])
                 .collect(),
             full_moments: [2.0, 2.0],
+            resolution: 0.0,
+            unresolved: vec![false; r.n_components],
             backend_version: "spy".into(),
         })
     }
@@ -524,6 +528,8 @@ impl MethodsProvider for ZeroPca {
             eigenvalues: vec![0.0; r.n_components],
             scores: vec![vec![0.0; r.n_components]; r.matrix.len()],
             full_moments: [0.0, 0.0],
+            resolution: 0.0,
+            unresolved: vec![true; r.n_components],
             backend_version: "spy".into(),
         })
     }
@@ -563,6 +569,72 @@ fn zero_rank_does_not_claim_pca_geometry_or_local_contrast() {
             && matches!(m.status, Availability::Undefined)
             && m.value.is_none()));
     }
+}
+
+/// Methods' rule-14 contract: the last component is below the published
+/// resolution (unresolved, variance and scores 0); the first one is resolved.
+struct PartlyResolvedPca(usize);
+impl MethodsProvider for PartlyResolvedPca {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![]
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        let k = r.n_components;
+        let resolved = self.0.min(k);
+        Ok(PcaDiagnostics {
+            eigenvalues: (0..k)
+                .map(|a| if a < resolved { 1.0 } else { 0.0 })
+                .collect(),
+            scores: (0..r.matrix.len())
+                .map(|i| {
+                    (0..k)
+                        .map(|a| if a < resolved { i as f64 } else { 0.0 })
+                        .collect()
+                })
+                .collect(),
+            full_moments: [2.0, 2.0],
+            resolution: 1e-12,
+            unresolved: (0..k).map(|a| a >= resolved).collect(),
+            backend_version: "spy".into(),
+        })
+    }
+    fn repeatability(
+        &self,
+        _: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Err(ProviderError("NOT_UNDER_TEST".into()))
+    }
+}
+
+#[test]
+fn unresolved_components_are_labelled_and_not_counted_as_rank() {
+    let report = analyze(&input(), &PartlyResolvedPca(1));
+    let eigen = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "structure.pca_eigenvalues")
+        .expect("eigenvalue metric");
+    let k = eigen.parameters["n_components"].as_u64().unwrap() as usize;
+    assert!(k >= 2);
+    assert_eq!(eigen.parameters["eigenvalue_resolution"], 1e-12);
+    assert_eq!(
+        eigen.parameters["unresolved_components"],
+        serde_json::json!((1..k).collect::<Vec<_>>())
+    );
+    let ratio = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "structure.explained_variance_retained")
+        .expect("retained ratio");
+    assert_eq!(ratio.denominators["n_resolved_components"], 1);
+    // Nothing resolved: no PCA geometry is claimed (zero numerical rank).
+    let none = analyze(&input(), &PartlyResolvedPca(0));
+    assert!(none
+        .metrics
+        .iter()
+        .any(|m| m.metric_id == "structure.pca_scores"
+            && matches!(m.status, Availability::Undefined)
+            && m.reason_code.as_deref() == Some("ZERO_NUMERICAL_RANK")));
 }
 
 #[derive(Default)]

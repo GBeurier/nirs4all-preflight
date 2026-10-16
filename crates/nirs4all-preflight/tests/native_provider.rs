@@ -18,6 +18,42 @@ fn actual_public_methods_abi_matches_analytic_covariance_and_repeatability() {
     assert!((result.eigenvalues[0] - 4. / 3.).abs() < 1e-10);
     assert!((result.full_moments[0] - 5. / 3.).abs() < 1e-10);
     assert!((result.full_moments[1] - 17. / 9.).abs() < 1e-10);
+    // ABI 2.20 accuracy contract: resolution = 16 max(n,p) eps lambda_max.
+    assert_eq!(
+        result.resolution,
+        16. * 4. * f64::EPSILON * result.eigenvalues[0]
+    );
+    assert_eq!(result.unresolved, vec![false]);
+    // [A; -A], A = [[-1,1,-1],[-1,-1,-1],[1,-1,1],[-t,t,t]] (spread 1/t,
+    // inside the 2^32 domain). The third variance 4t^2/7 (1 + O(t^2)) is
+    // resolved for t = 2^-20 (~3e-13 lambda_1) and unresolved for t = 2^-30
+    // (~2^-61 lambda_1): flagged and published as 0, not a rank-3 claim.
+    let weak = |t: f64| {
+        let a = [[-1., 1., -1.], [-1., -1., -1.], [1., -1., 1.], [-t, t, t]];
+        let matrix: Vec<Vec<f64>> = a
+            .iter()
+            .map(|r| r.to_vec())
+            .chain(a.iter().map(|r| r.iter().map(|v| -v).collect()))
+            .collect();
+        provider
+            .pca(&PcaRequest {
+                source_id: "analytic".into(),
+                sample_ids: vec![],
+                matrix,
+                n_components: 3,
+            })
+            .unwrap()
+    };
+    let s17 = 17f64.sqrt();
+    let resolved = weak(2f64.powi(-20));
+    assert_eq!(resolved.unresolved, vec![false, false, false]);
+    assert!(
+        (resolved.eigenvalues[0] - 2. * (s17 + 1.) * (s17 + 1.) / 28.).abs() <= resolved.resolution
+    );
+    assert!((resolved.eigenvalues[2] - 4. * 2f64.powi(-40) / 7.).abs() <= resolved.resolution);
+    let unresolved = weak(2f64.powi(-30));
+    assert_eq!(unresolved.unresolved, vec![false, false, true]);
+    assert_eq!(unresolved.eigenvalues[2], 0.);
     let repeats = provider
         .repeatability(&RepeatabilityRequest {
             source_id: "analytic".into(),

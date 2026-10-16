@@ -4,6 +4,19 @@
 
 Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.
 
+- PCA resolution (Methods ABI 2.20, rule-14 accuracy contract).
+  - The native and WASM providers call
+    `n4m_preflight_pca_compute_resolved` and require Methods ABI 2.20.
+  - `structure.pca_eigenvalues`, `structure.snv_pca_eigenvalues` and
+    `structure.pca_scores` publish `eigenvalue_resolution` (absolute accuracy
+    threshold, `16 * max(n,p) * eps * lambda_max`) and
+    `unresolved_components` (indices of components not above it, whose
+    variance and scores are 0). `structure.explained_variance_retained` adds
+    the `n_resolved_components` denominator, and the SNV sensitivity view adds
+    `n_resolved_components`.
+  - Numerical rank counts resolved components only: when none is resolved,
+    the PCA geometry is reported as `ZERO_NUMERICAL_RANK`.
+
 - Clustering capability (PF-05, exploratory, unqualified). Methods ABI 2.19
   `n4m_cluster_hdbscan` runs on the same eligible samples and canonical
   PCA scores as `structure.*`. It reports per-sample labels, membership
