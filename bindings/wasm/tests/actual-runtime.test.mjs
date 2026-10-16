@@ -477,12 +477,15 @@ test('WASM SNV keeps constant spectra flat and rounding residue unresolved',()=>
   sources:[{source_id:'nir',observation_ids:rid.map(i=>`o-${i}`),sample_ids:rid,x:rows.map(([a,b])=>[1,2,3,4,5].map(j=>a*j+b)),axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'absorbance'}],
   samples:rid.map(i=>({sample_id:i,physical_sample_id:i}))});
  const rm=Object.fromEntries(residue.metrics.map(m=>[m.metric_id,m]));
- // Rounding-level SNV entries (~1e-17 next to ~1.4) are outside the Methods
- // 2.20 PCA domain: refused, never reported as structure (native test
+ // Rounding-level SNV entries (~1e-17 next to ~1.4): the rank criterion is
+ // decided before the SNV-view PCA, which is skipped (native test
  // native_snv_rounding_residue_is_not_reported_as_structure).
- assert.equal(rm['structure.snv_sensitivity'].status,'unsupported');
- assert.equal(rm['structure.snv_sensitivity'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
- assert.equal(rm['structure.snv_effective_dimension'],undefined);
+ for(const id of ['structure.snv_sensitivity','structure.snv_effective_dimension']){
+  assert.equal(rm[id].status,'undefined');
+  assert.equal(rm[id].reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
+  assert.ok(rm[id].parameters.snv_rms_band_deviation<=rm[id].parameters.numerical_resolution_threshold);
+ }
+ assert.equal(rm['structure.snv_pca_eigenvalues'],undefined);
 });
 test('WASM relative contradiction tolerance cannot overflow and aliases are compared',async()=>{
  // Review b4 #2: same cases as the Rust protocol test (one physical sample per case).

@@ -712,18 +712,45 @@ fn native_snv_rounding_residue_is_not_reported_as_structure() {
         vec![1., 2., 3., 4., 5.],
     );
     let report = analyze(&input, &provider);
-    // The SNV rows differ only by rounding residue, so some entries are
-    // ~1e-17 next to entries ~1.4: with Methods ABI 2.20 the SNV-view PCA
-    // refuses this matrix (max/min nonzero |x| > 2^32) before computing. The
-    // residue is never reported as structure.
-    let m = metric(&report, "structure.snv_sensitivity");
-    assert_eq!(m.status_wire(), "unsupported");
-    assert!(m.value.is_none());
-    assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
+    // The SNV rows differ only by rounding residue: entries ~1e-17 next to
+    // entries ~1.4, outside the PCA domain (spread > 2^32). The rank
+    // criterion is decided from the Methods SNV bounds before the PCA, which
+    // is skipped: undefined, never a domain refusal or structure.
+    let snv = provider
+        .snv(&SnvRequest {
+            matrix: input.sources[0]
+                .x
+                .iter()
+                .map(|r| r.iter().map(|v| v.unwrap()).collect())
+                .collect(),
+            group_ids: None,
+        })
+        .unwrap();
+    let entries: Vec<f64> = snv.matrix.iter().flatten().map(|v| v.abs()).collect();
+    assert!(entries.iter().any(|v| *v > 1.4));
+    assert!(entries.iter().any(|v| *v > 0.0 && *v < 1e-15));
+    for id in [
+        "structure.snv_sensitivity",
+        "structure.snv_effective_dimension",
+    ] {
+        let m = metric(&report, id);
+        assert_eq!(m.status_wire(), "undefined", "{id}");
+        assert!(m.value.is_none());
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"),
+            "{id}"
+        );
+        let rms = m.parameters["snv_rms_band_deviation"].as_f64().unwrap();
+        let threshold = m.parameters["numerical_resolution_threshold"]
+            .as_f64()
+            .unwrap();
+        assert!(rms <= threshold && threshold < 1e-12);
+    }
     assert!(!report
         .metrics
         .iter()
-        .any(|m| m.metric_id == "structure.snv_effective_dimension"));
+        .any(|m| m.metric_id == "structure.snv_pca_eigenvalues"));
     assert_eq!(
         metric(&report, "structure.effective_dimension").status_wire(),
         "computed"
@@ -821,7 +848,7 @@ fn native_snv_bound_covers_aggregation_of_unbalanced_repeats() {
     source.repetition_types = Some(vec![RepetitionType::Rescan; source.x.len()]);
     let report = analyze(&input, &provider);
     assert_eq!(
-        metric(&report, "structure.snv_pca_eigenvalues").denominators["n_aggregated_samples"],
+        metric(&report, "structure.snv_sensitivity").denominators["n_aggregated_samples"],
         4
     );
     // The compensated mean of identical rows is exact here, so the residual

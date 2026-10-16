@@ -1311,14 +1311,23 @@ fn noise_proxy_validation_cannot_wrap_and_matches_the_methods_domain() {
 
 /// SNV is the identity plus a marker offset so the fake PCA can tell the
 /// canonical call from the SNV call and return a chosen SNV trace.
-struct SnvTrace(f64);
+/// Fake provider whose SNV view has total variance `trace` (per-band sample
+/// variances trace/2 over the two bands of input()); `refuse_snv_pca` makes
+/// the SNV-view PCA refuse for domain reasons.
+struct SnvTrace {
+    trace: f64,
+    refuse_snv_pca: bool,
+}
 impl MethodsProvider for SnvTrace {
     fn capabilities(&self) -> Vec<Capability> {
         vec![]
     }
     fn pca(&self, req: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
         let snv = req.matrix.iter().flatten().any(|v| *v >= 1000.0);
-        let trace = if snv { self.0 } else { 1.0 };
+        if snv && self.refuse_snv_pca {
+            return Err(ProviderError::unsupported(NUMERICAL_DOMAIN_EXCEEDED));
+        }
+        let trace = if snv { self.trace } else { 1.0 };
         Ok(PcaDiagnostics {
             eigenvalues: vec![trace / req.n_components as f64; req.n_components],
             scores: vec![vec![0.0; req.n_components]; req.matrix.len()],
@@ -1348,6 +1357,22 @@ impl MethodsProvider for SnvTrace {
             backend_version: "fake".into(),
         })
     }
+    fn summary(&self, req: &SummaryRequest) -> Result<SummaryDiagnostics, ProviderError> {
+        let snv = req.values.iter().any(|v| *v >= 1000.0);
+        let min = req.values.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = req.values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Ok(SummaryDiagnostics {
+            count: req.values.len(),
+            min,
+            max,
+            mean: min,
+            sample_sd: Some(if snv { (self.trace / 2.0).sqrt() } else { 1.0 }),
+            q25: min,
+            median: min,
+            q75: max,
+            backend_version: "fake".into(),
+        })
+    }
 }
 
 #[test]
@@ -1356,7 +1381,13 @@ fn snv_ratios_require_numerically_resolved_residual_variance() {
     // aggregated samples, largest fake SNV entry 1006 (row [3, 6] + 1000).
     let threshold = 4.0 * (3e-12 + 4.0 * (f64::EPSILON / 2.0) * 1006.0);
     for (rms, resolved) in [(0.9 * threshold, false), (1.1 * threshold, true)] {
-        let report = analyze(&input(), &SnvTrace(2.0 * rms * rms));
+        let report = analyze(
+            &input(),
+            &SnvTrace {
+                trace: 2.0 * rms * rms,
+                refuse_snv_pca: false,
+            },
+        );
         let m = metric(&report, "structure.snv_sensitivity");
         assert_eq!(m.parameters["numerically_resolved"], resolved);
         assert!(
@@ -1383,6 +1414,42 @@ fn snv_ratios_require_numerically_resolved_residual_variance() {
             }
         }
     }
+}
+
+#[test]
+fn unresolved_snv_view_skips_the_pca_and_a_pca_refusal_publishes_its_domain() {
+    let threshold = 4.0 * (3e-12 + 4.0 * (f64::EPSILON / 2.0) * 1006.0);
+    // Unresolved: the criterion is decided before the SNV-view PCA, which a
+    // refusing PCA would otherwise turn into a domain refusal.
+    let report = analyze(
+        &input(),
+        &SnvTrace {
+            trace: 2.0 * (0.5 * threshold).powi(2),
+            refuse_snv_pca: true,
+        },
+    );
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert!(matches!(m.status, Availability::Undefined));
+    assert_eq!(
+        m.reason_code.as_deref(),
+        Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED")
+    );
+    assert!(!report
+        .metrics
+        .iter()
+        .any(|m| m.metric_id == "structure.snv_pca_eigenvalues"));
+    // Resolved, then refused by the PCA: the PCA's own domain is published.
+    let report = analyze(
+        &input(),
+        &SnvTrace {
+            trace: 2.0 * (2.0 * threshold).powi(2),
+            refuse_snv_pca: true,
+        },
+    );
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert!(matches!(m.status, Availability::Unsupported));
+    assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
+    assert_eq!(m.parameters["numerical_domain"], PCA_NUMERICAL_DOMAIN);
 }
 
 fn dev_sample(id: &str, physical: &str) -> Sample {

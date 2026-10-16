@@ -13,6 +13,8 @@ pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
 /// (inputs outside are refused with NUMERICAL_DOMAIN_EXCEEDED).
 /// Spectra kernels (SNV, noise proxy, tolerance pairs).
 pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Canonical and SNV-view PCA (Methods `n4m_preflight_pca_compute_resolved`).
+pub const PCA_NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-128, 2^128] and max/min nonzero |x| <= 2^32 over the whole matrix; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 /// Value summaries: magnitude bound only.
 pub const NUMERICAL_DOMAIN_SUMMARY: &str = "every nonzero |value| in [2^-256, 2^256]; no spread bound; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 /// Local contrast of a continuous target over neighbours in PCA score space.

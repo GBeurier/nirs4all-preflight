@@ -52,7 +52,8 @@ Engine, crates, Python and npm binding move together to 0.1.0, following the pla
     kernels that would see a spread above 2^32. The PCA metrics publish
     `k_requested` and `k_resolved`, and `structure.pca_scores` has
     `k_resolved` columns.
-- Methods 1.3.7 refuses canonical PCA inputs outside [2^-128, 2^128] or with a spread above 2^32 (`NUMERICAL_DOMAIN_EXCEEDED`, formerly `METHODS_NUMERICAL_FAILURE` or a convergence failure). The SNV-view PCA of rows that differ only by rounding residue (entries ~1e-17 next to ~1.4) is refused the same way and is never reported as structure.
+- Methods 1.3.7 refuses canonical PCA inputs outside [2^-128, 2^128] or with a spread above 2^32 (`NUMERICAL_DOMAIN_EXCEEDED`, formerly `METHODS_NUMERICAL_FAILURE` or a convergence failure); `structure.pca` then publishes that PCA domain (`PCA_NUMERICAL_DOMAIN`) in `numerical_domain`.
+- The SNV rank criterion is decided before the SNV-view PCA: trace(C_snv) is the sum of the Methods per-band sample variances (`summary`, magnitude bound only) and is compared with the threshold built from the `n4m_preflight_snv_compute` rounding bounds. When it is not resolved, `structure.snv_sensitivity` and `structure.snv_effective_dimension` are `undefined` with `SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED` and the PCA is skipped, so SNV rows that differ only by rounding residue (entries ~1e-17 next to ~1.4, outside the PCA domain) are never a domain refusal. If the SNV-view PCA does refuse a resolved view, `structure.snv_sensitivity` publishes the PCA domain, not the spectra domain.
 
 ### Clustering
 

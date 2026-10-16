@@ -352,6 +352,7 @@ pub fn analyze_with_validation(
             | "integrity.quasi_duplicate_pairs"
             | "integrity.cross_partition_quasi_duplicate_pairs"
             | "reference.quasi_duplicate_conflicts" => Some(NUMERICAL_DOMAIN),
+            "structure.pca" => Some(PCA_NUMERICAL_DOMAIN),
             _ if m.reason_code.as_deref() == Some(NUMERICAL_DOMAIN_EXCEEDED) => {
                 Some(NUMERICAL_DOMAIN)
             }
@@ -1507,42 +1508,53 @@ fn analyze_snv(
             return;
         }
     };
-    let matrix = snv.matrix.clone();
-    let n = matrix.len();
-    let req = PcaRequest {
-        source_id: source.source_id.clone(),
-        sample_ids: Vec::new(),
-        matrix,
-        n_components: k,
-    };
-    let raw = match provider.pca(&req) {
-        Ok(r) if pca_result_valid(&r, k, n) => r,
-        Ok(_) => {
-            push_unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
-            return;
+    let n = snv.matrix.len();
+    if n < 2 {
+        push_unavailable(
+            report,
+            Availability::InsufficientData,
+            "FEWER_THAN_TWO_AGGREGATED_SAMPLES",
+        );
+        return;
+    }
+    // Numerical rank of the SNV view, decided BEFORE the PCA. Methods bounds
+    // the rounding error of every entry of aggregated sample g by B_g (SNV of
+    // each acquisition and the compensated mean of its r_g repeats). If the
+    // analytic SNV rows were identical, each aggregated row would differ from
+    // the band mean by at most 2 max B, so the per-band RMS deviation (n-1
+    // denominator, n >= 2) would not exceed 2 sqrt(2) max B. The column means
+    // add at most n u max|z| per entry. Residual variance under
+    // SNV_RESOLUTION_FACTOR (max B + n u max|z|) is rounding, not structure,
+    // and the PCA is not run on it. The total variance trace(C_snv) is the
+    // sum of the per-band sample variances from the Methods summary kernel
+    // (magnitude bound only, so rounding-level entries are accepted).
+    let mut sum = 0.0;
+    for c in 0..p {
+        let request = SummaryRequest {
+            values: snv.matrix.iter().map(|row| row[c]).collect(),
+        };
+        match provider.summary(&request) {
+            Ok(d) if d.count == n && d.sample_sd.is_some_and(|v| v.is_finite() && v >= 0.0) => {
+                let sd = d.sample_sd.unwrap_or_default();
+                sum += sd * sd;
+            }
+            Ok(_) => {
+                push_unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
+                return;
+            }
+            Err(e) => {
+                push_unavailable(report, e.availability(), &e.reason);
+                return;
+            }
         }
-        Err(e) => {
-            push_unavailable(report, e.availability(), &e.reason);
-            return;
-        }
-    };
-    let result = raw.resolved();
-    // Numerical rank of the SNV view. Methods bounds the rounding error of
-    // every entry of aggregated sample g by B_g (SNV of each acquisition and
-    // the compensated mean of its r_g repeats). If the analytic SNV rows were
-    // identical, each aggregated row would differ from the band mean by at
-    // most 2 max B, so the per-band RMS deviation (n-1 denominator, n >= 2)
-    // would not exceed 2 sqrt(2) max B. The PCA column means add at most
-    // n u max|z| per entry. Residual variance under
-    // SNV_RESOLUTION_FACTOR (max B + n u max|z|) is rounding, not structure.
-    let [sum, sum2] = result.full_moments;
+    }
     let max_bound = snv.error_bounds.iter().copied().fold(0.0f64, f64::max);
     let max_entry = snv
         .matrix
         .iter()
         .flatten()
         .fold(0.0f64, |m, v| m.max(v.abs()));
-    let rms_band_deviation = (sum.max(0.0) / p as f64).sqrt();
+    let rms_band_deviation = (sum / p as f64).sqrt();
     let resolution =
         SNV_RESOLUTION_FACTOR * (max_bound + n as f64 * f64::EPSILON / 2.0 * max_entry);
     let resolved = rms_band_deviation > resolution;
@@ -1554,11 +1566,62 @@ fn analyze_snv(
     resolution_parameters.insert(
         "numerical_resolution_criterion".into(),
         json!(format!(
-            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*(max_g B_g + n*u*max|z|), B_g the Methods first-order rounding bound of aggregated sample g (SNV of its acquisitions and the compensated mean of its repeats), n aggregated samples, u = 2^-53"
+            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*(max_g B_g + n*u*max|z|), trace(C_snv) the sum of the Methods per-band sample variances, B_g the Methods first-order rounding bound of aggregated sample g (SNV of its acquisitions and the compensated mean of its repeats), n aggregated samples, u = 2^-53; decided before the SNV-view PCA, which is skipped when unresolved"
         )),
     );
     resolution_parameters.insert("numerically_resolved".into(), json!(resolved));
     resolution_parameters.insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
+    if sum <= 0.0 || !resolved {
+        let reason = if sum <= 0.0 {
+            "ZERO_SNV_TOTAL_VARIANCE"
+        } else {
+            "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"
+        };
+        for id in [
+            "structure.snv_effective_dimension",
+            "structure.snv_sensitivity",
+        ] {
+            let mut m = Metric::unavailable(id, Availability::Undefined, reason, src, None);
+            m.view_id = VIEW.into();
+            m.denominators.insert("n_aggregated_samples".into(), n);
+            m.parameters = resolution_parameters.clone();
+            report.metrics.push(m);
+        }
+        return;
+    }
+    let req = PcaRequest {
+        source_id: source.source_id.clone(),
+        sample_ids: Vec::new(),
+        matrix: snv.matrix.clone(),
+        n_components: k,
+    };
+    let raw = match provider.pca(&req) {
+        Ok(r) if pca_result_valid(&r, k, n) => r,
+        Ok(_) => {
+            push_unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
+            return;
+        }
+        Err(e) => {
+            let mut m = Metric::unavailable(
+                "structure.snv_sensitivity",
+                e.availability(),
+                &e.reason,
+                src,
+                None,
+            );
+            m.view_id = VIEW.into();
+            if e.reason == NUMERICAL_DOMAIN_EXCEEDED {
+                // The refusal is the PCA's: publish its own domain.
+                m.parameters
+                    .insert("numerical_domain".into(), json!(PCA_NUMERICAL_DOMAIN));
+            }
+            report.metrics.push(m);
+            return;
+        }
+    };
+    let result = raw.resolved();
+    // Effective dimension from the Methods full-spectrum moments of the PCA.
+    let [moment_sum, sum2] = result.full_moments;
     let mut eigen = Metric::computed(
         "structure.snv_pca_eigenvalues",
         json!(result.eigenvalues),
@@ -1574,17 +1637,10 @@ fn analyze_snv(
         .insert("backend_version".into(), json!(result.backend_version));
     insert_resolution(&mut eigen, &raw);
     report.metrics.push(eigen);
-    let mut dimension = match (sum2 > 0.0).then(|| sum * sum / sum2) {
-        Some(v) if v.is_finite() && resolved => {
+    let mut dimension = match (sum2 > 0.0).then(|| moment_sum * moment_sum / sum2) {
+        Some(v) if v.is_finite() => {
             Metric::computed("structure.snv_effective_dimension", json!(v), src, None)
         }
-        Some(v) if v.is_finite() => Metric::unavailable(
-            "structure.snv_effective_dimension",
-            Availability::Undefined,
-            "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED",
-            src,
-            None,
-        ),
         _ => Metric::unavailable(
             "structure.snv_effective_dimension",
             Availability::Undefined,
@@ -1600,23 +1656,6 @@ fn analyze_snv(
         json!("methods_full_covariance_moments"),
     );
     report.metrics.push(dimension);
-    if sum <= 0.0 || !resolved {
-        let mut m = Metric::unavailable(
-            "structure.snv_sensitivity",
-            Availability::Undefined,
-            if sum <= 0.0 {
-                "ZERO_SNV_TOTAL_VARIANCE"
-            } else {
-                "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"
-            },
-            src,
-            None,
-        );
-        m.view_id = VIEW.into();
-        m.parameters = resolution_parameters;
-        report.metrics.push(m);
-        return;
-    }
     let reference = pca_structure(canonical);
     let snv_view = pca_structure(&result);
     let delta = |key: &str| match (reference[key].as_f64(), snv_view[key].as_f64()) {
