@@ -104,6 +104,30 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
         .enumerate()
         .all(|(i, &l)| l == result.labels[i % 2]));
     assert!(result.tree[0].parent.is_none() && result.tree[0].birth_distance.is_none());
+    // Rules 13/15: Methods refuses inputs outside its numerical domain; the
+    // adapter reports the reason instead of a status number. Spread edge:
+    // max/min nonzero |x| = 2^32 is accepted, one ulp more is refused.
+    let spread = 2f64.powi(32);
+    let column = |values: &[f64]| HdbscanRequest {
+        matrix: values.iter().map(|&v| vec![v]).collect(),
+        min_cluster_size: 2,
+        min_samples: 2,
+        selection: ClusterSelection::Eom,
+        allow_single_cluster: false,
+    };
+    assert!(provider.hdbscan(&column(&[1.0, 2.0, spread, 3.0])).is_ok());
+    for values in [
+        vec![0.0, 1e155, 2e155, 3e155],
+        vec![1.0, 2.0, spread * (1.0 + f64::EPSILON), 3.0],
+    ] {
+        let refused = provider.hdbscan(&column(&values));
+        assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
+    }
+    let refused = provider.linear_sum_assignment(&LinearAssignmentRequest {
+        cost: vec![vec![-1e20, 1e20], vec![1.0, 0.0]],
+        maximize: false,
+    });
+    assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
     let ari = provider
         .adjusted_rand_index(&AdjustedRandRequest {
             labels_a: vec![0, 0, 1, 2],
@@ -163,7 +187,7 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
     let value = stability.value.as_ref().unwrap();
     assert_eq!(value["ari_assigned_in_both"]["max"], 1.0);
     assert_eq!(value["assigned_noise_agreement"]["median"], 1.0);
-    assert_eq!(value["compared_fraction"]["min"], 0.8);
+    assert_eq!(value["intersection_fraction_of_eligible"]["min"], 0.8);
     assert!(value["cluster_count"]["min"].as_f64().unwrap() >= 2.0);
     assert!(report
         .capabilities

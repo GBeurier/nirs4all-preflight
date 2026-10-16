@@ -1628,6 +1628,73 @@ pub struct AdjustedRandDiagnostics {
     pub backend_version: String,
 }
 
+/// Cluster overlap of two labelings of the same elements (Methods ABI 2.20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterJaccardRequest {
+    /// Negative labels are unassigned; others lie in 0..n_clusters.
+    pub labels_a: Vec<i64>,
+    pub labels_b: Vec<i64>,
+    pub n_clusters_a: usize,
+    pub n_clusters_b: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterJaccardDiagnostics {
+    /// n_clusters_a rows of n_clusters_b Jaccard indices; None when both clusters are empty.
+    pub jaccard: Vec<Vec<Option<f64>>>,
+    pub intersections: Vec<Vec<usize>>,
+    pub sizes_a: Vec<usize>,
+    pub sizes_b: Vec<usize>,
+    pub backend_version: String,
+}
+
+/// One-to-one assignment with SciPy 1.18.1 `linear_sum_assignment` semantics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearAssignmentRequest {
+    pub cost: Vec<Vec<f64>>,
+    pub maximize: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearAssignmentDiagnostics {
+    /// min(rows, cols) pairs in increasing row order.
+    pub row_indices: Vec<usize>,
+    pub column_indices: Vec<usize>,
+    pub backend_version: String,
+}
+
+/// Successive `numpy.random.default_rng(seed).permutation(n)` draws.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RandomPermutationsRequest {
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+    pub n: usize,
+    pub n_permutations: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RandomPermutationsDiagnostics {
+    pub permutations: Vec<Vec<usize>>,
+    pub backend_version: String,
+}
+
+/// `numpy.random.default_rng(seed).multivariate_normal(mean, covariance,
+/// size=n_samples, method="cholesky")`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultivariateNormalRequest {
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+    pub mean: Vec<f64>,
+    pub covariance: Vec<Vec<f64>>,
+    pub n_samples: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultivariateNormalDiagnostics {
+    pub samples: Vec<Vec<f64>>,
+    pub backend_version: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnvRequest {
     pub matrix: Vec<Vec<f64>>,
@@ -2222,6 +2289,34 @@ pub trait MethodsProvider {
     ) -> Result<AdjustedRandDiagnostics, ProviderError> {
         Err(ProviderError::unsupported("ARI_PROVIDER_NOT_CONFIGURED"))
     }
+    fn cluster_jaccard(
+        &self,
+        _request: &ClusterJaccardRequest,
+    ) -> Result<ClusterJaccardDiagnostics, ProviderError> {
+        Err(ProviderError(
+            "CLUSTER_JACCARD_PROVIDER_NOT_CONFIGURED".into(),
+        ))
+    }
+    fn linear_sum_assignment(
+        &self,
+        _request: &LinearAssignmentRequest,
+    ) -> Result<LinearAssignmentDiagnostics, ProviderError> {
+        Err(ProviderError("ASSIGNMENT_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn random_permutations(
+        &self,
+        _request: &RandomPermutationsRequest,
+    ) -> Result<RandomPermutationsDiagnostics, ProviderError> {
+        Err(ProviderError("PERMUTATION_PROVIDER_NOT_CONFIGURED".into()))
+    }
+    fn multivariate_normal(
+        &self,
+        _request: &MultivariateNormalRequest,
+    ) -> Result<MultivariateNormalDiagnostics, ProviderError> {
+        Err(ProviderError(
+            "MULTIVARIATE_NORMAL_PROVIDER_NOT_CONFIGURED".into(),
+        ))
+    }
     fn snv(&self, _request: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
         Err(ProviderError::unsupported("SNV_PROVIDER_NOT_CONFIGURED"))
     }
@@ -2501,7 +2596,7 @@ impl ValidationProvider for UnavailableValidationProvider {
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 24] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 28] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -2509,6 +2604,10 @@ pub const METHODS_CAPABILITY_IDS: [&str; 24] = [
     "methods.local_contrast",
     "methods.hdbscan",
     "methods.adjusted_rand_index",
+    "methods.cluster_jaccard",
+    "methods.linear_sum_assignment",
+    "methods.random_permutations",
+    "methods.multivariate_normal",
     "methods.snv",
     "methods.noise_proxy",
     "methods.tolerance_pairs",

@@ -205,6 +205,54 @@ test('WASM clustering uses Methods HDBSCAN on canonical PCA scores',()=>{
  const probe=report.capabilities.find(c=>c.capability_id==='validation_probe');
  assert.equal(probe.available,true);
  assert.equal(probe.qualified,false);
+ assert.equal(metrics['clustering.gaussian_null_model'].status,'computed');
+ assert.equal(metrics['clustering.cluster_appearance_frequency'].status,'computed');
+ assert.ok(report.findings.some(f=>f.rule_id.startsWith('structure.clustering.')&&f.confidence==='unknown'));
+});
+// Review 2026-10-13 P0: CPU and WASM partitions diverged (7 vs 8 groups) on
+// tie-heavy data from 4.4e-16 PCA differences. The score grid makes both hosts
+// match the independent NumPy/SciPy/scikit-learn golden that the native test
+// also checks (crates/nirs4all-preflight/tests/clustering_golden.rs).
+test('WASM clustering matches the full-chain Python golden',async()=>{
+ const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/clustering_v3_golden.json',import.meta.url),'utf8'));
+ const near=(a,b)=>a===null||b===null?a===b:Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(b));
+ const assessments=[];
+ for(const c of golden.cases){
+  const report=runtime.analyze(c.input), e=c.expected;
+  const m=Object.fromEntries(report.metrics.map(x=>[x.metric_id,x]));
+  const labels=m['clustering.partition'].value.labels, forward=new Map(), backward=new Map();
+  labels.forEach((l,i)=>{
+   assert.equal(l<0,e.labels[i]<0,c.name);
+   if(l<0)return;
+   assert.equal(forward.get(l)??e.labels[i],e.labels[i],c.name);
+   assert.equal(backward.get(e.labels[i])??l,l,c.name);
+   forward.set(l,e.labels[i]); backward.set(e.labels[i],l);
+  });
+  assert.equal(forward.size,e.cluster_count,c.name);
+  const stability=m['clustering.subsample_stability'];
+  assert.equal(stability.parameters.seed,e.plan_seed);
+  assert.deepEqual(stability.value.unit_plans,e.unit_plans,c.name);
+  for(const [variant,id] of [['scaled','clustering.subsample_stability'],['constant','clustering.subsample_stability_constant_parameters']]){
+   m[id].value.per_subsample.forEach((g,i)=>{
+    const w=e.variants[variant].per_subsample[i];
+    assert.equal(g.assigned_in_both_size,w.assigned_in_both_size,`${c.name} ${variant} ${i}`);
+    assert.equal(g.cluster_count,w.cluster_count,`${c.name} ${variant} ${i}`);
+    assert.ok(near(g.ari,w.ari),`${c.name} ${variant} ari ${i}`);
+   });
+  }
+  const nullModel=m['clustering.gaussian_null_model'].value;
+  nullModel.per_replicate.forEach((g,i)=>{
+   const w=e.null.per_replicate[i];
+   assert.equal(g.cluster_count,w.cluster_count,`${c.name} null ${i}`);
+   assert.ok(near(g.median_ari,w.median_ari),`${c.name} null ari ${i}`);
+   assert.ok(near(g.coverage_weighted_stability,w.coverage_weighted_stability),`${c.name} null T ${i}`);
+  });
+  assert.ok(near(nullModel.observed.coverage_weighted_stability,e.null.observed_statistic),c.name);
+  assert.ok(near(nullModel.fitted_null_tail.tail_fraction,e.null.tail_fraction),c.name);
+  assert.equal(nullModel.fitted_null_tail.decisional,e.null.decisional,c.name);
+  assessments.push(m['clustering.partition_assessment'].value.assessment);
+ }
+ assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_versus_fitted_gaussian','compatible_with_fitted_gaussian','uncertain_partition','no_density_separated_groups','stable_candidate_versus_fitted_gaussian']);
 });
 test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  // SG window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.

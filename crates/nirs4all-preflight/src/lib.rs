@@ -789,6 +789,7 @@ fn analyze_source(
                         sample_ids: &representative_sample_ids,
                         aggregation_keys: &ids,
                         scores: &result.scores,
+                        eigenvalues: &result.eigenvalues,
                     };
                     clustering::analyze(source, input, samples, &geometry, provider, report);
                     confounding::analyze(source, input, samples, &geometry, provider, report);

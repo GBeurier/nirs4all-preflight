@@ -98,6 +98,30 @@ impl MethodsProvider for CallbackProvider<'_> {
     ) -> Result<AdjustedRandDiagnostics, ProviderError> {
         self.invoke("adjusted_rand_index", r)
     }
+    fn cluster_jaccard(
+        &self,
+        r: &ClusterJaccardRequest,
+    ) -> Result<ClusterJaccardDiagnostics, ProviderError> {
+        self.invoke("cluster_jaccard", r)
+    }
+    fn linear_sum_assignment(
+        &self,
+        r: &LinearAssignmentRequest,
+    ) -> Result<LinearAssignmentDiagnostics, ProviderError> {
+        self.invoke("linear_sum_assignment", r)
+    }
+    fn random_permutations(
+        &self,
+        r: &RandomPermutationsRequest,
+    ) -> Result<RandomPermutationsDiagnostics, ProviderError> {
+        self.invoke("random_permutations", r)
+    }
+    fn multivariate_normal(
+        &self,
+        r: &MultivariateNormalRequest,
+    ) -> Result<MultivariateNormalDiagnostics, ProviderError> {
+        self.invoke("multivariate_normal", r)
+    }
     fn snv(&self, r: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
         self.invoke("snv", r)
     }
