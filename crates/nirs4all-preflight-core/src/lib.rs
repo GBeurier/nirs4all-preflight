@@ -1684,6 +1684,50 @@ pub struct AssociationDiagnostics {
     pub backend_version: String,
 }
 
+/// One-way random-effects variance components per band (Methods ABI 2.20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarianceComponentsRequest {
+    pub matrix: Vec<Vec<f64>>,
+    pub group_ids: Vec<i64>,
+    /// Resampling unit of each row; None resamples groups.
+    pub cluster_ids: Option<Vec<i64>>,
+    pub valid_mask: Vec<Vec<bool>>,
+    pub confidence: f64,
+    /// 0 skips the cluster bootstrap.
+    pub n_bootstrap: usize,
+    #[serde(with = "u64_decimal")]
+    pub seed: u64,
+}
+
+/// A two-sided interval; None bounds are undefined.
+pub type Interval = [Option<f64>; 2];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarianceComponentsDiagnostics {
+    pub sigma2_between: Vec<Option<f64>>,
+    pub sigma2_within: Vec<Option<f64>>,
+    /// REML ICC(1) = s2b / (s2b + s2w).
+    pub icc: Vec<Option<f64>>,
+    pub reml_log_likelihood: Vec<Option<f64>>,
+    pub n_groups: Vec<usize>,
+    pub n_observations: Vec<usize>,
+    /// Local maxima of the restricted likelihood compared per band.
+    pub reml_candidates: Vec<usize>,
+    pub bisection_iterations: Vec<usize>,
+    /// 0 interior, 1 insufficient, 2 s2b = 0 boundary, 3 zero total
+    /// variance, 4 s2w = 0 boundary, 5 not converged.
+    pub status: Vec<i32>,
+    /// Exact chi-square interval of the within-group SD.
+    pub sd_ci_chi_square: Vec<Interval>,
+    /// Exact F interval of the balanced ANOVA ICC(1,1).
+    pub icc_ci_exact_f: Vec<Interval>,
+    /// Cluster-bootstrap percentile intervals.
+    pub sd_ci_bootstrap: Vec<Interval>,
+    pub icc_ci_bootstrap: Vec<Interval>,
+    pub n_valid_replicates: Vec<usize>,
+    pub backend_version: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HolmRequest {
     pub p_values: Vec<f64>,
@@ -2128,10 +2172,18 @@ pub trait MethodsProvider {
             "PCA_MONITOR_PROVIDER_NOT_CONFIGURED",
         ))
     }
+    fn variance_components(
+        &self,
+        _request: &VarianceComponentsRequest,
+    ) -> Result<VarianceComponentsDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
 }
 
 /// Methods operations a complete provider exposes, in report order.
-pub const METHODS_CAPABILITY_IDS: [&str; 21] = [
+pub const METHODS_CAPABILITY_IDS: [&str; 22] = [
     "methods.pca",
     "methods.repeatability",
     "methods.summary",
@@ -2153,6 +2205,7 @@ pub const METHODS_CAPABILITY_IDS: [&str; 21] = [
     "methods.permanova_freedman_lane",
     "methods.energy_distance",
     "methods.pca_monitor",
+    "methods.variance_components",
 ];
 
 pub struct UnavailableMethodsProvider;

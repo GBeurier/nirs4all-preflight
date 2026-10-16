@@ -155,6 +155,12 @@ impl MethodsProvider for CallbackProvider<'_> {
     fn pca_monitor(&self, r: &PcaMonitorRequest) -> Result<PcaMonitorDiagnostics, ProviderError> {
         self.invoke("pca_monitor", r)
     }
+    fn variance_components(
+        &self,
+        r: &VarianceComponentsRequest,
+    ) -> Result<VarianceComponentsDiagnostics, ProviderError> {
+        self.invoke("variance_components", r)
+    }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
     if input.len() > 64 * 1024 * 1024 {

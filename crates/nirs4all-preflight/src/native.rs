@@ -211,6 +211,26 @@ type Hdbscan = unsafe extern "C" fn(
     *mut f64,
 ) -> i32;
 type Ari = unsafe extern "C" fn(*mut c_void, *const i64, *const i64, i64, *mut f64) -> i32;
+type VarianceReml = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    *const u8,
+    *mut f64,
+    *mut i32,
+) -> i32;
+type VarianceIntervals = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    *const i64,
+    *const u8,
+    f64,
+    i32,
+    u64,
+    *mut f64,
+    *mut i64,
+) -> i32;
 
 /// Each provider owns one context, and stays on its creating thread.
 pub struct NativeMethodsProvider {
@@ -241,6 +261,8 @@ pub struct NativeMethodsProvider {
     freedman_lane_fn: FreedmanLane,
     energy_fn: Energy,
     monitor_fn: PcaMonitor,
+    reml_fn: VarianceReml,
+    intervals_fn: VarianceIntervals,
     version: String,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -336,6 +358,12 @@ impl NativeMethodsProvider {
             let monitor_fn = *library
                 .get::<PcaMonitor>(b"n4m_stats_pca_monitor\0")
                 .map_err(err)?;
+            let reml_fn = *library
+                .get::<VarianceReml>(b"n4m_stats_variance_components_reml\0")
+                .map_err(err)?;
+            let intervals_fn = *library
+                .get::<VarianceIntervals>(b"n4m_stats_variance_components_intervals\0")
+                .map_err(err)?;
             let get_version = *library
                 .get::<unsafe extern "C" fn() -> *const c_char>(b"n4m_get_version_string\0")
                 .map_err(err)?;
@@ -370,6 +398,8 @@ impl NativeMethodsProvider {
                 freedman_lane_fn,
                 energy_fn,
                 monitor_fn,
+                reml_fn,
+                intervals_fn,
                 snv_create,
                 snv_destroy,
                 snv_transform,
@@ -1355,6 +1385,91 @@ impl MethodsProvider for NativeMethodsProvider {
             centroid_residual_distance: out[6],
             centroid_t2: finite(out[7]),
             retained_fraction: finite(out[8]),
+            backend_version: self.version.clone(),
+        })
+    }
+    fn variance_components(
+        &self,
+        r: &VarianceComponentsRequest,
+    ) -> Result<VarianceComponentsDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        if r.group_ids.len() != n
+            || r.cluster_ids.as_ref().is_some_and(|c| c.len() != n)
+            || r.valid_mask.len() != n
+            || r.valid_mask.iter().any(|row| row.len() != p)
+            || !(r.confidence > 0.0 && r.confidence < 1.0)
+            || r.n_bootstrap > 100_000
+        {
+            return Err(ProviderError::internal(
+                "INVALID_VARIANCE_COMPONENTS_REQUEST",
+            ));
+        }
+        let mask: Vec<u8> = r
+            .valid_mask
+            .iter()
+            .flatten()
+            .map(|v| u8::from(*v))
+            .collect();
+        let mut point = vec![f64::NAN; 8 * p];
+        let mut status = vec![0i32; p];
+        let mut intervals = vec![f64::NAN; 8 * p];
+        let mut valid = vec![0i64; p];
+        let xv = MatrixView::new(&mut x, n, p);
+        // SAFETY: inputs hold n (or n x p) elements; outputs hold 8p, p values.
+        self.check(unsafe {
+            (self.reml_fn)(
+                self.context,
+                &xv,
+                r.group_ids.as_ptr(),
+                mask.as_ptr(),
+                point.as_mut_ptr(),
+                status.as_mut_ptr(),
+            )
+        })?;
+        self.check(unsafe {
+            (self.intervals_fn)(
+                self.context,
+                &xv,
+                r.group_ids.as_ptr(),
+                r.cluster_ids
+                    .as_ref()
+                    .map_or(std::ptr::null(), |c| c.as_ptr()),
+                mask.as_ptr(),
+                r.confidence,
+                r.n_bootstrap as i32,
+                r.seed,
+                intervals.as_mut_ptr(),
+                valid.as_mut_ptr(),
+            )
+        })?;
+        let finite = |v: f64| v.is_finite().then_some(v);
+        let field = |k: usize| (0..p).map(|j| finite(point[8 * j + k])).collect();
+        let count = |k: usize| (0..p).map(|j| point[8 * j + k].max(0.0) as usize).collect();
+        let pair = |k: usize| {
+            (0..p)
+                .map(|j| {
+                    [
+                        finite(intervals[8 * j + k]),
+                        finite(intervals[8 * j + k + 1]),
+                    ]
+                })
+                .collect()
+        };
+        Ok(VarianceComponentsDiagnostics {
+            sigma2_between: field(0),
+            sigma2_within: field(1),
+            icc: field(2),
+            reml_log_likelihood: field(3),
+            n_groups: count(4),
+            n_observations: count(5),
+            reml_candidates: count(6),
+            bisection_iterations: count(7),
+            status,
+            sd_ci_chi_square: pair(0),
+            icc_ci_exact_f: pair(2),
+            sd_ci_bootstrap: pair(4),
+            icc_ci_bootstrap: pair(6),
+            n_valid_replicates: valid.into_iter().map(|v| v.max(0) as usize).collect(),
             backend_version: self.version.clone(),
         })
     }

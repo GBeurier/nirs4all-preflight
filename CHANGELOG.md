@@ -22,6 +22,27 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
 - Confounding Holm failure: when the permutations succeed but Holm is unavailable, each test keeps its execution record (`executed`, `n_permutations_executed`, raw `p_value`, `n_at_least_observed`) and reports `multiplicity_available = false` with `multiplicity_reason_code`, `p_value_holm` and `rejects_null_at_family_alpha` null and no finding; the family metric carries `holm_available` and `holm_reason_code` (same pattern as the association block).
 - Provider errors are structured (`ProviderError { kind, reason }`, kinds `unsupported`, `numerical`, `internal`). Only absent capabilities and declared limits are reported `unsupported`; numerical and internal provider failures are now `error`, with stable `METHODS_<STATUS>` reasons identical in the native and WASM adapters (previously every failure was `unsupported`, with `METHODS_STATUS_<n>` natively and `METHODS_CALLBACK_FAILED` in WASM). The WASM callback replies `{ok}` or `{provider_error}`.
 
+- `repeatability_uncertainty` (PF-10) changes from `PROTOCOL_NOT_IMPLEMENTED` to available but unqualified (exploratory). It requires Methods ABI 2.20 (`n4m_stats_variance_components_reml`, `n4m_stats_variance_components_intervals`); the native and WASM providers now require ABI 2.20 and expose `methods.variance_components`.
+- New metrics per technical context:
+  - `measurement.repeat_counts`: r_i dispersion and histogram.
+  - `measurement.icc_1_reml`: REML ICC(1) for unbalanced designs, singletons included. It carries s2_between, s2_within, the REML log-likelihood and band status, with the boundaries s2_between = 0 / s2_within = 0 and non-convergence flagged and counted.
+  - `measurement.repeatability_sd_ci_chi_square`: exact chi-square interval of the within-group SD.
+  - `measurement.icc_1_1_ci_exact_f`: Searle exact F interval of the balanced ICC(1,1).
+  - `measurement.repeatability_sd_ci_cluster_bootstrap` and `measurement.icc_1_reml_ci_cluster_bootstrap`: percentile intervals with a versioned `bootstrap_plan`, 999 replicates over the declared independence unit, NumPy-parity PCG64 draws and a derived seed.
+- Reason codes: `FEWER_THAN_20_RESAMPLING_UNITS`, `BOOTSTRAP_WORK_BUDGET_EXCEEDED`, `BOOTSTRAP_REPLICATES_NOT_ESTIMABLE`, `NO_BAND_WITH_ESTIMABLE_REML`, `NO_BAND_WITH_WITHIN_GROUP_DF`, `NO_BALANCED_BAND`, `REPEAT_COUNTS_ALREADY_EQUAL`, `ZERO_BALANCED_TOTAL_VARIANCE` and `VARIANCE_COMPONENTS_PROVIDER_NOT_CONFIGURED`. `INDEPENDENCE_UNIT_UNKNOWN` and `MISSING_INDEPENDENCE_GROUP` are reused.
+- New structure metric `structure.balanced_repeat_sensitivity`: the canonical PCA structure versus a seeded subsample of every aggregated sample to r* = min r_i acquisitions. No sample is removed.
+- No new input option. The independence unit (`options.independence_unit`) and the root seed (`options.seed`) drive the new intervals. The example `examples/repeatability_uncertainty.json` exercises the protocol.
+- Review b9 fixes:
+  - REML keeps the global maximum of the restricted likelihood (multimodal witness).
+  - The Searle F interval needs one independence component per physical group in the band (`GROUPS_SHARE_INDEPENDENCE_UNIT`).
+  - A `reference_group` unit needs reference identities (`MISSING_REFERENCE_GROUP`).
+  - Units are counted per band after masks, with separate within-df counts for the SD.
+  - Variances use exponent-managed scaling instead of overflowing.
+  - Non-convergence and numerical failures are `error` with per-band `band_reason`, never insufficient data or a missing capability.
+  - The measured bootstrap coverage is documented; the intervals stay exploratory.
+  - Bootstrap plans move to `bootstrap_plan.v2`.
+- Lead rules 13 and 15: Methods refuses inputs outside the supported domain (nonzero |x| in [2^-256, 2^256], spread <= 2^32 over values and over pairwise differences, measured on sorted raw values). The five repeatability metrics are then `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` and publish `numerical_domain`, through the shared `METHODS_DOMAIN_MESSAGE` mapping (native and WASM). The band status 6 and the interval status are removed, since every variance is representable inside the domain. The balanced-repeat sensitivity applies the magnitude and spread bounds per band, and its means use a Neumaier compensated sum (review b9fix: the former residual-mean correction gave 0 instead of 1/3 for [2^60, 1, −2^60]). The REML grid limitation is documented with a polynomial degree bound (4K-3 stationary points for K distinct group sizes; balanced designs are unimodal), and the estimator label says that only the candidates detected by the grid are refined. A balanced band with no variation gives the exact F interval `undefined` / `ZERO_TOTAL_VARIANCE` instead of `UNBALANCED_BAND`; insufficient bands give `INSUFFICIENT_GROUPS_OR_REPEATS`.
+
 
 
 Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require Methods 1.3.6 (ABI 2.19). All new capabilities are exploratory and unqualified.

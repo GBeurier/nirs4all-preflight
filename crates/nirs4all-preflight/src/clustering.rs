@@ -317,7 +317,7 @@ pub(crate) fn analyze(
     });
 }
 
-struct SplitMix64(u64);
+pub(crate) struct SplitMix64(pub(crate) u64);
 impl SplitMix64 {
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -327,7 +327,7 @@ impl SplitMix64 {
         z ^ (z >> 31)
     }
     /// Unbiased integer in [0, bound) by rejection.
-    fn below(&mut self, bound: usize) -> usize {
+    pub(crate) fn below(&mut self, bound: usize) -> usize {
         let bound = bound as u64;
         let zone = u64::MAX - u64::MAX % bound;
         loop {

@@ -289,3 +289,47 @@ test('WASM domain shift refuses inputs outside the numerical domain with the sam
   assert.equal(b.value.n_target_beyond_q_limit,1);
   assert.equal(b.value.n_target_near_q_limit,1);
 });
+// Same input and values as the native engine (tests/repeatability.rs design()).
+test('WASM repeatability uncertainty matches the native engine',async()=>{
+ const fixture=JSON.parse(await readFile(new URL('../../../examples/repeatability_uncertainty.json',import.meta.url),'utf8'));
+ const report=runtime.analyze(fixture);
+ const find=(id,instrument)=>report.metrics.find(m=>m.metric_id===id&&m.parameters.instrument===instrument);
+ const near=(a,b)=>assert.ok(Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(b)),`${a} != ${b}`);
+ const reml=find('measurement.icc_1_reml','a');
+ assert.deepEqual(reml.parameters.band_status,[0,2]);
+ near(reml.value[0],0.9995334364361543);
+ assert.equal(reml.value[1],0);
+ const boot=find('measurement.icc_1_reml_ci_cluster_bootstrap','a');
+ assert.equal(boot.parameters.bootstrap_plan.seed,'15581561710765580329');
+ assert.deepEqual(boot.parameters.bootstrap_plan.n_valid_replicates_per_band,[999,999]);
+ near(boot.value.lower[0],0.9992022453402624);
+ near(boot.value.upper[0],0.9996809447785994);
+ // Only 18 of the 24 units carry within-group df: below the 20-unit minimum.
+ assert.equal(find('measurement.repeatability_sd_ci_cluster_bootstrap','a').reason_code,'FEWER_THAN_20_UNITS_WITH_WITHIN_DF');
+ assert.deepEqual(boot.parameters.bootstrap_plan.n_units_with_valid_value_per_band,[24,24]);
+ // Balanced context b: REML equals the ANOVA ICC(1,1); SciPy 1.18.1 exact F bounds.
+ near(find('measurement.icc_1_reml','b').value[0],0.9547872340425532);
+ const exact=find('measurement.icc_1_1_ci_exact_f','b').value;
+ assert.ok(Math.abs(exact.lower[0]-0.7838941809128407)<1e-10);
+ assert.ok(Math.abs(exact.upper[0]-0.9968006295172774)<1e-10);
+ assert.equal(find('measurement.repeat_counts','a').value.n_repeated_groups,18);
+ assert.ok(runtime.capabilities().some(c=>c.capability_id==='repeatability_uncertainty'&&c.available&&!c.qualified));
+});
+// Rule 13 domain through the bridge: values up to 2.32 x 2^254 are inside
+// (ICC unchanged), 2^255 exceeds 2^256 and the native refusal reaches the
+// report as unsupported NUMERICAL_DOMAIN_EXCEEDED with the domain published.
+test('WASM keeps the repeatability domain boundary explicit',async()=>{
+ const base=JSON.parse(await readFile(new URL('../../../examples/repeatability_uncertainty.json',import.meta.url),'utf8'));
+ const scaled=k=>{const f=structuredClone(base);for(const row of f.sources[0].x) for(let c=0;c<row.length;c++) row[c]*=2**k;return runtime.analyze(f);};
+ const find=(r,id)=>r.metrics.find(m=>m.metric_id===id&&m.parameters.instrument==='a');
+ const icc0=find(scaled(0),'measurement.icc_1_reml').value[0];
+ const inside=find(scaled(254),'measurement.icc_1_reml');
+ assert.equal(inside.status,'computed');
+ assert.ok(Math.abs(inside.value[0]-icc0)<=1e-12);
+ for(const id of ['measurement.icc_1_reml','measurement.repeatability_sd_ci_chi_square','measurement.icc_1_reml_ci_cluster_bootstrap']){
+  const m=find(scaled(255),id);
+  assert.equal(m.status,'unsupported');
+  assert.equal(m.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+  assert.match(m.parameters.numerical_domain,/2\^-256/);
+ }
+});
