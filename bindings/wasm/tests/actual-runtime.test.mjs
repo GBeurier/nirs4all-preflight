@@ -237,4 +237,6 @@ test('WASM target summary refuses continuous targets outside the numerical domai
  assert.equal(outside.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
  assert.ok(outside.parameters.numerical_domain.startsWith('every nonzero |x| in [2^-256, 2^256]'));
  assert.equal(run(2**64).status,'computed');
+ // No spread bound for the summary: 1e-20 next to 1 is summarized.
+ assert.equal(run(1e-20).status,'computed');
 });

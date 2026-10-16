@@ -822,11 +822,14 @@ fn native_target_summary_and_local_contrast_refuse_targets_outside_the_domain() 
     assert_eq!(m.status_wire(), "unsupported");
     assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
     assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN);
-    let report = build(2f64.powi(64));
-    let m = report
-        .metrics
-        .iter()
-        .find(|m| m.metric_id == "target.continuous_distribution")
-        .unwrap();
-    assert_eq!(m.status_wire(), "computed");
+    // The summary has no spread bound: 1e-20 next to 1 is summarized.
+    for value in [2f64.powi(64), 1e-20] {
+        let report = build(value);
+        let m = report
+            .metrics
+            .iter()
+            .find(|m| m.metric_id == "target.continuous_distribution")
+            .unwrap();
+        assert_eq!(m.status_wire(), "computed", "{value}");
+    }
 }
