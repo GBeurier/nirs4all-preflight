@@ -1725,7 +1725,7 @@ fn analyze_noise_proxy(
                 .insert("smoother".into(), json!("methods_savitzky_golay_deriv_0"));
             m.parameters.insert(
                 "numerical_domain".into(),
-                json!(format!("{NUMERICAL_DOMAIN}. Inside it: window-local residuals from exact second differences and double-double Savitzky-Golay weights; values outside every evaluable window never change results; translation invariant for exact offsets")),
+                json!(format!("{NUMERICAL_DOMAIN}. Inside it: window-local residuals from exact second differences and double-double Savitzky-Golay weights, absolute error <= 2 W eps sum|c_k| max|w_k| per residual (rounding level); values outside every evaluable window never change results; translation invariant for exact offsets")),
             );
             m.parameters
                 .insert("window_bands".into(), json!(options.window_bands));

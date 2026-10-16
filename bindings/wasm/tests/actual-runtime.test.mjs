@@ -200,7 +200,7 @@ test('WASM noise proxy ignores a value outside every evaluable window',()=>{
    options:{noise_proxy:{window_bands:3,polyorder:1},snv_sensitivity:false}}).metrics.map(x=>[x.metric_id,x]));
  const valid0=[true,false,true,true,true,true,true,true,true,true,true];
  const masked0=[false,false,true,true,true,true,true,true,true,true,true];
- for(const [H,mask] of [[0,valid0],[1e16,valid0],[2**64,valid0],[1e300,masked0],[Number.MAX_VALUE,masked0]]){
+ for(const [H,mask] of [[0,valid0],[1e9,valid0],[2**32,valid0],[1e300,masked0],[Number.MAX_VALUE,masked0]]){
   const m=run(H,mask);
   assert.ok(Math.abs(m['measurement.noise_proxy'].value[5]-Math.sqrt(2/3))<=1e-15*Math.sqrt(2/3),`H ${H}`);
   assert.ok(Math.abs(m['measurement.noise_proxy_pooled'].value-1/Math.sqrt(7))<=1e-15/Math.sqrt(7),`H ${H}`);
@@ -209,7 +209,7 @@ test('WASM noise proxy ignores a value outside every evaluable window',()=>{
  assert.equal(run(1e300,valid0)['measurement.noise_proxy'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
 });
 test('WASM refuses inputs outside the supported numerical domain explicitly',()=>{
- // Rule 13: nonzero |x| in [2^-256, 2^256], per-row spread <= 2^64; one row at 2^300.
+ // Rules 13/15: nonzero |x| in [2^-256, 2^256], per-row spread <= 2^32; one row at 2^300.
  const analyze=(big)=>runtime.analyze({schema_version:1,
   sources:[{source_id:'x',observation_ids:['a','b','c','d'],sample_ids:['a','b','c','d'],
    x:[[1,2,3,4,5],[2,1,3,5,4],[1,3,2,big,5],[5,4,3,2,1]],axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'abs'}],
@@ -221,9 +221,11 @@ test('WASM refuses inputs outside the supported numerical domain explicitly',()=
   assert.equal(outside[id].reason_code,'NUMERICAL_DOMAIN_EXCEEDED',id);
   assert.ok(outside[id].parameters.numerical_domain.startsWith('every nonzero |x| in [2^-256, 2^256]'));
  }
- // Spread exactly 2^64 within the row (2^64 next to 1) stays inside the domain.
- const inside=Object.fromEntries(analyze(2**64).metrics.map(m=>[m.metric_id,m]));
+ // Spread exactly 2^32 within the row (2^32 next to 1) stays inside; 2^33 is refused.
+ const inside=Object.fromEntries(analyze(2**32).metrics.map(m=>[m.metric_id,m]));
  for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(inside[id].status,'computed',id);
+ const beyond=Object.fromEntries(analyze(2**33).metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(beyond[id].reason_code,'NUMERICAL_DOMAIN_EXCEEDED',id);
 });
 test('WASM target summary refuses continuous targets outside the numerical domain',()=>{
  const ids=['a','b','c','d','e','f'];

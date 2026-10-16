@@ -13,7 +13,7 @@ pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0-alpha.3";
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Supported numerical domain of the Methods Preflight kernels (SNV, noise
 /// proxy, tolerance pairs), published in the `numerical_domain` parameter.
-pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^64 (value summaries: magnitude bound only); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^32 (value summaries: magnitude bound only); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

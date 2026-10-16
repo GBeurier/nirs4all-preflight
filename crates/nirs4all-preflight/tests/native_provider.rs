@@ -604,6 +604,17 @@ fn native_metrics_report_inputs_outside_the_numerical_domain() {
         context: ComparisonContext::Source,
     });
     let report = analyze(&input, &provider);
+    // Spread boundary (rule 15): 2^32 next to 1 is computed, 2^33 refused.
+    for (big, inside) in [(2f64.powi(32), true), (2f64.powi(33), false)] {
+        let mut edge = input.clone();
+        edge.sources[0].x[2][3] = Some(big);
+        let r = analyze(&edge, &provider);
+        let m = metric(&r, "measurement.noise_proxy");
+        assert_eq!(m.status_wire() == "computed", inside, "{big}");
+        if !inside {
+            assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
+        }
+    }
     for id in ["measurement.noise_proxy", "integrity.quasi_duplicate_pairs"] {
         let m = metric(&report, id);
         assert_eq!(m.status_wire(), "unsupported", "{id}");
@@ -779,7 +790,7 @@ fn native_target_summary_and_local_contrast_refuse_targets_outside_the_domain() 
         return;
     };
     // Continuous targets with 2^300: the Methods summary and local contrast
-    // refuse them explicitly (rule 13); 2^64 next to 1 stays inside.
+    // refuse them explicitly (rule 13); the summary has no spread bound.
     let build = |big: f64| {
         let mut input = input_with(
             (0..6)
