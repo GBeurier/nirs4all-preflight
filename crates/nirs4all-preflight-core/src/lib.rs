@@ -1606,7 +1606,7 @@ pub struct BhDiagnostics {
 }
 
 /// Provider reason for a Methods refusal of inputs outside the supported
-/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^64).
+/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32, Methods N4M_DOMAIN_MAX_SPREAD_LOG2).
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Prefix of the Methods context message for that refusal.
 pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";

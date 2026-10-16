@@ -265,12 +265,13 @@ fn unit_label(unit: IndependenceUnit) -> &'static str {
 fn numerical_domain() -> Value {
     json!({"supported_domain": {
                "nonzero_abs_min": "2^-256", "nonzero_abs_max": "2^256",
-               "max_over_min_nonzero_abs_per_array": "2^64",
+               "max_over_min_nonzero_abs_per_array": "2^32",
                "zeros": "allowed",
                "checked_arrays": "continuous metadata and continuous targets; categorical codes are labels"},
            "outside_domain": "unsupported_NUMERICAL_DOMAIN_EXCEEDED",
+           "multiplicity_inputs": "Holm/BH p-values: finite, in [0, 1], nonzero p >= 2^-1022, no spread limit",
            "invariance": "scale_2k_and_translation_inside_domain",
-           "effect_absolute_error": "order_n_times_f64_epsilon"})
+           "accuracy": "eta2, V and r: absolute error about c*n*f64_epsilon; F: relative error about c*n*f64_epsilon unless eta2 is small, then absolute"})
 }
 
 /// Shared identity of the two metrics of one metadata × target pair.

@@ -1046,7 +1046,7 @@ fn real_methods_example_matches_the_wasm_goldens() {
 
 #[test]
 fn real_methods_association_follows_the_supported_numerical_domain() {
-    // Rule 13: inside D (nonzero |x| in [2^-256, 2^256], spread <= 2^64)
+    // Rule 13: inside D (nonzero |x| in [2^-256, 2^256], spread <= 2^32, rule 15)
     // metadata and targets scaled by 2^k or shifted by 2^200 give the same
     // effects, counts and plans; outside D every metric of the affected pair
     // is unsupported with NUMERICAL_DOMAIN_EXCEEDED.
@@ -1117,7 +1117,7 @@ fn real_methods_association_follows_the_supported_numerical_domain() {
     assert!((got[2].0 - reference[2].0).abs() <= 1e-12);
     assert_eq!(got[2].1, reference[2].1);
     // Outside D: targets at 2^300 refuse the target pairs; a covariate with
-    // a spread above 2^64 refuses only its own pair.
+    // a spread above 2^32 refuses only its own pair.
     let report = analyze(&scaled(300), &provider);
     for name in ["instrument", "site", "temperature"] {
         for id in [

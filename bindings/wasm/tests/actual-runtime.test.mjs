@@ -96,7 +96,7 @@ test('WASM association follows the supported numerical domain',async()=>{
       assert.equal(m.status,'unsupported');
       assert.equal(m.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
       assert.equal(m.value,null);
-      assert.equal(m.parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^64');
+      assert.equal(m.parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^32');
     }
   }
 });
