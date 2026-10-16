@@ -195,7 +195,7 @@ export async function createQualificationRuntime(options = {}) {
           bisection_iterations: point.bisectionIterations, status: Array.from(point.status),
           sd_ci_chi_square: pairs(ci.sdChiSquare), icc_ci_exact_f: pairs(ci.iccExactF),
           sd_ci_bootstrap: pairs(ci.sdBootstrap), icc_ci_bootstrap: pairs(ci.iccBootstrap),
-          n_valid_replicates: ci.nValidReplicates, interval_status: Array.from(ci.intervalStatus), backend_version,
+          n_valid_replicates: ci.nValidReplicates, backend_version,
         };
         break;
       }

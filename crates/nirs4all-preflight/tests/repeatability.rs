@@ -79,7 +79,6 @@ impl MethodsProvider for Spy {
             sd_ci_bootstrap: vec![[Some(0.6), Some(1.5)]; p],
             icc_ci_bootstrap: vec![[Some(0.2), Some(0.8)]; p],
             n_valid_replicates: vec![r.n_bootstrap; p],
-            interval_status: vec![0; p],
             backend_version: "spy".into(),
         })
     }
@@ -493,16 +492,31 @@ fn convergence_and_numerical_failures_are_reported_as_errors() {
         reml.parameters["band_reason"],
         serde_json::json!(["REML_NOT_CONVERGED", "REML_NOT_CONVERGED"])
     );
+    // Rule 13: an explicit refusal outside the supported domain is an
+    // unsupported metric with the domain published, for all five metrics.
     let spy = Spy {
-        reml_status: Some(6),
+        error: Some(ProviderError::unsupported("NUMERICAL_DOMAIN_EXCEEDED")),
         ..Spy::default()
     };
     let report = analyze(&input, &spy);
-    let reml = find(&report, "measurement.icc_1_reml", "a");
-    assert_eq!(
-        (status(reml).as_str(), reml.reason_code.as_deref()),
-        ("error", Some("VALUE_NOT_REPRESENTABLE"))
-    );
+    for id in [
+        "measurement.icc_1_reml",
+        "measurement.repeatability_sd_ci_chi_square",
+        "measurement.icc_1_1_ci_exact_f",
+        "measurement.repeatability_sd_ci_cluster_bootstrap",
+        "measurement.icc_1_reml_ci_cluster_bootstrap",
+    ] {
+        let m = find(&report, id, "a");
+        assert_eq!(
+            (status(m).as_str(), m.reason_code.as_deref()),
+            ("unsupported", Some("NUMERICAL_DOMAIN_EXCEEDED")),
+            "{id}"
+        );
+        assert!(m.parameters["numerical_domain"]
+            .as_str()
+            .unwrap()
+            .contains("2^-256"));
+    }
     let spy = Spy {
         error: Some(ProviderError::numerical("METHODS_STATUS_NUMERICAL_FAILURE")),
         ..Spy::default()
@@ -528,19 +542,13 @@ fn convergence_and_numerical_failures_are_reported_as_errors() {
     );
 }
 
-/// Robustness sweep of the balanced-sensitivity means (engine side): every
-/// object has three rescans and o0 a fourth, so r* = 3 and each balanced mean
-/// averages three values. The matrix sent to PCA scales exactly with 2^k and
-/// stays finite next to 1.7e308, where a plain sum would overflow.
+/// Rule 13 on the balanced-sensitivity means (engine side): inside the
+/// supported domain the matrix sent to PCA scales exactly with 2^k (r* = 3,
+/// three values per mean); just outside it the metric is unsupported with
+/// NUMERICAL_DOMAIN_EXCEEDED and no PCA is requested.
 #[test]
-fn balanced_sensitivity_means_are_scale_and_offset_robust() {
-    let balanced = |input: &QualificationInput| {
-        let spy = Spy::default();
-        analyze(input, &spy);
-        let pca = spy.pca.borrow();
-        pca[1].matrix.clone()
-    };
-    let uneven = || {
+fn balanced_sensitivity_respects_the_numerical_domain() {
+    let uneven = |k: i32| {
         let mut input = linked_design(0);
         let source = &mut input.sources[0];
         source.observation_ids.push("extra".into());
@@ -551,32 +559,55 @@ fn balanced_sensitivity_means_are_scale_and_offset_robust() {
             .as_mut()
             .unwrap()
             .push(RepetitionType::Rescan);
-        input
-    };
-    let reference = balanced(&uneven());
-    let pow2 = |k: i32| 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
-    for k in [-1000, -500, -100, 100, 500, 1000] {
-        let mut scaled = uneven();
-        for row in &mut scaled.sources[0].x {
+        let scale = 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+        for row in &mut source.x {
             for v in row.iter_mut().flatten() {
-                *v *= pow2(k);
+                *v *= scale;
             }
         }
-        let got = balanced(&scaled);
-        for (a, b) in got.iter().flatten().zip(reference.iter().flatten()) {
-            assert!(a.is_finite() && *a == b * pow2(k), "{k}: {a} {b}");
+        input
+    };
+    let run = |k: i32| run_input(&uneven(k));
+    let (base, reference) = run(0);
+    assert_eq!(status(&base), "computed");
+    let reference = reference.unwrap();
+    // Values span 0.01 .. 3.91 (and 2.02): k in [-249, 254] stays inside.
+    for k in [-249, -100, 100, 254] {
+        let (m, matrix) = run(k);
+        assert_eq!(status(&m), "computed", "{k}");
+        let scale = 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+        for (a, b) in matrix
+            .unwrap()
+            .iter()
+            .flatten()
+            .zip(reference.iter().flatten())
+        {
+            assert_eq!(*a, b * scale, "{k}");
         }
     }
-    let mut far = uneven();
-    for row in &mut far.sources[0].x {
-        for v in row.iter_mut().flatten() {
-            *v = 1.7e308 - *v * 1e292;
-        }
+    for k in [-250, 255] {
+        let (m, _) = run(k);
+        assert_eq!(status(&m), "unsupported", "{k}");
+        assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
     }
-    assert!(balanced(&far)
+    // Spread above 2^64 inside one band: refused.
+    let mut wide = uneven(0);
+    wide.sources[0].x[1][0] = Some(2f64.powi(-70));
+    let (m, _) = run_input(&wide);
+    assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
+}
+
+fn run_input(input: &QualificationInput) -> (Metric, Option<Vec<Vec<f64>>>) {
+    let spy = Spy::default();
+    let report = analyze(input, &spy);
+    let m = report
+        .metrics
         .iter()
-        .flatten()
-        .all(|v| v.is_finite() && *v > 1.6e308));
+        .find(|m| m.metric_id == "structure.balanced_repeat_sensitivity")
+        .unwrap()
+        .clone();
+    let matrix = spy.pca.borrow().get(1).map(|r| r.matrix.clone());
+    (m, matrix)
 }
 
 fn native() -> Option<NativeMethodsProvider> {
@@ -723,26 +754,49 @@ fn native_engine_reports_reml_boundaries_and_balanced_equivalence() {
     ));
 }
 
-/// Robustness through the actual kernel: at 2^1000 the variances overflow a
-/// double, which the engine reports as a numerical error per band (never a
-/// value), while the ICC-free chi-square SD interval stays representable.
+/// Rule 13 through the actual kernel, both sides of the domain boundary:
+/// values up to 3.91 x 2^254 are inside and computed (ICC unchanged); at
+/// 2^255 the largest value exceeds 2^256 and Methods refuses, which the
+/// engine reports as unsupported NUMERICAL_DOMAIN_EXCEEDED.
 #[test]
-fn native_unrepresentable_variances_are_errors() {
+fn native_domain_boundary_is_explicit() {
     let Some(provider) = native() else {
         return;
     };
-    let mut input = linked_design(0);
-    for row in &mut input.sources[0].x {
-        for v in row.iter_mut().flatten() {
-            *v *= 2f64.powi(500) * 2f64.powi(500);
+    let scaled = |k: i32| {
+        let mut input = linked_design(0);
+        let scale = 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+        for row in &mut input.sources[0].x {
+            for v in row.iter_mut().flatten() {
+                *v *= scale;
+            }
+        }
+        analyze(&input, &provider)
+    };
+    let base = scaled(0);
+    let base_icc = find(&base, "measurement.icc_1_reml", "a")
+        .value
+        .clone()
+        .unwrap();
+    for k in [-249, 254] {
+        let report = scaled(k);
+        let reml = find(&report, "measurement.icc_1_reml", "a");
+        assert_eq!(status(reml), "computed", "{k}");
+        let icc = reml.value.as_ref().unwrap();
+        assert!(
+            (icc[0].as_f64().unwrap() - base_icc[0].as_f64().unwrap()).abs() <= 1e-12,
+            "{k}"
+        );
+    }
+    for k in [-250, 255] {
+        let report = scaled(k);
+        for id in [
+            "measurement.icc_1_reml",
+            "measurement.repeatability_sd_ci_chi_square",
+        ] {
+            let m = find(&report, id, "a");
+            assert_eq!(status(m), "unsupported", "{k} {id}");
+            assert_eq!(m.reason_code.as_deref(), Some("NUMERICAL_DOMAIN_EXCEEDED"));
         }
     }
-    let report = analyze(&input, &provider);
-    let reml = find(&report, "measurement.icc_1_reml", "a");
-    assert_eq!(status(reml), "error");
-    assert_eq!(reml.reason_code.as_deref(), Some("VALUE_NOT_REPRESENTABLE"));
-    assert_eq!(reml.parameters["band_status"], serde_json::json!([6, 6]));
-    let chi = find(&report, "measurement.repeatability_sd_ci_chi_square", "a");
-    assert_eq!(status(chi), "computed");
-    assert!(chi.value.as_ref().unwrap()["lower"][0].as_f64().unwrap() > 1e297);
 }

@@ -249,15 +249,21 @@ test('WASM repeatability uncertainty matches the native engine',async()=>{
  assert.equal(find('measurement.repeat_counts','a').value.n_repeated_groups,18);
  assert.ok(runtime.capabilities().some(c=>c.capability_id==='repeatability_uncertainty'&&c.available&&!c.qualified));
 });
-// Robustness: at 2^1000 the variances overflow a double; the bridge must carry
-// the native per-band status 6 and the error reason, never a value.
-test('WASM reports unrepresentable REML variances as errors',async()=>{
- const fixture=JSON.parse(await readFile(new URL('../../../examples/repeatability_uncertainty.json',import.meta.url),'utf8'));
- for(const row of fixture.sources[0].x) for(let c=0;c<row.length;c++) row[c]*=2**500*2**500;
- const report=runtime.analyze(fixture);
- const reml=report.metrics.find(m=>m.metric_id==='measurement.icc_1_reml'&&m.parameters.instrument==='a');
- assert.equal(reml.status,'error');
- assert.equal(reml.reason_code,'VALUE_NOT_REPRESENTABLE');
- assert.deepEqual(reml.parameters.band_status,[6,6]);
- assert.equal(reml.value,null);
+// Rule 13 domain through the bridge: values up to 2.32 x 2^254 are inside
+// (ICC unchanged), 2^255 exceeds 2^256 and the native refusal reaches the
+// report as unsupported NUMERICAL_DOMAIN_EXCEEDED with the domain published.
+test('WASM keeps the repeatability domain boundary explicit',async()=>{
+ const base=JSON.parse(await readFile(new URL('../../../examples/repeatability_uncertainty.json',import.meta.url),'utf8'));
+ const scaled=k=>{const f=structuredClone(base);for(const row of f.sources[0].x) for(let c=0;c<row.length;c++) row[c]*=2**k;return runtime.analyze(f);};
+ const find=(r,id)=>r.metrics.find(m=>m.metric_id===id&&m.parameters.instrument==='a');
+ const icc0=find(scaled(0),'measurement.icc_1_reml').value[0];
+ const inside=find(scaled(254),'measurement.icc_1_reml');
+ assert.equal(inside.status,'computed');
+ assert.ok(Math.abs(inside.value[0]-icc0)<=1e-12);
+ for(const id of ['measurement.icc_1_reml','measurement.repeatability_sd_ci_chi_square','measurement.icc_1_reml_ci_cluster_bootstrap']){
+  const m=find(scaled(255),id);
+  assert.equal(m.status,'unsupported');
+  assert.equal(m.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+  assert.match(m.parameters.numerical_domain,/2\^-256/);
+ }
 });

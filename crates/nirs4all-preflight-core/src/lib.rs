@@ -1659,7 +1659,7 @@ pub struct VarianceComponentsDiagnostics {
     pub reml_candidates: Vec<usize>,
     pub bisection_iterations: Vec<usize>,
     /// 0 interior, 1 insufficient, 2 s2b = 0 boundary, 3 zero total
-    /// variance, 4 s2w = 0 boundary, 5 not converged, 6 not representable.
+    /// variance, 4 s2w = 0 boundary, 5 not converged.
     pub status: Vec<i32>,
     /// Exact chi-square interval of the within-group SD.
     pub sd_ci_chi_square: Vec<Interval>,
@@ -1669,8 +1669,6 @@ pub struct VarianceComponentsDiagnostics {
     pub sd_ci_bootstrap: Vec<Interval>,
     pub icc_ci_bootstrap: Vec<Interval>,
     pub n_valid_replicates: Vec<usize>,
-    /// 0, or 6 when an interval bound is not representable as a double.
-    pub interval_status: Vec<i32>,
     pub backend_version: String,
 }
 

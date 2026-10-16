@@ -201,7 +201,6 @@ type VarianceIntervals = unsafe extern "C" fn(
     u64,
     *mut f64,
     *mut i64,
-    *mut i32,
 ) -> i32;
 
 /// Each provider owns one context, and stays on its creating thread.
@@ -1227,7 +1226,6 @@ impl MethodsProvider for NativeMethodsProvider {
         let mut status = vec![0i32; p];
         let mut intervals = vec![f64::NAN; 8 * p];
         let mut valid = vec![0i64; p];
-        let mut interval_status = vec![0i32; p];
         let xv = MatrixView::new(&mut x, n, p);
         // SAFETY: inputs hold n (or n x p) elements; outputs hold 8p, p values.
         self.check(unsafe {
@@ -1254,7 +1252,6 @@ impl MethodsProvider for NativeMethodsProvider {
                 r.seed,
                 intervals.as_mut_ptr(),
                 valid.as_mut_ptr(),
-                interval_status.as_mut_ptr(),
             )
         })?;
         let finite = |v: f64| v.is_finite().then_some(v);
@@ -1285,7 +1282,6 @@ impl MethodsProvider for NativeMethodsProvider {
             sd_ci_bootstrap: pair(4),
             icc_ci_bootstrap: pair(6),
             n_valid_replicates: valid.into_iter().map(|v| v.max(0) as usize).collect(),
-            interval_status,
             backend_version: self.version.clone(),
         })
     }

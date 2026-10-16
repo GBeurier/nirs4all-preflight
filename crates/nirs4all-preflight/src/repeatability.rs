@@ -20,14 +20,14 @@ const BOOTSTRAP_WORK_BUDGET: f64 = 2.5e9;
 const COVERAGE_NOTE: &str =
     "not_qualified_percentile_interval_measured_coverage_in_docs_REUSE_ENGINE";
 /// Numerical domain of the Methods kernel, published with the REML metric.
-const NUMERICAL_DOMAIN: &str = "exact_power_of_two_scaling_from_centred_variation_translation_and_scale_invariant_unrepresentable_variance_gives_status_6";
+const NUMERICAL_DOMAIN: &str = "rule_13: nonzero |x| in [2^-256, 2^256], spread <= 2^64 over values and the differences used; outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; inside: exact power-of-two scaling from centred variation, per-group residuals from original values";
 const COUNTS_ID: &str = "measurement.repeat_counts";
 const REML_ID: &str = "measurement.icc_1_reml";
 const SD_CHI2_ID: &str = "measurement.repeatability_sd_ci_chi_square";
 const ICC_F_ID: &str = "measurement.icc_1_1_ci_exact_f";
 const SD_BOOT_ID: &str = "measurement.repeatability_sd_ci_cluster_bootstrap";
 const ICC_BOOT_ID: &str = "measurement.icc_1_reml_ci_cluster_bootstrap";
-const REML_STATUS: &str = "0_interior_1_insufficient_2_between_variance_zero_3_zero_total_4_within_variance_zero_5_not_converged_6_not_representable";
+const REML_STATUS: &str = "0_interior_1_insufficient_2_between_variance_zero_3_zero_total_4_within_variance_zero_5_not_converged";
 
 /// Repeat type, instrument and campaign of one technical context.
 type Context<'a> = (&'a str, &'a str, &'a str);
@@ -321,7 +321,6 @@ type Gate = Option<(Availability, &'static str)>;
 const INSUFFICIENT: &str = "INSUFFICIENT_GROUPS_OR_REPEATS";
 const ZERO_TOTAL: &str = "ZERO_TOTAL_VARIANCE";
 const NOT_CONVERGED: &str = "REML_NOT_CONVERGED";
-const NOT_REPRESENTABLE: &str = "VALUE_NOT_REPRESENTABLE";
 const SHARED_UNIT: &str = "GROUPS_SHARE_INDEPENDENCE_UNIT";
 const UNBALANCED: &str = "UNBALANCED_BAND";
 const NO_WITHIN_DF: &str = "NO_WITHIN_GROUP_DF";
@@ -338,8 +337,6 @@ fn summary_status(
     let has = |code: &str| reasons.iter().flatten().any(|r| *r == code);
     if has(NOT_CONVERGED) {
         (Availability::Error, NOT_CONVERGED)
-    } else if has(NOT_REPRESENTABLE) {
-        (Availability::Error, NOT_REPRESENTABLE)
     } else if !reasons.is_empty() && reasons.iter().all(|r| *r == Some(ZERO_TOTAL)) {
         (Availability::Undefined, ZERO_TOTAL)
     } else if has(SHARED_UNIT) {
@@ -589,9 +586,10 @@ impl Uncertainty<'_> {
             }
             Err(e) => {
                 for id in ids {
-                    report
-                        .metrics
-                        .push(self.unavailable(id, e.availability(), &e.reason));
+                    let mut m = self.unavailable(id, e.availability(), &e.reason);
+                    m.parameters
+                        .insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
+                    report.metrics.push(m);
                 }
                 return;
             }
@@ -606,8 +604,7 @@ impl Uncertainty<'_> {
                 0 | 2 | 4 => None,
                 1 => Some(INSUFFICIENT),
                 3 => Some(ZERO_TOTAL),
-                5 => Some(NOT_CONVERGED),
-                _ => Some(NOT_REPRESENTABLE),
+                _ => Some(NOT_CONVERGED),
             })
             .collect();
         let icc: Vec<Option<f64>> = d
@@ -657,7 +654,6 @@ impl Uncertainty<'_> {
             ("n_bands_between_variance_zero", json!(count_status(2))),
             ("n_bands_within_variance_zero", json!(count_status(4))),
             ("n_bands_not_converged", json!(count_status(5))),
-            ("n_bands_not_representable", json!(count_status(6))),
             ("n_groups_per_band", json!(d.n_groups)),
             ("n_observations_per_band", json!(d.n_observations)),
             ("reml_candidates_per_band", json!(d.reml_candidates)),
@@ -672,9 +668,6 @@ impl Uncertainty<'_> {
         }
         report.metrics.push(self.metric(reml));
 
-        let unrepresentable = |j: usize, b: &Interval| {
-            d.interval_status[j] == 6 && (b[0].is_none() || b[1].is_none())
-        };
         let df: Vec<usize> = d
             .n_observations
             .iter()
@@ -682,15 +675,7 @@ impl Uncertainty<'_> {
             .map(|(n, g)| n.saturating_sub(*g))
             .collect();
         let chi_reason: Vec<Option<&'static str>> = (0..p)
-            .map(|j| {
-                if df[j] == 0 {
-                    Some(NO_WITHIN_DF)
-                } else if unrepresentable(j, &d.sd_ci_chi_square[j]) {
-                    Some(NOT_REPRESENTABLE)
-                } else {
-                    None
-                }
-            })
+            .map(|j| if df[j] == 0 { Some(NO_WITHIN_DF) } else { None })
             .collect();
         let mut chi = self.interval_metric(
             SD_CHI2_ID,
@@ -720,8 +705,6 @@ impl Uncertainty<'_> {
                     .map(|j| {
                         if b.shared[j] {
                             Some(SHARED_UNIT)
-                        } else if unrepresentable(j, &d.icc_ci_exact_f[j]) {
-                            Some(NOT_REPRESENTABLE)
                         } else if d.icc_ci_exact_f[j][0].is_none() {
                             Some(UNBALANCED)
                         } else {
@@ -773,8 +756,6 @@ impl Uncertainty<'_> {
                                 Some(FEW_WITHIN_UNITS)
                             } else if valid[j] < BOOTSTRAP_REPLICATES {
                                 Some(REPLICATES)
-                            } else if unrepresentable(j, &intervals[j]) {
-                                Some(NOT_REPRESENTABLE)
                             } else {
                                 None
                             }
@@ -812,7 +793,7 @@ fn valid_result(d: &VarianceComponentsDiagnostics, p: usize, b: usize) -> bool {
         && d.icc.iter().flatten().all(|v| (0.0..=1.0).contains(v))
         && d.reml_log_likelihood.len() == p
         && d.status.len() == p
-        && d.status.iter().all(|s| (0..=6).contains(s))
+        && d.status.iter().all(|s| (0..=5).contains(s))
         && [
             &d.n_groups,
             &d.n_observations,
@@ -827,28 +808,29 @@ fn valid_result(d: &VarianceComponentsDiagnostics, p: usize, b: usize) -> bool {
         && intervals(&d.icc_ci_bootstrap)
         && d.n_valid_replicates.len() == p
         && d.n_valid_replicates.iter().all(|&v| v <= b)
-        && d.interval_status.len() == p
-        && d.interval_status.iter().all(|s| matches!(s, 0 | 6))
 }
 
-/// Mean without overflow or loss to a large common offset: values are
-/// divided by an exact power of two bounding max|x| (so the sum stays below
-/// the number of values), averaged, corrected by the residual mean, then
-/// scaled back exactly. A single value is returned unchanged.
-fn scaled_mean(values: &[f64]) -> f64 {
-    let largest = values.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    if values.len() == 1 || largest == 0.0 {
-        return values.first().copied().unwrap_or(0.0);
+/// Rule 13 supported domain of an engine computation: every nonzero |x| in
+/// [2^-256, 2^256] and max/min nonzero |x| <= 2^64 (exact comparisons).
+fn in_domain(values: impl Iterator<Item = f64>) -> bool {
+    let (lowest, highest) = (2f64.powi(-256), 2f64.powi(256));
+    let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
+    for v in values.map(f64::abs).filter(|v| *v != 0.0) {
+        if !(lowest..=highest).contains(&v) {
+            return false;
+        }
+        lo = lo.min(v);
+        hi = hi.max(v);
     }
-    // frexp-like exponent: largest * 2^-e in [1/2, 1).
-    let e = largest.log2().floor() as i32 + 1;
-    // Exact power-of-two scaling in two halves, each within +-600.
-    let scale = |v: f64, k: i32| v * 2f64.powi(k / 2) * 2f64.powi(k - k / 2);
+    hi == 0.0 || hi <= lo * 2f64.powi(64)
+}
+
+/// Mean with a residual-mean correction; inside the supported domain the
+/// sum cannot overflow (at most 2^256 times the number of values).
+fn compensated_mean(values: &[f64]) -> f64 {
     let n = values.len() as f64;
-    let y: Vec<f64> = values.iter().map(|&v| scale(v, -e)).collect();
-    let mean = y.iter().sum::<f64>() / n;
-    let mean = mean + y.iter().map(|v| v - mean).sum::<f64>() / n;
-    scale(mean, e)
+    let mean = values.iter().sum::<f64>() / n;
+    mean + values.iter().map(|v| v - mean).sum::<f64>() / n
 }
 
 /// Structure sensitivity to unequal repeat counts: each aggregated sample
@@ -866,6 +848,7 @@ pub(crate) fn balanced_repeat_sensitivity(
 ) {
     const ID: &str = "structure.balanced_repeat_sensitivity";
     const SENSITIVITY: &str = "balanced_repeat_sensitivity.v1";
+    const SENSITIVITY_DOMAIN: &str = "rule_13: per band, nonzero |x| in [2^-256, 2^256] and spread <= 2^64 over the acquisitions of the aggregated samples";
     let src = Some(source.source_id.as_str());
     let push = |report: &mut QualificationReport, mut m: Metric| {
         m.view_id = "canonical:centered".into();
@@ -911,8 +894,29 @@ pub(crate) fn balanced_repeat_sensitivity(
     }
     let domain = format!("nirs4all-preflight\0{SENSITIVITY}\0{}", source.source_id);
     let seed = derive_seed(input.options.seed, &domain);
-    let mut rng = crate::clustering::SplitMix64(seed);
     let p = source.axis.len();
+    let domain = (0..p).all(|c| {
+        in_domain(
+            group_rows
+                .iter()
+                .flatten()
+                .filter_map(|&r| valid_cell(source, r, c)),
+        )
+    });
+    if !domain {
+        let mut m = Metric::unavailable(
+            ID,
+            Availability::Unsupported,
+            NUMERICAL_DOMAIN_EXCEEDED,
+            src,
+            None,
+        );
+        m.parameters
+            .insert("numerical_domain".into(), json!(SENSITIVITY_DOMAIN));
+        push(report, m);
+        return;
+    }
+    let mut rng = crate::clustering::SplitMix64(seed);
     let matrix: Vec<Vec<f64>> = group_rows
         .iter()
         .map(|rows| {
@@ -928,7 +932,7 @@ pub(crate) fn balanced_repeat_sensitivity(
                         .iter()
                         .filter_map(|&r| valid_cell(source, r, c))
                         .collect();
-                    scaled_mean(&values)
+                    compensated_mean(&values)
                 })
                 .collect()
         })
@@ -1025,6 +1029,7 @@ pub(crate) fn balanced_repeat_sensitivity(
             ),
         ),
         ("n_subsamples", json!(1)),
+        ("numerical_domain", json!(SENSITIVITY_DOMAIN)),
         (
             "rng_algorithm",
             json!("splitmix64_partial_fisher_yates_per_sample_in_aggregation_order"),
