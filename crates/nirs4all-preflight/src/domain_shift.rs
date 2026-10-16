@@ -400,7 +400,7 @@ fn compare(
             .insert("n_components_effective".into(), json!(k_eff));
         m.parameters.insert(
             "component_rule".into(),
-            json!("requested min(10, n_reference - ceil(n_reference / n_folds) - 1, n_bands); effective = smallest numerical rank (numpy matrix_rank tolerance) of the out-of-fold and full reference fits"),
+            json!("requested k = min(10, n_reference - ceil(n_reference / n_folds) - 1, n_bands); in each fit separately (every out-of-fold fit and the full reference fit), a component is resolved when its eigenvalue exceeds that fit's resolution 16 m eps lambda_1 (m = max(fit rows, n_bands), lambda_1 the fit's largest eigenvalue, eps = f64 machine epsilon); components at or below it are unresolved and discarded; effective k = min(requested k, smallest number of leading resolved components over all fits)"),
         );
         m.parameters
             .insert("backend_version".into(), json!(d.backend_version));
@@ -477,7 +477,7 @@ fn compare(
             "q_limit": d.q_limit,
             "tolerance": d.tolerance,
             "reference_condition": d.condition,
-            "q_tolerance": d.tolerance * d.q_tolerance_scale,
+            "q_tolerance_max": d.tolerance * d.q_tolerance_scale,
             "eigenvalue_resolution": d.eigenvalue_resolution,
             "n_target_beyond_t2_limit": t2.then_some(d.n_beyond_t2),
             "n_target_beyond_q_limit": d.n_beyond_q,
@@ -511,7 +511,7 @@ fn compare(
     );
     coverage.parameters.insert(
         "statistics".into(),
-        json!("T² = sum_a t_a² / lambda_a over the effective components (above the eigenvalue resolution 16 m eps lambda_1); Q = squared norm of the explicit residual outside the reference subspace; a target unit counts beyond a limit only when it exceeds it by more than the tolerance (tau max(T², limit) for T², tau S for Q, tau = 16 m eps lambda_1 / lambda_k a conservative estimate, not a proven bound) and as near the limit (numerically undetermined, never a decision) when within it"),
+        json!("T² = sum_a t_a² / lambda_a over the effective components; Q = squared norm of the explicit residual outside the reference subspace; tau = 16 m eps lambda_1 / lambda_k of the full reference fit (a conservative estimate, not a proven bound); target unit i counts beyond the T² limit L when T²_i - L > tau max(T²_i, L), and beyond the Q limit L when Q_i - L > tau S_i, with S_i = max(||x_c,i||², max_j ||x_c,j||²) over the out-of-fold centred reference units j (each centred on its fit mean) and the target unit i centred on the reference mean; it counts near the limit (numerically undetermined, never a decision) when L - value < its tolerance and it is not beyond; q_tolerance_max = tau max_i S_i is the largest per-unit Q tolerance, so a unit can be beyond with Q below it"),
     );
     coverage.parameters.insert(
         "interpretation".into(),
@@ -520,7 +520,7 @@ fn compare(
     coverage.parameters.insert(
         "value_units".into(),
         json!({
-            "t2_limit": "dimensionless", "q_limit": squared, "q_tolerance": squared,
+            "t2_limit": "dimensionless", "q_limit": squared, "q_tolerance_max": squared,
             "tolerance": "dimensionless", "eigenvalue_resolution": squared,
             "reference_eigenvalues": squared, "fractions": "dimensionless",
         }),

@@ -1161,3 +1161,71 @@ fn published_tie_rule_is_the_executed_one() {
         );
     }
 }
+
+#[test]
+fn published_component_rule_matches_the_executed_resolution() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Astra b10fix3 (1): (±1, ±2^-24), each twice, eight folds. NumPy's
+    // matrix_rank keeps two components in every fit; the resolution rule
+    // 16 m eps lambda_1 per fit leaves one resolved component.
+    let e = 2f64.powi(-24);
+    let a: Vec<[f64; 2]> = [[1.0, e], [1.0, -e], [-1.0, e], [-1.0, -e]]
+        .iter()
+        .flat_map(|r| [*r, *r])
+        .collect();
+    let report = analyze(&line_dataset(&a, &[[0.0, e]]), &provider);
+    let coverage = find(&report, "domain_shift.coverage", "instrument", Some("B"));
+    assert_eq!(coverage.parameters["n_folds"], 8);
+    assert_eq!(coverage.parameters["n_components_requested"], 2);
+    assert_eq!(coverage.parameters["n_components_effective"], 1);
+    let rule = coverage.parameters["component_rule"].as_str().unwrap();
+    assert!(rule.contains("in each fit separately") && rule.contains("16 m eps lambda_1"));
+    assert!(rule.contains("unresolved") && !rule.contains("matrix_rank"));
+    // The full fit's eigenvalues: lambda_1 = 8/7, lambda_2 = 8/7 * 2^-48,
+    // below 16 * 8 * eps * lambda_1 = 2^-45 lambda_1 (unresolved).
+    let resolution = value(coverage, "eigenvalue_resolution").as_f64().unwrap();
+    assert!((resolution - 128.0 * f64::EPSILON * 8.0 / 7.0).abs() <= 1e-12 * resolution);
+    assert_eq!(
+        value(coverage, "reference_eigenvalues")
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn q_tolerance_max_is_the_largest_per_unit_tolerance() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Astra b10fix3 (2): reference (i, 0), targets (0, 100), (1, 2^-18),
+    // (2, 0), ten folds. Q = 2^-36 for the second target is counted beyond
+    // with its own tolerance tau S_i although it is below q_tolerance_max,
+    // which (0, 100) sets through S_i = ||x_c,i||^2 = 10000.
+    let a: Vec<[f64; 2]> = (-5..=5).map(|i| [f64::from(i), 0.0]).collect();
+    let report = analyze(
+        &line_dataset(&a, &[[0.0, 100.0], [1.0, 2f64.powi(-18)], [2.0, 0.0]]),
+        &provider,
+    );
+    let coverage = find(&report, "domain_shift.coverage", "instrument", Some("B"));
+    assert_eq!(coverage.parameters["n_folds"], 10);
+    assert_eq!(value(coverage, "n_target_beyond_q_limit"), 2);
+    assert_eq!(value(coverage, "n_target_near_q_limit"), 1);
+    let tau = value(coverage, "tolerance").as_f64().unwrap();
+    let max = value(coverage, "q_tolerance_max").as_f64().unwrap();
+    close(&serde_json::json!(max), tau * 10000.0);
+    assert!(2f64.powi(-36) < max);
+    // Its own tolerance: S_i = max(1 + 2^-36, largest reference norm 25).
+    assert!(2f64.powi(-36) > tau * 25.0);
+    let statistics = coverage.parameters["statistics"].as_str().unwrap();
+    assert!(statistics.contains("S_i = max(") && statistics.contains("largest per-unit"));
+    assert!(coverage
+        .value
+        .as_ref()
+        .unwrap()
+        .get("q_tolerance")
+        .is_none());
+}
