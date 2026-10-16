@@ -8,6 +8,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
+/// Supported numerical domains of the Methods kernels behind each metric,
+/// published in the `numerical_domain` parameter on success and on refusal
+/// (inputs outside are refused with NUMERICAL_DOMAIN_EXCEEDED).
+/// Spectra kernels (SNV, noise proxy, tolerance pairs).
+pub const NUMERICAL_DOMAIN: &str = "every nonzero |x| in [2^-256, 2^256] and, per row (spectrum), max/min nonzero |x| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Value summaries: magnitude bound only.
+pub const NUMERICAL_DOMAIN_SUMMARY: &str = "every nonzero |value| in [2^-256, 2^256]; no spread bound; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Local contrast of a continuous target over neighbours in PCA score space.
+pub const NUMERICAL_DOMAIN_LOCAL_CONTINUOUS: &str = "neighbours: magnitude bound only (every nonzero |score| in [2^-256, 2^256], no spread bound); contrast: every nonzero |y| in [2^-256, 2^256] and, over the whole target vector, max/min nonzero |y| <= 2^32; inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
+/// Local contrast of a categorical target: category codes are labels.
+pub const NUMERICAL_DOMAIN_LOCAL_CATEGORICAL: &str = "neighbours: magnitude bound only (every nonzero |score| in [2^-256, 2^256], no spread bound); category codes exempt (labels); inputs outside are refused (NUMERICAL_DOMAIN_EXCEEDED)";
 
 /// Deserialized through a raw wire form: partitions and identifiers
 /// are decoded first and target content stays opaque JSON until the
@@ -405,6 +416,11 @@ pub struct Options {
     /// Grouped PLS/PCR predictability probe executed by the validation provider.
     #[serde(default)]
     pub validation_probe: ValidationProbeOptions,
+    /// Declared per-target tolerance above which the references of two
+    /// spectrally (quasi-)identical samples are incompatible. Keyed by
+    /// target ID; an absent target is not compared and none is invented.
+    #[serde(default)]
+    pub reference_contradiction_tolerances: BTreeMap<String, ReferenceContradictionTolerance>,
 }
 
 impl Default for Options {
@@ -421,6 +437,7 @@ impl Default for Options {
             quasi_duplicates: None,
             domain_shift: DomainShiftOptions::default(),
             validation_probe: ValidationProbeOptions::default(),
+            reference_contradiction_tolerances: BTreeMap::new(),
         }
     }
 }
@@ -483,13 +500,15 @@ fn default_true() -> bool {
 }
 
 /// Savitzky-Golay smoothing-residual noise proxy profile (window in bands).
+/// Fields are u64 so 32-bit (WASM) and 64-bit hosts parse and validate the
+/// same values identically.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoiseProxyOptions {
     #[serde(default = "default_noise_window")]
-    pub window_bands: usize,
+    pub window_bands: u64,
     #[serde(default = "default_noise_polyorder")]
-    pub polyorder: usize,
+    pub polyorder: u64,
 }
 
 impl Default for NoiseProxyOptions {
@@ -500,10 +519,15 @@ impl Default for NoiseProxyOptions {
         }
     }
 }
-fn default_noise_window() -> usize {
+/// Largest Savitzky-Golay window of the Methods noise proxy.
+pub const NOISE_PROXY_MAX_WINDOW: u64 = 1001;
+/// Largest polynomial order whose smoothing weights Methods verified.
+pub const NOISE_PROXY_MAX_POLYORDER: u64 = 10;
+
+fn default_noise_window() -> u64 {
     11
 }
-fn default_noise_polyorder() -> usize {
+fn default_noise_polyorder() -> u64 {
     2
 }
 
@@ -532,9 +556,23 @@ pub enum ComparisonContext {
     /// Compare observations only within one instrument and campaign.
     #[default]
     InstrumentCampaign,
+    /// Compare observations of one instrument across its campaigns.
+    Instrument,
     /// Compare every observation of a source.
     Source,
 }
+/// Incompatibility rule between two exact references of one target.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReferenceContradictionTolerance {
+    /// Continuous: incompatible when |y_a - y_b| > value, in target units.
+    Absolute { value: f64 },
+    /// Continuous: incompatible when |y_a - y_b| > value * max(|y_a|, |y_b|).
+    Relative { value: f64 },
+    /// Categorical: incompatible when the classes differ.
+    DifferentClass,
+}
+
 fn default_max_cells() -> usize {
     10_000_000
 }
@@ -659,16 +697,18 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             );
         }
     }
+    // Methods' verified Savitzky-Golay domain. The window is bounded first so
+    // `window_bands - 2` cannot underflow; no addition can wrap on 32-bit WASM.
     let noise = input.options.noise_proxy;
-    if noise.window_bands < 3
+    if !(3..=NOISE_PROXY_MAX_WINDOW).contains(&noise.window_bands)
         || noise.window_bands.is_multiple_of(2)
-        || noise.window_bands > 1001
-        || noise.polyorder + 2 > noise.window_bands
+        || noise.polyorder > NOISE_PROXY_MAX_POLYORDER
+        || noise.polyorder > noise.window_bands - 2
     {
         out.add(
             "INVALID_NOISE_PROXY_PARAMETERS",
             "options.noise_proxy",
-            "Noise proxy window must be odd, between 3 and 1001 bands, with polyorder <= window - 2",
+            "Noise proxy window must be odd, between 3 and 1001 bands, with polyorder <= min(10, window - 2)",
             true,
         );
     }
@@ -696,6 +736,43 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             "Probe estimators must be nonempty and unique, with a positive fit budget",
             true,
         );
+    }
+    for (target_id, tolerance) in &input.options.reference_contradiction_tolerances {
+        let path = format!("options.reference_contradiction_tolerances.{target_id}");
+        let Some(target) = input.targets.iter().find(|t| &t.target_id == target_id) else {
+            out.add(
+                "UNKNOWN_CONTRADICTION_TARGET",
+                path,
+                "Contradiction tolerance must name a declared target",
+                true,
+            );
+            continue;
+        };
+        let value = match (target.kind, tolerance) {
+            (
+                TargetKind::Continuous,
+                ReferenceContradictionTolerance::Absolute { value }
+                | ReferenceContradictionTolerance::Relative { value },
+            ) => *value,
+            (TargetKind::Categorical, ReferenceContradictionTolerance::DifferentClass) => 1.0,
+            _ => {
+                out.add(
+                    "CONTRADICTION_TOLERANCE_KIND_MISMATCH",
+                    path,
+                    "Continuous targets take an absolute or relative tolerance; categorical targets take different_class",
+                    true,
+                );
+                continue;
+            }
+        };
+        if !(value.is_finite() && value > 0.0) {
+            out.add(
+                "INVALID_CONTRADICTION_TOLERANCE",
+                path,
+                "Contradiction tolerance must be finite and positive",
+                true,
+            );
+        }
     }
     let mut source_ids = BTreeSet::new();
     let mut total_cells = 0usize;
@@ -1554,11 +1631,19 @@ pub struct AdjustedRandDiagnostics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnvRequest {
     pub matrix: Vec<Vec<f64>>,
+    /// Dense group codes 0..g-1 (every group non-empty): the result holds the
+    /// equal-weight mean of the SNV rows of each group. None keeps the rows.
+    #[serde(default)]
+    pub group_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnvDiagnostics {
+    /// SNV rows, or group means when group IDs were given.
     pub matrix: Vec<Vec<f64>>,
+    /// Methods first-order bound on the absolute rounding error of every
+    /// entry of each output row (0 for constant rows).
+    pub error_bounds: Vec<f64>,
     pub backend_version: String,
 }
 
@@ -1869,8 +1954,10 @@ pub struct BhDiagnostics {
     pub backend_version: String,
 }
 
-/// Provider reason for a Methods refusal of inputs outside the supported
-/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32, Methods N4M_DOMAIN_MAX_SPREAD_LOG2).
+/// Provider reason (and metric reason code) for a Methods refusal of inputs
+/// outside the supported numerical domain of its kernel (Methods
+/// `N4M_DOMAIN_MAX_MAGNITUDE_LOG2` / `N4M_DOMAIN_MAX_SPREAD_LOG2`): an explicit
+/// refusal, never a silent value.
 pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
 /// Prefix of the Methods context message for that refusal.
 pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
@@ -2097,12 +2184,6 @@ pub struct PcaMonitorDiagnostics {
     pub backend_version: String,
 }
 
-/// Provider reason for a Methods refusal of inputs outside the supported
-/// numerical domain (nonzero |x| in [2^-256, 2^256], max/min <= 2^32 where
-/// differences matter).
-pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
-/// Prefix of the Methods context message for that refusal.
-pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
 
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;

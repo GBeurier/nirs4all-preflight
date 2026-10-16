@@ -151,6 +151,12 @@ pub fn capabilities_with_validation(
             ),
         });
     }
+    out.push(Capability {
+        capability_id: "duplicate_reference_conflicts".into(),
+        available: true,
+        qualified: false,
+        reason: Some("ALPHA_PROTOCOL_UNQUALIFIED".into()),
+    });
     let clustering_available = [
         "methods.pca",
         "methods.hdbscan",
@@ -238,6 +244,11 @@ pub fn analyze_with_validation(
             "validation_probe" if !input.options.validation_probe.enabled => {
                 "VALIDATION_PROBE_DISABLED"
             }
+            "duplicate_reference_conflicts"
+                if input.options.reference_contradiction_tolerances.is_empty() =>
+            {
+                "REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED"
+            }
             _ => continue,
         };
         capability.available = false;
@@ -295,9 +306,15 @@ pub fn analyze_with_validation(
             action: "Declare and verify a physical or grouped independence unit".into(),
         });
     }
+    let references: Vec<_> = input
+        .targets
+        .iter()
+        .map(|target| TargetReferences::new(target, &samples))
+        .collect();
     for source in &input.sources {
-        analyze_source(source, &samples, input, provider, &mut report);
+        analyze_source(source, &samples, &references, input, provider, &mut report);
     }
+    analyze_within_physical_conflicts(&samples, &references, input, &mut report);
     for target in &input.targets {
         analyze_target(target, &samples, input, provider, &mut report);
     }
@@ -305,6 +322,49 @@ pub fn analyze_with_validation(
     // After associations: domain-shift recommendations read their results.
     domain_shift::analyze(input, &samples, provider, &mut report);
     probe::analyze(input, &samples, provider, validation_provider, &mut report);
+    // Operation-specific numerical domain on success and on refusal.
+    let categorical: BTreeSet<&str> = input
+        .targets
+        .iter()
+        .filter(|t| t.kind == TargetKind::Categorical)
+        .map(|t| t.target_id.as_str())
+        .collect();
+    for m in &mut report.metrics {
+        let domain = match m.metric_id.as_str() {
+            "target.continuous_distribution" => Some(NUMERICAL_DOMAIN_SUMMARY),
+            "local.global_contrast"
+            | "local.observed_same_class_fraction"
+            | "local.expected_same_class_fraction" => Some(
+                if m.target_id
+                    .as_deref()
+                    .is_some_and(|t| categorical.contains(t))
+                {
+                    NUMERICAL_DOMAIN_LOCAL_CATEGORICAL
+                } else {
+                    NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+                },
+            ),
+            "structure.snv_pca_eigenvalues"
+            | "structure.snv_effective_dimension"
+            | "structure.snv_sensitivity"
+            | "measurement.noise_proxy"
+            | "measurement.noise_proxy_pooled"
+            | "integrity.quasi_duplicate_pairs"
+            | "integrity.cross_partition_quasi_duplicate_pairs"
+            | "reference.quasi_duplicate_conflicts" => Some(NUMERICAL_DOMAIN),
+            _ if m.reason_code.as_deref() == Some(NUMERICAL_DOMAIN_EXCEEDED) => {
+                Some(NUMERICAL_DOMAIN)
+            }
+            _ => None,
+        };
+        let published = matches!(m.status, Availability::Computed)
+            || m.reason_code.as_deref() == Some(NUMERICAL_DOMAIN_EXCEEDED);
+        if let (Some(domain), true) = (domain, published) {
+            m.parameters
+                .entry("numerical_domain".into())
+                .or_insert_with(|| json!(domain));
+        }
+    }
     report
 }
 
@@ -336,6 +396,7 @@ fn exact_spectrum_key(source: &SpectralSource, row: usize) -> Option<Vec<u64>> {
 fn analyze_source(
     source: &SpectralSource,
     samples: &HashMap<&str, &Sample>,
+    references: &[TargetReferences],
     input: &QualificationInput,
     provider: &impl MethodsProvider,
     report: &mut QualificationReport,
@@ -383,30 +444,34 @@ fn analyze_source(
     );
     m.denominators.insert("n_observations_source".into(), n);
     report.metrics.push(m);
-    let mut duplicate_rows: BTreeMap<Vec<u64>, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut duplicate_rows: BTreeMap<Vec<u64>, BTreeMap<String, Vec<usize>>> = BTreeMap::new();
+    // Development rows with at least one valid cell: the exact-pass population.
+    let mut keyed_rows = Vec::new();
     for &r in &dev_rows {
         let Some(key) = exact_spectrum_key(source, r) else {
             continue;
         };
+        keyed_rows.push(r);
         let sample = samples[source.sample_ids[r].as_str()];
         let physical = sample
             .physical_sample_id
             .clone()
             .unwrap_or_else(|| sample.sample_id.clone());
-        *duplicate_rows
+        duplicate_rows
             .entry(key)
             .or_default()
             .entry(physical)
-            .or_default() += 1;
+            .or_default()
+            .push(r);
     }
     let duplicate_pairs: usize = duplicate_rows
         .values()
         .map(|by_physical| {
             let mut earlier = 0usize;
             let mut pairs = 0usize;
-            for count in by_physical.values() {
-                pairs = pairs.saturating_add(earlier.saturating_mul(*count));
-                earlier = earlier.saturating_add(*count);
+            for rows in by_physical.values() {
+                pairs = pairs.saturating_add(earlier.saturating_mul(rows.len()));
+                earlier = earlier.saturating_add(rows.len());
             }
             pairs
         })
@@ -452,18 +517,18 @@ fn analyze_source(
         let Some(test_physical) = retained_rows.get(key) else {
             continue;
         };
-        let dev_total: usize = dev_physical.values().copied().sum();
+        let dev_total: usize = dev_physical.values().map(Vec::len).sum();
         for (physical, count) in test_physical {
-            let matches = dev_total.saturating_sub(*dev_physical.get(physical).unwrap_or(&0));
+            let matches = dev_total.saturating_sub(dev_physical.get(physical).map_or(0, Vec::len));
             cross_partition_pairs =
                 cross_partition_pairs.saturating_add(matches.saturating_mul(*count));
             if matches > 0 {
                 affected_retained = affected_retained.saturating_add(*count);
             }
         }
-        for (physical, count) in dev_physical {
+        for (physical, rows) in dev_physical {
             if test_physical.keys().any(|other| other != physical) {
-                affected_development = affected_development.saturating_add(*count);
+                affected_development = affected_development.saturating_add(rows.len());
             }
         }
     }
@@ -499,12 +564,82 @@ fn analyze_source(
     if cross_partition_pairs > 0 {
         report.findings.push(Finding { rule_id: "identity.possible_cross_partition_duplicate.v1".into(), severity: "high".into(), confidence: "unknown".into(), evidence: vec!["integrity.cross_partition_exact_duplicate_pairs".into()], message: format!("{cross_partition_pairs} exact spectral pairs span development and retained test in {}", source.source_id), action: "Review physical identities and partition assignment before fitting".into() });
     }
-    analyze_quasi_duplicates(
+    // Exact pairs enumerated only when a target declares a contradiction tolerance.
+    let exact_pairs = if input.options.reference_contradiction_tolerances.is_empty() {
+        Ok(Vec::new())
+    } else if duplicate_pairs > SUSPECT_PAIR_BUDGET {
+        Err((
+            Availability::Unsupported,
+            "SUSPECT_PAIR_BUDGET_EXCEEDED".to_string(),
+        ))
+    } else {
+        let mut pairs = Vec::with_capacity(duplicate_pairs);
+        for by_physical in duplicate_rows.values() {
+            let groups: Vec<&Vec<usize>> = by_physical.values().collect();
+            for (i, a) in groups.iter().enumerate() {
+                for b in &groups[i + 1..] {
+                    for &ra in a.iter() {
+                        for &rb in b.iter() {
+                            pairs.push(SpectralPair {
+                                rows: [ra.min(rb), ra.max(rb)],
+                                rms_difference: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(pairs)
+    };
+    let mut exact_parameters = BTreeMap::new();
+    exact_parameters.insert(
+        "pair_source".into(),
+        json!("integrity.cross_physical_exact_duplicate_pairs"),
+    );
+    exact_parameters.insert(
+        "normalization".into(),
+        json!("f64_bits_with_negative_zero_normalized_and_masked_cell_sentinel"),
+    );
+    exact_parameters.insert("context".into(), json!("whole_source"));
+    analyze_reference_conflicts(
         source,
         samples,
+        exact_pairs.as_deref(),
+        &PairPopulation {
+            metric_id: "reference.exact_duplicate_conflicts",
+            view_id: "native",
+            n_development_observations: dev_rows.len(),
+            rows: &keyed_rows,
+            admissibility: "development real observations with at least one valid cell",
+            parameters: exact_parameters,
+        },
+        references,
+        input,
+        report,
+    );
+    let (quasi_pairs, quasi_parameters, quasi_view, quasi_rows) = analyze_quasi_duplicates(
+        source,
+        samples,
+        references,
         (&dev_rows, &test_rows),
         input,
         provider,
+        report,
+    );
+    analyze_reference_conflicts(
+        source,
+        samples,
+        quasi_pairs.as_deref(),
+        &PairPopulation {
+            metric_id: "reference.quasi_duplicate_conflicts",
+            view_id: quasi_view,
+            n_development_observations: dev_rows.len(),
+            rows: &quasi_rows,
+            admissibility: "complete development real observations (no masked or missing cell)",
+            parameters: quasi_parameters,
+        },
+        references,
+        input,
         report,
     );
 
@@ -1284,7 +1419,9 @@ fn analyze_snv(
         push_unavailable(report, Availability::Undefined, "ZERO_TOTAL_VARIANCE");
         return;
     }
-    // SNV is a per-acquisition transform; aggregation follows it, as for the canonical view.
+    // SNV is a per-acquisition transform; aggregation follows it, as for the
+    // canonical view. Methods aggregates (compensated, equal weight per
+    // acquisition) and bounds the rounding error of every aggregated entry.
     let request = SnvRequest {
         matrix: group_rows
             .iter()
@@ -1295,10 +1432,19 @@ fn analyze_snv(
                     .collect()
             })
             .collect(),
+        group_ids: Some(
+            group_rows
+                .iter()
+                .enumerate()
+                .flat_map(|(g, rows)| std::iter::repeat_n(g as i64, rows.len()))
+                .collect(),
+        ),
     };
     let snv = match provider.snv(&request) {
         Ok(d)
-            if d.matrix.len() == request.matrix.len()
+            if d.matrix.len() == group_rows.len()
+                && d.error_bounds.len() == group_rows.len()
+                && d.error_bounds.iter().all(|b| b.is_finite() && *b >= 0.0)
                 && d.matrix
                     .iter()
                     .all(|row| row.len() == p && row.iter().all(|v| v.is_finite())) =>
@@ -1314,17 +1460,7 @@ fn analyze_snv(
             return;
         }
     };
-    let mut offset = 0;
-    let matrix: Vec<Vec<f64>> = group_rows
-        .iter()
-        .map(|rows| {
-            let block = &snv.matrix[offset..offset + rows.len()];
-            offset += rows.len();
-            (0..p)
-                .map(|c| block.iter().map(|row| row[c]).sum::<f64>() / rows.len() as f64)
-                .collect()
-        })
-        .collect();
+    let matrix = snv.matrix.clone();
     let n = matrix.len();
     let req = PcaRequest {
         source_id: source.source_id.clone(),
@@ -1343,12 +1479,45 @@ fn analyze_snv(
             return;
         }
     };
+    // Numerical rank of the SNV view. Methods bounds the rounding error of
+    // every entry of aggregated sample g by B_g (SNV of each acquisition and
+    // the compensated mean of its r_g repeats). If the analytic SNV rows were
+    // identical, each aggregated row would differ from the band mean by at
+    // most 2 max B, so the per-band RMS deviation (n-1 denominator, n >= 2)
+    // would not exceed 2 sqrt(2) max B. The PCA column means add at most
+    // n u max|z| per entry. Residual variance under
+    // SNV_RESOLUTION_FACTOR (max B + n u max|z|) is rounding, not structure.
+    let [sum, sum2] = result.full_moments;
+    let max_bound = snv.error_bounds.iter().copied().fold(0.0f64, f64::max);
+    let max_entry = snv
+        .matrix
+        .iter()
+        .flatten()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    let rms_band_deviation = (sum.max(0.0) / p as f64).sqrt();
+    let resolution =
+        SNV_RESOLUTION_FACTOR * (max_bound + n as f64 * f64::EPSILON / 2.0 * max_entry);
+    let resolved = rms_band_deviation > resolution;
+    let mut resolution_parameters = BTreeMap::new();
+    resolution_parameters.insert("snv_total_variance".to_string(), json!(sum));
+    resolution_parameters.insert("snv_rms_band_deviation".into(), json!(rms_band_deviation));
+    resolution_parameters.insert("numerical_resolution_threshold".into(), json!(resolution));
+    resolution_parameters.insert("max_snv_entry_error_bound".into(), json!(max_bound));
+    resolution_parameters.insert(
+        "numerical_resolution_criterion".into(),
+        json!(format!(
+            "resolved iff sqrt(trace(C_snv)/p) > {SNV_RESOLUTION_FACTOR}*(max_g B_g + n*u*max|z|), B_g the Methods first-order rounding bound of aggregated sample g (SNV of its acquisitions and the compensated mean of its repeats), n aggregated samples, u = 2^-53"
+        )),
+    );
+    resolution_parameters.insert("numerically_resolved".into(), json!(resolved));
+    resolution_parameters.insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
     let mut eigen = Metric::computed(
         "structure.snv_pca_eigenvalues",
         json!(result.eigenvalues),
         src,
         None,
     );
+    eigen.parameters.extend(resolution_parameters.clone());
     eigen.view_id = VIEW.into();
     eigen.denominators.insert("n_aggregated_samples".into(), n);
     eigen.parameters.insert("n_components".into(), json!(k));
@@ -1356,11 +1525,17 @@ fn analyze_snv(
         .parameters
         .insert("backend_version".into(), json!(result.backend_version));
     report.metrics.push(eigen);
-    let [sum, sum2] = result.full_moments;
     let mut dimension = match (sum2 > 0.0).then(|| sum * sum / sum2) {
-        Some(v) if v.is_finite() => {
+        Some(v) if v.is_finite() && resolved => {
             Metric::computed("structure.snv_effective_dimension", json!(v), src, None)
         }
+        Some(v) if v.is_finite() => Metric::unavailable(
+            "structure.snv_effective_dimension",
+            Availability::Undefined,
+            "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED",
+            src,
+            None,
+        ),
         _ => Metric::unavailable(
             "structure.snv_effective_dimension",
             Availability::Undefined,
@@ -1369,14 +1544,28 @@ fn analyze_snv(
             None,
         ),
     };
+    dimension.parameters.extend(resolution_parameters.clone());
     dimension.view_id = VIEW.into();
     dimension.parameters.insert(
         "moments_provenance".into(),
         json!("methods_full_covariance_moments"),
     );
     report.metrics.push(dimension);
-    if sum <= 0.0 {
-        push_unavailable(report, Availability::Undefined, "ZERO_SNV_TOTAL_VARIANCE");
+    if sum <= 0.0 || !resolved {
+        let mut m = Metric::unavailable(
+            "structure.snv_sensitivity",
+            Availability::Undefined,
+            if sum <= 0.0 {
+                "ZERO_SNV_TOTAL_VARIANCE"
+            } else {
+                "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"
+            },
+            src,
+            None,
+        );
+        m.view_id = VIEW.into();
+        m.parameters = resolution_parameters;
+        report.metrics.push(m);
         return;
     }
     let reference = pca_structure(canonical);
@@ -1406,11 +1595,11 @@ fn analyze_snv(
     m.parameters.insert("n_components".into(), json!(k));
     m.parameters.insert(
         "snv".into(),
-        json!("methods_snv_row_mean_and_population_sd_ddof_0_zero_sd_rows_centered_only"),
+        json!("methods_snv_row_mean_and_population_sd_ddof_0_constant_rows_exact_zero"),
     );
     m.parameters.insert(
         "aggregation".into(),
-        json!("snv_per_observation_then_equal_sample_mean_within_physical_instrument_campaign"),
+        json!("snv_per_observation_then_methods_compensated_equal_weight_mean_within_physical_instrument_campaign"),
     );
     m.parameters
         .insert("shares_denominator".into(), json!("full_variance_trace"));
@@ -1420,6 +1609,7 @@ fn analyze_snv(
     );
     m.parameters
         .insert("snv_backend_version".into(), json!(snv.backend_version));
+    m.parameters.extend(resolution_parameters);
     report.metrics.push(m);
 }
 
@@ -1452,7 +1642,7 @@ fn analyze_noise_proxy(
         );
         return;
     }
-    if p < options.window_bands {
+    if (p as u64) < options.window_bands {
         unavailable(
             report,
             Availability::InsufficientData,
@@ -1496,8 +1686,9 @@ fn analyze_noise_proxy(
                 .iter()
                 .map(|&r| (0..p).map(|c| valid_cell(source, r, c).is_some()).collect())
                 .collect(),
-            window_length: options.window_bands,
-            polyorder: options.polyorder,
+            // Validated: window <= 1001, polyorder <= 10.
+            window_length: options.window_bands as usize,
+            polyorder: options.polyorder as usize,
         };
         let d = match provider.noise_proxy(&request) {
             Ok(d)
@@ -1534,6 +1725,10 @@ fn analyze_noise_proxy(
             m.parameters.insert("campaign".into(), json!(campaign));
             m.parameters
                 .insert("smoother".into(), json!("methods_savitzky_golay_deriv_0"));
+            m.parameters.insert(
+                "numerical_domain".into(),
+                json!(format!("{NUMERICAL_DOMAIN}. Inside it: window-local residuals from exact second differences and double-double Savitzky-Golay weights, absolute error <= 2 W eps sum|c_k| max|w_k| per residual (rounding level); values outside every evaluable window never change results; translation invariant for exact offsets")),
+            );
             m.parameters
                 .insert("window_bands".into(), json!(options.window_bands));
             m.parameters
@@ -1610,18 +1805,362 @@ fn analyze_noise_proxy(
     }
 }
 
+/// Factor on the SNV entry rounding bound: 2*sqrt(2) for the per-band
+/// deviation of identical analytic rows, rounded up to 4 for aggregation.
+const SNV_RESOLUTION_FACTOR: f64 = 4.0;
+
+/// Upper bound on spectral pairs retained to compare references.
+const SUSPECT_PAIR_BUDGET: usize = 1_000_000;
+/// Upper bound on pairs listed inline in one metric.
+const MAX_LISTED_PAIRS: usize = 1000;
+
+/// Admissible references of one sample: its exact, internally consistent
+/// development references. They share one value or class (`value`); every
+/// one of them contributes its reference and reference-group IDs.
+pub(crate) struct AdmissibleReference<'a> {
+    value: &'a TargetValue,
+    reference_ids: BTreeSet<&'a str>,
+    reference_group_ids: BTreeSet<&'a str>,
+}
+
+/// Admissible exact development references of each sample for one target.
+pub(crate) struct TargetReferences<'a> {
+    target: &'a Target,
+    by_sample: HashMap<&'a str, AdmissibleReference<'a>>,
+}
+
+impl<'a> TargetReferences<'a> {
+    fn new(target: &'a Target, samples: &HashMap<&str, &Sample>) -> Self {
+        let mut by_sample: HashMap<&'a str, AdmissibleReference<'a>> =
+            exact_development_references(target, samples)
+                .eligible
+                .into_iter()
+                .map(|v| {
+                    let reference = AdmissibleReference {
+                        value: v,
+                        reference_ids: BTreeSet::new(),
+                        reference_group_ids: BTreeSet::new(),
+                    };
+                    (v.sample_id.as_str(), reference)
+                })
+                .collect();
+        // Identity first: only references of eligible development samples are read.
+        for v in &target.values {
+            if let Some(r) = by_sample.get_mut(v.sample_id.as_str()) {
+                if v.status == ReferenceStatus::Exact {
+                    r.reference_ids.extend(v.reference_id.as_deref());
+                    r.reference_group_ids
+                        .extend(v.reference_group_id.as_deref());
+                }
+            }
+        }
+        Self { target, by_sample }
+    }
+}
+
+/// Concordance of two ID sets: non-empty intersection; null when either is empty.
+fn shared_ids(a: &BTreeSet<&str>, b: &BTreeSet<&str>) -> serde_json::Value {
+    if a.is_empty() || b.is_empty() {
+        serde_json::Value::Null
+    } else {
+        json!(!a.is_disjoint(b))
+    }
+}
+
+/// Error-free transformation: a + b = s + e exactly (no overflow).
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bb = s - a;
+    (s, (a - (s - bb)) + (b - bb))
+}
+
+/// Exact sign of a sum of doubles (Shewchuk grow-expansion; the terms and
+/// their partial sums must stay finite).
+fn exact_sign(terms: &[f64]) -> std::cmp::Ordering {
+    let mut expansion: Vec<f64> = Vec::with_capacity(terms.len());
+    for &t in terms {
+        let mut q = t;
+        let mut next = Vec::with_capacity(expansion.len() + 1);
+        for &c in &expansion {
+            let (sum, err) = two_sum(q, c);
+            if err != 0.0 {
+                next.push(err);
+            }
+            q = sum;
+        }
+        next.push(q);
+        expansion = next;
+    }
+    expansion
+        .iter()
+        .rev()
+        .find(|c| **c != 0.0)
+        .map_or(std::cmp::Ordering::Equal, |c| {
+            if *c > 0.0 {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Less
+            }
+        })
+}
+
+/// floor(log2 |x|) for finite x != 0, subnormals included.
+fn binary_exponent(x: f64) -> i32 {
+    let bits = x.abs().to_bits();
+    let biased = (bits >> 52) as i32;
+    if biased == 0 {
+        -1011 - (bits.leading_zeros() as i32)
+    } else {
+        biased - 1023
+    }
+}
+
+/// x * 2^k by exact power-of-two factors (exact unless the result leaves
+/// the normal range).
+fn scale_pow2(mut x: f64, mut k: i32) -> f64 {
+    while k != 0 {
+        let step = k.clamp(-1000, 1000);
+        x *= f64::from_bits(((1023 + step) as u64) << 52);
+        k -= step;
+    }
+    x
+}
+
+/// Exact decision |x - y| > v for finite x, y and v > 0.
+fn exceeds_absolute(x: f64, y: f64, v: f64) -> bool {
+    let (s, e) = two_sum(x, -y);
+    if !s.is_finite() {
+        return true; // |x - y| > DBL_MAX >= v
+    }
+    if s == 0.0 {
+        return false;
+    }
+    let sign = s.signum();
+    exact_sign(&[sign * e, sign * s, -v]) == std::cmp::Ordering::Greater
+}
+
+/// Exact decision |x - y| > v * max(|x|, |y|) for finite x, y and v > 0.
+fn exceeds_relative(x: f64, y: f64, v: f64) -> bool {
+    use std::cmp::Ordering::Greater;
+    if x == y || v >= 2.0 {
+        return false; // |x - y| <= 2 max(|x|, |y|)
+    }
+    let (big, small) = if x.abs() >= y.abs() { (x, y) } else { (y, x) };
+    let m = big.abs();
+    let (eb, k) = (binary_exponent(big), 60);
+    if small == 0.0 || binary_exponent(small) < eb - k {
+        // |small| < m 2^-60: |x - y| = m -/+ delta with 0 <= delta/m < 2^-60,
+        // between the doubles next to 1, so only the sign pattern matters.
+        let same_sign = small != 0.0 && (small > 0.0) == (big > 0.0);
+        return if small == 0.0 || same_sign {
+            v < 1.0
+        } else {
+            v <= 1.0
+        };
+    }
+    // Both within 2^60 of m: rescale exactly so that m' is in [1, 2).
+    let xs = scale_pow2(x, -eb);
+    let ys = scale_pow2(y, -eb);
+    let ms = scale_pow2(m, -eb);
+    let (s, e) = two_sum(xs, -ys);
+    // Nonzero |x' - y'| >= 2^-113 (multiples of the smaller operand's ulp),
+    // so a tolerance with v m' < 2^-969 (fma error not representable) is exceeded.
+    if v < f64::from_bits(((1023 - 970) as u64) << 52) {
+        return true;
+    }
+    let p = v * ms;
+    let f = v.mul_add(ms, -p);
+    let sign = s.signum();
+    exact_sign(&[sign * e, sign * s, -f, -p]) == Greater
+}
+
+/// Declared incompatibility of two exact references, decided exactly in
+/// rational arithmetic on the binary64 values. Returns the decision, the
+/// absolute difference when representable and, for the relative rule,
+/// |x - y| / max(|x|, |y|) rounded (computed on exact halves on overflow).
+fn references_conflict(
+    tolerance: ReferenceContradictionTolerance,
+    a: &TargetValue,
+    b: &TargetValue,
+) -> (bool, Option<f64>, Option<f64>) {
+    match (tolerance, a.value, b.value) {
+        (ReferenceContradictionTolerance::DifferentClass, _, _) => {
+            (a.category != b.category, None, None)
+        }
+        (ReferenceContradictionTolerance::Absolute { value }, Some(x), Some(y)) => {
+            let d = (x - y).abs();
+            (
+                exceeds_absolute(x, y, value),
+                d.is_finite().then_some(d),
+                None,
+            )
+        }
+        (ReferenceContradictionTolerance::Relative { value }, Some(x), Some(y)) => {
+            let d = (x - y).abs();
+            let m = x.abs().max(y.abs());
+            let relative = if m == 0.0 {
+                0.0
+            } else if d.is_finite() {
+                d / m
+            } else {
+                (0.5 * x - 0.5 * y).abs() / (0.5 * m)
+            };
+            (
+                exceeds_relative(x, y, value),
+                d.is_finite().then_some(d),
+                Some(relative),
+            )
+        }
+        _ => (false, None, None),
+    }
+}
+
+fn reference_json(kind: TargetKind, v: &TargetValue) -> serde_json::Value {
+    match kind {
+        TargetKind::Continuous => json!(v.value),
+        TargetKind::Categorical => json!(v.category),
+    }
+}
+
+/// Declared contradiction rule parameters shared by every conflict metric.
+fn contradiction_parameters(
+    tolerance: ReferenceContradictionTolerance,
+    target: &Target,
+) -> BTreeMap<String, serde_json::Value> {
+    let (rule, value, unit) = match tolerance {
+        ReferenceContradictionTolerance::Absolute { value } => (
+            "absolute_difference_greater_than_tolerance",
+            json!(value),
+            json!(target.unit),
+        ),
+        ReferenceContradictionTolerance::Relative { value } => (
+            "relative_difference_greater_than_tolerance",
+            json!(value),
+            json!("fraction_of_max_absolute_reference"),
+        ),
+        ReferenceContradictionTolerance::DifferentClass => (
+            "different_class",
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
+    };
+    let mut p = BTreeMap::new();
+    p.insert("contradiction_rule".to_string(), json!(rule));
+    p.insert(
+        "contradiction_definition".into(),
+        json!(match tolerance {
+            ReferenceContradictionTolerance::Absolute { .. } => "|x - y| > tolerance",
+            ReferenceContradictionTolerance::Relative { .. } =>
+                "|x - y| > tolerance * max(|x|, |y|); equal references never conflict",
+            ReferenceContradictionTolerance::DifferentClass => "class_a != class_b",
+        }),
+    );
+    p.insert(
+        "contradiction_decision".into(),
+        json!("exact rational comparison of the binary64 values (error-free transformations); published differences are rounded"),
+    );
+    p.insert("contradiction_tolerance".into(), value);
+    p.insert("contradiction_tolerance_unit".into(), unit);
+    p.insert(
+        "contradiction_tolerance_source".into(),
+        json!("declared_in_options_reference_contradiction_tolerances"),
+    );
+    p.insert(
+        "reference_eligibility".into(),
+        json!("exact consistent references of real development samples; censored, composite, inconsistent and missing references are not compared"),
+    );
+    p.insert(
+        "reference_ids".into(),
+        json!("all admissible exact references of a sample; listed as sorted ID sets"),
+    );
+    p.insert(
+        "test_access".into(),
+        json!("development_only_retained_test_Y_never_read"),
+    );
+    p.insert("listing_limit".into(), json!(MAX_LISTED_PAIRS));
+    p
+}
+
+/// Two development rows of one source under different physical samples.
+struct SpectralPair {
+    rows: [usize; 2],
+    rms_difference: Option<f64>,
+}
+
+type PairsOutcome = Result<Vec<SpectralPair>, (Availability, String)>;
+
+/// Population of spectral pairs whose references are compared.
+struct PairPopulation<'a> {
+    metric_id: &'a str,
+    view_id: &'a str,
+    /// Every real development observation of the source.
+    n_development_observations: usize,
+    /// Admissible observations: the population of the pair search.
+    rows: &'a [usize],
+    admissibility: &'a str,
+    parameters: BTreeMap<String, serde_json::Value>,
+}
+
+/// Descriptive concordant indices of two observations' samples. True/false
+/// when both sides declare the key, null otherwise. References are compared
+/// only for development pairs (`references` is None across partitions).
+fn concordant_indices(
+    a: &Sample,
+    b: &Sample,
+    references: Option<&[TargetReferences]>,
+) -> serde_json::Value {
+    fn same(a: Option<&String>, b: Option<&String>) -> serde_json::Value {
+        match (a, b) {
+            (Some(a), Some(b)) => json!(a == b),
+            _ => serde_json::Value::Null,
+        }
+    }
+    let mut out = json!({
+        "instrument": same(a.instrument.as_ref(), b.instrument.as_ref()),
+        "campaign": same(a.campaign.as_ref(), b.campaign.as_ref()),
+        "individual_id": same(a.individual_id.as_ref(), b.individual_id.as_ref()),
+        "independence_group": same(a.independence_group.as_ref(), b.independence_group.as_ref()),
+    });
+    if let Some(references) = references {
+        let mut by_target = serde_json::Map::new();
+        for r in references {
+            let entry = match (
+                r.by_sample.get(a.sample_id.as_str()),
+                r.by_sample.get(b.sample_id.as_str()),
+            ) {
+                (Some(x), Some(y)) => json!({
+                    "identical_exact_value": x.value.value == y.value.value && x.value.category == y.value.category,
+                    "shared_reference_id": shared_ids(&x.reference_ids, &y.reference_ids),
+                    "shared_reference_group_id": shared_ids(&x.reference_group_ids, &y.reference_group_ids),
+                }),
+                _ => serde_json::Value::Null,
+            };
+            by_target.insert(r.target.target_id.clone(), entry);
+        }
+        out["references"] = serde_json::Value::Object(by_target);
+    }
+    out
+}
+
 /// Quasi-identity suspicions within a declared view, context and tolerance. X only.
+/// Returns the development pairs for reference comparison (all of them when a
+/// contradiction tolerance is declared), their parameters, view and population.
 fn analyze_quasi_duplicates(
     source: &SpectralSource,
     samples: &HashMap<&str, &Sample>,
+    references: &[TargetReferences],
     rows: (&[usize], &[usize]),
     input: &QualificationInput,
     provider: &impl MethodsProvider,
     report: &mut QualificationReport,
+) -> (
+    PairsOutcome,
+    BTreeMap<String, serde_json::Value>,
+    &'static str,
+    Vec<usize>,
 ) {
     const WITHIN: &str = "integrity.quasi_duplicate_pairs";
     const CROSS: &str = "integrity.cross_partition_quasi_duplicate_pairs";
-    const MAX_LISTED: usize = 1000;
     let (dev_rows, test_rows) = rows;
     let src = Some(source.source_id.as_str());
     let p = source.axis.len();
@@ -1632,31 +2171,30 @@ fn analyze_quasi_duplicates(
         }
         report.metrics.push(m);
     };
-    let Some(options) = &input.options.quasi_duplicates else {
+    let unavailable = |report: &mut QualificationReport, status: Availability, reason: &str| {
         for id in [WITHIN, CROSS] {
-            push(
-                report,
-                id,
-                Availability::NotApplicable,
-                "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED",
-            );
+            push(report, id, status.clone(), reason);
         }
-        return;
+        (
+            Err((status, reason.to_string())),
+            BTreeMap::new(),
+            "native",
+            Vec::new(),
+        )
+    };
+    let Some(options) = &input.options.quasi_duplicates else {
+        return unavailable(
+            report,
+            Availability::NotApplicable,
+            "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED",
+        );
     };
     let view_id = match options.view {
         QuasiDuplicateView::Native => "native",
         QuasiDuplicateView::Snv => "canonical:snv",
     };
     if options.view == QuasiDuplicateView::Snv && p < 2 {
-        for id in [WITHIN, CROSS] {
-            push(
-                report,
-                id,
-                Availability::NotApplicable,
-                "FEWER_THAN_TWO_BANDS",
-            );
-        }
-        return;
+        return unavailable(report, Availability::NotApplicable, "FEWER_THAN_TWO_BANDS");
     }
     let complete = |r: &usize| (0..p).all(|c| valid_cell(source, *r, c).is_some());
     let dev: Vec<usize> = dev_rows.iter().copied().filter(complete).collect();
@@ -1672,7 +2210,10 @@ fn analyze_quasi_duplicates(
         .collect();
     // SNV is stateless per spectrum: transforming retained-test X fits nothing.
     let (values, snv_backend) = if options.view == QuasiDuplicateView::Snv && !raw.is_empty() {
-        match provider.snv(&SnvRequest { matrix: raw }) {
+        match provider.snv(&SnvRequest {
+            matrix: raw,
+            group_ids: None,
+        }) {
             Ok(d)
                 if d.matrix.len() == all.len()
                     && d.matrix
@@ -1682,25 +2223,18 @@ fn analyze_quasi_duplicates(
                 (d.matrix, Some(d.backend_version))
             }
             Ok(_) => {
-                for id in [WITHIN, CROSS] {
-                    push(report, id, Availability::Error, "INVALID_PROVIDER_RESULT");
-                }
-                return;
+                return unavailable(report, Availability::Error, "INVALID_PROVIDER_RESULT");
             }
-            Err(e) => {
-                for id in [WITHIN, CROSS] {
-                    push(report, id, e.availability(), &e.reason);
-                }
-                return;
-            }
+            Err(e) => return unavailable(report, e.availability(), &e.reason),
         }
     } else {
         (raw, None)
     };
     let value_of: HashMap<usize, &Vec<f64>> = all.iter().copied().zip(&values).collect();
+    let sample_of = |r: usize| samples[source.sample_ids[r].as_str()];
     let mut physical_codes = BTreeMap::<String, i64>::new();
     let mut physical = |r: usize| {
-        let s = samples[source.sample_ids[r].as_str()];
+        let s = sample_of(r);
         let key = s
             .physical_sample_id
             .clone()
@@ -1708,14 +2242,17 @@ fn analyze_quasi_duplicates(
         let next = physical_codes.len() as i64;
         *physical_codes.entry(key).or_insert(next)
     };
-    let context_of = |r: usize| match options.context {
-        ComparisonContext::Source => (String::new(), String::new()),
-        ComparisonContext::InstrumentCampaign => {
-            let s = samples[source.sample_ids[r].as_str()];
-            (
+    let context_of = |r: usize| {
+        let s = sample_of(r);
+        match options.context {
+            ComparisonContext::Source => (String::new(), String::new()),
+            ComparisonContext::Instrument => {
+                (s.instrument.clone().unwrap_or_default(), String::new())
+            }
+            ComparisonContext::InstrumentCampaign => (
                 s.instrument.clone().unwrap_or_default(),
                 s.campaign.clone().unwrap_or_default(),
-            )
+            ),
         }
     };
     let mut contexts: BTreeMap<(String, String), (Vec<usize>, Vec<usize>)> = BTreeMap::new();
@@ -1734,6 +2271,9 @@ fn analyze_quasi_duplicates(
         listed: Vec<serde_json::Value>,
         backend: Option<String>,
     }
+    let retain_all = !input.options.reference_contradiction_tolerances.is_empty();
+    let mut retained: Vec<SpectralPair> = Vec::new();
+    let mut budget_exceeded = false;
     let mut within = Tally::default();
     let mut cross = Tally::default();
     let mut failures: [Option<(Availability, String)>; 2] = [None, None];
@@ -1748,7 +2288,7 @@ fn analyze_quasi_duplicates(
             {
                 continue;
             }
-            let request = TolerancePairsRequest {
+            let mut request = TolerancePairsRequest {
                 query: query_rows.iter().map(|r| value_of[r].clone()).collect(),
                 reference: reference_rows
                     .map(|rows| rows.iter().map(|r| value_of[r].clone()).collect()),
@@ -1756,29 +2296,60 @@ fn analyze_quasi_duplicates(
                 reference_group_ids: reference_rows
                     .map_or_else(Vec::new, |rows| rows.iter().map(|&r| physical(r)).collect()),
                 tolerance: options.tolerance,
-                max_pairs: MAX_LISTED - tally.listed.len(),
+                max_pairs: MAX_LISTED_PAIRS - tally.listed.len(),
             };
             let n_reference = reference_rows.map_or(0, Vec::len);
-            match provider.tolerance_pairs(&request) {
-                Ok(d)
-                    if d.query_flags.len() == query_rows.len()
-                        && d.reference_flags.len() == n_reference
-                        && d.pairs.len() == d.total_pairs.min(request.max_pairs)
-                        && d.distances.len() == d.pairs.len()
-                        && d.total_pairs <= d.candidate_pairs
-                        && d.pairs.iter().zip(&d.distances).all(|(&[a, b], &dist)| {
-                            a < query_rows.len()
-                                && b < reference_rows.map_or(query_rows.len(), Vec::len)
-                                && request.query_group_ids[a]
-                                    != if reference_rows.is_some() {
-                                        request.reference_group_ids[b]
-                                    } else {
-                                        request.query_group_ids[b]
-                                    }
-                                && dist.is_finite()
-                                && (0.0..=options.tolerance).contains(&dist)
-                        }) =>
+            let groups_differ = |request: &TolerancePairsRequest, a: usize, b: usize| {
+                request.query_group_ids[a]
+                    != if reference_rows.is_some() {
+                        request.reference_group_ids[b]
+                    } else {
+                        request.query_group_ids[b]
+                    }
+            };
+            let check = |request: &TolerancePairsRequest, d: &TolerancePairsDiagnostics| {
+                d.query_flags.len() == query_rows.len()
+                    && d.reference_flags.len() == n_reference
+                    && d.pairs.len() == d.total_pairs.min(request.max_pairs)
+                    && d.distances.len() == d.pairs.len()
+                    && d.total_pairs <= d.candidate_pairs
+                    && d.pairs.iter().zip(&d.distances).all(|(&[a, b], &dist)| {
+                        a < query_rows.len()
+                            && b < reference_rows.map_or(query_rows.len(), Vec::len)
+                            && groups_differ(request, a, b)
+                            && dist.is_finite()
+                            && (0.0..=options.tolerance).contains(&dist)
+                    })
+            };
+            let mut outcome = provider.tolerance_pairs(&request);
+            // Development pairs beyond the listing are fetched again in full
+            // when references are compared, within the pair budget.
+            if let Ok(d) = &outcome {
+                if slot == 0
+                    && retain_all
+                    && !budget_exceeded
+                    && check(&request, d)
+                    && d.total_pairs > d.pairs.len()
                 {
+                    if retained.len() + d.total_pairs > SUSPECT_PAIR_BUDGET {
+                        budget_exceeded = true;
+                    } else {
+                        let first_total = d.total_pairs;
+                        request.max_pairs = first_total;
+                        outcome = provider.tolerance_pairs(&request);
+                        if outcome
+                            .as_ref()
+                            .is_ok_and(|full| full.total_pairs != first_total)
+                        {
+                            failures[slot] =
+                                Some((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
+                            continue;
+                        }
+                    }
+                }
+            }
+            match outcome {
+                Ok(d) if check(&request, &d) => {
                     tally.pairs += d.total_pairs;
                     tally.candidates += d.candidate_pairs;
                     let reference = reference_rows.unwrap_or(query_rows);
@@ -1788,12 +2359,30 @@ fn analyze_quasi_duplicates(
                     for (i, _) in d.reference_flags.iter().enumerate().filter(|(_, f)| **f) {
                         tally.affected_reference.insert(reference[i]);
                     }
-                    for (&[a, b], dist) in d.pairs.iter().zip(&d.distances) {
+                    let room = MAX_LISTED_PAIRS - tally.listed.len();
+                    for (&[a, b], dist) in d.pairs.iter().zip(&d.distances).take(room) {
+                        let (ra, rb) = (query_rows[a], reference[b]);
                         tally.listed.push(json!({
-                            "observation_a": source.observation_ids[query_rows[a]],
-                            "observation_b": source.observation_ids[reference[b]],
+                            "observation_a": source.observation_ids[ra],
+                            "observation_b": source.observation_ids[rb],
                             "rms_difference": dist,
+                            "concordant_indices": concordant_indices(
+                                sample_of(ra),
+                                sample_of(rb),
+                                (slot == 0).then_some(references),
+                            ),
                         }));
+                    }
+                    if slot == 0 && retain_all && !budget_exceeded {
+                        retained.extend(d.pairs.iter().zip(&d.distances).map(
+                            |(&[a, b], &dist)| {
+                                let (ra, rb) = (query_rows[a], reference[b]);
+                                SpectralPair {
+                                    rows: [ra.min(rb), ra.max(rb)],
+                                    rms_difference: Some(dist),
+                                }
+                            },
+                        ));
                     }
                     tally.backend = Some(d.backend_version);
                 }
@@ -1810,29 +2399,60 @@ fn analyze_quasi_duplicates(
         }
         QuasiDuplicateView::Snv => Some("snv_standardized_signal".into()),
     };
+    let mut parameters = BTreeMap::new();
+    parameters.insert("tolerance".to_string(), json!(options.tolerance));
+    parameters.insert("tolerance_unit".into(), json!(tolerance_unit));
+    parameters.insert(
+        "tolerance_source".into(),
+        json!("declared_in_options_quasi_duplicates"),
+    );
+    parameters.insert("distance".into(), json!("root_mean_square_band_difference"));
+    parameters.insert(
+        "numerical_domain".into(),
+        json!(format!("{NUMERICAL_DOMAIN}. Inside it: exact threshold decisions (fast scaled estimate, exact fixed-point comparison of sum (q-r)^2 with cols tol^2 near the threshold); listed distance min(RMS, tolerance)")),
+    );
+    parameters.insert(
+        "context".into(),
+        json!(match options.context {
+            ComparisonContext::InstrumentCampaign => "same_instrument_and_campaign",
+            ComparisonContext::Instrument => "same_instrument_any_campaign",
+            ComparisonContext::Source => "whole_source",
+        }),
+    );
+    if options.context != ComparisonContext::Source {
+        parameters.insert(
+            "undeclared_context_keys".into(),
+            json!("observations without a declared instrument or campaign share one context"),
+        );
+    }
+    parameters.insert(
+        "exclusions".into(),
+        json!("pairs_within_one_physical_sample; incomplete_rows"),
+    );
+    if let Some(v) = &snv_backend {
+        parameters.insert("snv_backend_version".into(), json!(v));
+    }
     let fraction = |a: usize, b: usize| (b > 0).then(|| a as f64 / b as f64);
+    let mut within_outcome: PairsOutcome = Ok(Vec::new());
     for (slot, tally) in [(0, within), (1, cross)] {
         let id = if slot == 0 { WITHIN } else { CROSS };
-        if let Some((status, reason)) = failures[slot].take() {
-            push(report, id, status, &reason);
-            continue;
-        }
-        if slot == 1 && test.is_empty() {
-            push(
-                report,
-                id,
+        let unavailable = if let Some(failure) = failures[slot].take() {
+            Some(failure)
+        } else if slot == 1 && test.is_empty() {
+            Some((
                 Availability::NotApplicable,
-                "NO_COMPLETE_RETAINED_TEST_OBSERVATIONS",
-            );
-            continue;
-        }
-        if tally.candidates == 0 {
-            push(
-                report,
-                id,
-                Availability::InsufficientData,
-                "NO_CANDIDATE_PAIRS",
-            );
+                "NO_COMPLETE_RETAINED_TEST_OBSERVATIONS".into(),
+            ))
+        } else if tally.candidates == 0 {
+            Some((Availability::InsufficientData, "NO_CANDIDATE_PAIRS".into()))
+        } else {
+            None
+        };
+        if let Some((status, reason)) = unavailable {
+            push(report, id, status.clone(), &reason);
+            if slot == 0 {
+                within_outcome = Err((status, reason));
+            }
             continue;
         }
         let affected_dev = if slot == 0 {
@@ -1867,6 +2487,7 @@ fn analyze_quasi_duplicates(
             "n_excluded_incomplete_development_observations".into(),
             dev_rows.len() - dev.len(),
         );
+        m.parameters = parameters.clone();
         if slot == 1 {
             m.population_id = "development_real_vs_retained_test_real".into();
             m.denominators
@@ -1875,37 +2496,25 @@ fn analyze_quasi_duplicates(
                 .insert("n_compared_retained_test_observations".into(), test.len());
             m.parameters
                 .insert("test_access".into(), json!("X_only_integrity_no_fit_no_Y"));
+            m.parameters.insert(
+                "reference_comparison".into(),
+                json!("not_performed_retained_test_Y_never_read"),
+            );
         }
-        m.parameters
-            .insert("tolerance".into(), json!(options.tolerance));
-        m.parameters
-            .insert("tolerance_unit".into(), json!(tolerance_unit));
-        m.parameters.insert(
-            "tolerance_source".into(),
-            json!("declared_in_options_quasi_duplicates"),
-        );
-        m.parameters
-            .insert("distance".into(), json!("root_mean_square_band_difference"));
-        m.parameters.insert(
-            "context".into(),
-            json!(match options.context {
-                ComparisonContext::InstrumentCampaign => "same_instrument_and_campaign",
-                ComparisonContext::Source => "whole_source",
-            }),
-        );
-        m.parameters.insert(
-            "exclusions".into(),
-            json!("pairs_within_one_physical_sample; incomplete_rows"),
-        );
         m.parameters
             .insert("includes_exact_duplicates".into(), json!(true));
         m.parameters
-            .insert("listing_limit".into(), json!(MAX_LISTED));
+            .insert("listing_limit".into(), json!(MAX_LISTED_PAIRS));
+        m.parameters.insert(
+            "concordant_indices".into(),
+            json!(if slot == 0 {
+                "listed pairs: same instrument, campaign, individual_id, independence_group and, per target, identical exact reference value and shared reference_id / reference_group_id; true/false when both sides declare the key, null otherwise"
+            } else {
+                "listed pairs: same instrument, campaign, individual_id, independence_group; references are not compared"
+            }),
+        );
         m.parameters
             .insert("backend_version".into(), json!(tally.backend));
-        if let Some(v) = &snv_backend {
-            m.parameters.insert("snv_backend_version".into(), json!(v));
-        }
         report.metrics.push(m);
         if tally.pairs > 0 {
             let (rule, severity, scope, action) = if slot == 0 {
@@ -1933,6 +2542,337 @@ fn analyze_quasi_duplicates(
                     tally.pairs, options.tolerance, source.source_id
                 ),
                 action: action.into(),
+            });
+        }
+    }
+    if within_outcome.is_ok() {
+        within_outcome = if budget_exceeded {
+            Err((
+                Availability::Unsupported,
+                "SUSPECT_PAIR_BUDGET_EXCEEDED".into(),
+            ))
+        } else {
+            Ok(retained)
+        };
+    }
+    // Name the spectral tolerance apart from the reference contradiction tolerance.
+    for key in ["tolerance", "tolerance_unit", "tolerance_source"] {
+        if let Some(v) = parameters.remove(key) {
+            parameters.insert(format!("spectral_{key}"), v);
+        }
+    }
+    parameters.insert(
+        "pair_source".into(),
+        json!("integrity.quasi_duplicate_pairs"),
+    );
+    (within_outcome, parameters, view_id, dev)
+}
+
+/// Incompatible exact references between spectrally (quasi-)identical
+/// development samples. Pure comparisons of declared values; no removal.
+fn analyze_reference_conflicts(
+    source: &SpectralSource,
+    samples: &HashMap<&str, &Sample>,
+    pairs: Result<&[SpectralPair], &(Availability, String)>,
+    population: &PairPopulation,
+    references: &[TargetReferences],
+    input: &QualificationInput,
+    report: &mut QualificationReport,
+) {
+    let src = Some(source.source_id.as_str());
+    for refs in references {
+        let target = refs.target;
+        let tid = Some(target.target_id.as_str());
+        let unavailable = |status: Availability, reason: &str| {
+            let mut m = Metric::unavailable(population.metric_id, status, reason, src, tid);
+            m.view_id = population.view_id.into();
+            m
+        };
+        let Some(tolerance) = input
+            .options
+            .reference_contradiction_tolerances
+            .get(&target.target_id)
+        else {
+            report.metrics.push(unavailable(
+                Availability::NotApplicable,
+                "REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED",
+            ));
+            continue;
+        };
+        let pairs = match pairs {
+            Ok(pairs) => pairs,
+            Err((status, reason)) => {
+                report.metrics.push(unavailable(status.clone(), reason));
+                continue;
+            }
+        };
+        // One comparison per unordered sample pair; acquisitions add no votes.
+        #[derive(Default)]
+        struct SamplePair {
+            observation_pairs: usize,
+            min_rms_difference: Option<f64>,
+            rows: Vec<[usize; 2]>,
+        }
+        let mut by_samples: BTreeMap<(&str, &str), SamplePair> = BTreeMap::new();
+        for pair in pairs {
+            let a = source.sample_ids[pair.rows[0]].as_str();
+            let b = source.sample_ids[pair.rows[1]].as_str();
+            let entry = by_samples.entry((a.min(b), a.max(b))).or_default();
+            entry.observation_pairs += 1;
+            entry.rows.push(pair.rows);
+            if let Some(d) = pair.rms_difference {
+                entry.min_rms_difference =
+                    Some(entry.min_rms_difference.map_or(d, |m: f64| m.min(d)));
+            }
+        }
+        let mut compared = 0usize;
+        let mut incompatible = 0usize;
+        let mut affected_samples = BTreeSet::new();
+        let mut affected_rows = BTreeSet::new();
+        let mut listed = Vec::new();
+        for ((a, b), pair) in &by_samples {
+            let (Some(ra), Some(rb)) = (refs.by_sample.get(a), refs.by_sample.get(b)) else {
+                continue;
+            };
+            compared += 1;
+            let (conflict, difference, relative) =
+                references_conflict(*tolerance, ra.value, rb.value);
+            if !conflict {
+                continue;
+            }
+            incompatible += 1;
+            affected_samples.insert(*a);
+            affected_samples.insert(*b);
+            affected_rows.extend(pair.rows.iter().flatten().copied());
+            if listed.len() < MAX_LISTED_PAIRS {
+                listed.push(json!({
+                    "sample_a": a,
+                    "sample_b": b,
+                    "physical_sample_a": samples[a].physical_sample_id,
+                    "physical_sample_b": samples[b].physical_sample_id,
+                    "reference_a": reference_json(target.kind, ra.value),
+                    "reference_b": reference_json(target.kind, rb.value),
+                    "reference_ids_a": ra.reference_ids,
+                    "reference_ids_b": rb.reference_ids,
+                    "absolute_difference": difference,
+                    "relative_difference": relative,
+                    "observation_pairs": pair.observation_pairs,
+                    "min_rms_difference": pair.min_rms_difference,
+                }));
+            }
+        }
+        let referenced_samples: BTreeSet<&str> = population
+            .rows
+            .iter()
+            .map(|&r| source.sample_ids[r].as_str())
+            .filter(|s| refs.by_sample.contains_key(s))
+            .collect();
+        let fraction = |a: usize, b: usize| (b > 0).then(|| a as f64 / b as f64);
+        let mut m = Metric::computed(
+            population.metric_id,
+            json!({
+                "suspect_sample_pairs": by_samples.len(),
+                "compared_sample_pairs": compared,
+                "incompatible_sample_pairs": incompatible,
+                "incompatible_pair_rate": fraction(incompatible, compared),
+                "affected_samples": affected_samples.len(),
+                "affected_sample_fraction": fraction(affected_samples.len(), referenced_samples.len()),
+                "affected_development_observations": affected_rows.len(),
+                "affected_development_fraction": fraction(affected_rows.len(), population.rows.len()),
+                "listed_pairs": listed,
+                "listing_truncated": listed.len() < incompatible,
+            }),
+            src,
+            tid,
+        );
+        m.view_id = population.view_id.into();
+        m.unit = target.unit.clone();
+        m.denominators.insert(
+            "n_development_observations".into(),
+            population.n_development_observations,
+        );
+        m.denominators.insert(
+            "n_admissible_development_observations".into(),
+            population.rows.len(),
+        );
+        m.denominators.insert(
+            "n_excluded_development_observations".into(),
+            population.n_development_observations - population.rows.len(),
+        );
+        m.denominators
+            .insert("n_suspect_observation_pairs".into(), pairs.len());
+        m.denominators.insert(
+            "n_development_samples_with_exact_reference".into(),
+            referenced_samples.len(),
+        );
+        m.denominators.insert(
+            "n_sample_pairs_without_two_exact_references".into(),
+            by_samples.len() - compared,
+        );
+        m.parameters = population.parameters.clone();
+        m.parameters
+            .extend(contradiction_parameters(*tolerance, target));
+        m.parameters.insert(
+            "admissible_observations".into(),
+            json!(population.admissibility),
+        );
+        m.parameters.insert(
+            "fraction_denominators".into(),
+            json!({
+                "affected_development_fraction": "n_admissible_development_observations",
+                "affected_sample_fraction": "n_development_samples_with_exact_reference",
+                "incompatible_pair_rate": "compared_sample_pairs",
+            }),
+        );
+        m.parameters.insert(
+            "identity_level".into(),
+            json!("unordered sample pairs under different physical samples (presumed repeats between objects); one comparison per sample pair; aliases of one physical sample are compared in reference.within_physical_sample_conflicts"),
+        );
+        report.metrics.push(m);
+        if incompatible > 0 {
+            report.findings.push(Finding {
+                rule_id: "reference.verify_reference_or_pairing.v1".into(),
+                severity: "warning".into(),
+                confidence: "unknown".into(),
+                evidence: vec![population.metric_id.into()],
+                message: format!(
+                    "{incompatible} spectrally {} sample pairs carry incompatible references for {} in {}; suspicion only",
+                    if population.metric_id == "reference.exact_duplicate_conflicts" {
+                        "identical"
+                    } else {
+                        "quasi-identical"
+                    },
+                    target.target_id,
+                    source.source_id
+                ),
+                action: "Verify the reference values and the spectrum-to-sample pairing; nothing is removed automatically".into(),
+            });
+        }
+    }
+}
+
+/// Incompatible exact references between sample IDs that declare the same
+/// physical sample (aliases of one object). One object has one reference
+/// value, so no spectral evidence is needed. This population is distinct
+/// from the presumed repeats between different physical samples.
+fn analyze_within_physical_conflicts(
+    samples: &HashMap<&str, &Sample>,
+    references: &[TargetReferences],
+    input: &QualificationInput,
+    report: &mut QualificationReport,
+) {
+    const ID: &str = "reference.within_physical_sample_conflicts";
+    for refs in references {
+        let target = refs.target;
+        let tid = Some(target.target_id.as_str());
+        let Some(tolerance) = input
+            .options
+            .reference_contradiction_tolerances
+            .get(&target.target_id)
+        else {
+            report.metrics.push(Metric::unavailable(
+                ID,
+                Availability::NotApplicable,
+                "REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED",
+                None,
+                tid,
+            ));
+            continue;
+        };
+        let mut by_physical: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for sample_id in refs.by_sample.keys() {
+            if let Some(physical) = &samples[sample_id].physical_sample_id {
+                by_physical.entry(physical).or_default().insert(sample_id);
+            }
+        }
+        by_physical.retain(|_, ids| ids.len() > 1);
+        let mut compared = 0usize;
+        let mut incompatible = 0usize;
+        let mut affected_physical = BTreeSet::new();
+        let mut affected_samples = BTreeSet::new();
+        let mut listed = Vec::new();
+        for (physical, ids) in &by_physical {
+            let ids: Vec<&str> = ids.iter().copied().collect();
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    compared += 1;
+                    let (ra, rb) = (&refs.by_sample[a], &refs.by_sample[b]);
+                    let (conflict, difference, relative) =
+                        references_conflict(*tolerance, ra.value, rb.value);
+                    if !conflict {
+                        continue;
+                    }
+                    incompatible += 1;
+                    affected_physical.insert(*physical);
+                    affected_samples.insert(*a);
+                    affected_samples.insert(*b);
+                    if listed.len() < MAX_LISTED_PAIRS {
+                        listed.push(json!({
+                            "physical_sample": physical,
+                            "sample_a": a,
+                            "sample_b": b,
+                            "reference_a": reference_json(target.kind, ra.value),
+                            "reference_b": reference_json(target.kind, rb.value),
+                            "reference_ids_a": ra.reference_ids,
+                            "reference_ids_b": rb.reference_ids,
+                            "absolute_difference": difference,
+                            "relative_difference": relative,
+                        }));
+                    }
+                }
+            }
+        }
+        let fraction = |a: usize, b: usize| (b > 0).then(|| a as f64 / b as f64);
+        let in_shared: usize = by_physical.values().map(BTreeSet::len).sum();
+        let mut m = Metric::computed(
+            ID,
+            json!({
+                "physical_samples_with_aliases": by_physical.len(),
+                "compared_sample_pairs": compared,
+                "incompatible_sample_pairs": incompatible,
+                "incompatible_pair_rate": fraction(incompatible, compared),
+                "affected_physical_samples": affected_physical.len(),
+                "affected_physical_fraction": fraction(affected_physical.len(), by_physical.len()),
+                "affected_samples": affected_samples.len(),
+                "affected_sample_fraction": fraction(affected_samples.len(), in_shared),
+                "listed_pairs": listed,
+                "listing_truncated": listed.len() < incompatible,
+            }),
+            None,
+            tid,
+        );
+        m.unit = target.unit.clone();
+        m.denominators.insert(
+            "n_development_samples_with_exact_reference".into(),
+            refs.by_sample.len(),
+        );
+        m.denominators
+            .insert("n_samples_sharing_a_physical_sample".into(), in_shared);
+        m.parameters = contradiction_parameters(*tolerance, target);
+        m.parameters.insert(
+            "identity_level".into(),
+            json!("pairs of sample IDs declaring the same physical_sample_id; no spectral evidence required; distinct from presumed repeats between physical samples"),
+        );
+        m.parameters.insert(
+            "fraction_denominators".into(),
+            json!({
+                "affected_physical_fraction": "physical_samples_with_aliases",
+                "affected_sample_fraction": "n_samples_sharing_a_physical_sample",
+                "incompatible_pair_rate": "compared_sample_pairs",
+            }),
+        );
+        report.metrics.push(m);
+        if incompatible > 0 {
+            report.findings.push(Finding {
+                rule_id: "reference.verify_reference_or_pairing.v1".into(),
+                severity: "warning".into(),
+                confidence: "unknown".into(),
+                evidence: vec![ID.into()],
+                message: format!(
+                    "{incompatible} pairs of sample IDs declaring one physical sample carry incompatible references for {}",
+                    target.target_id
+                ),
+                action: "Verify the reference values and the sample-to-object identity; nothing is removed automatically".into(),
             });
         }
     }
@@ -2263,4 +3203,445 @@ pub fn report_html(report: &QualificationReport) -> String {
     }
     html.push_str("</ul></main></body></html>");
     html
+}
+
+#[cfg(test)]
+mod exact_comparison_tests {
+    use super::*;
+
+    /// (rule, x bits, y bits, tolerance bits, conflict): test-only goldens from
+    /// an exact rational oracle (Python 3.10 fractions.Fraction on the binary64
+    /// values: |X - Y| > V, or |X - Y| > V max(|X|, |Y|)).
+    const GOLDENS: &[(&str, u64, u64, u64, bool)] = &[
+        (
+            "relative",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3cae43a1ec3cf706,
+            false,
+        ),
+        (
+            "relative",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3cab61c343741c73,
+            true,
+        ),
+        (
+            "relative",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3cacd2b297d889bc,
+            true,
+        ),
+        (
+            "relative",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x3ff8000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x4000000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7fefffffffffffff,
+            0xffefffffffffffff,
+            0x3fffffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x4010000000000000,
+            0x4008000000000000,
+            0x3fd0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x4010000000000000,
+            0x4007ffffffffffff,
+            0x3fd0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x4010000000000000,
+            0x4008000000000001,
+            0x3fd0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x0000000000000000,
+            0x3fe0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x8000000000000000,
+            0x3fe0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x01a56e1fc2f8f359,
+            0x3fe0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x01a56e1fc2f8f359,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x0000000000000001,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000000,
+            0x0000000000000001,
+            0x3fefffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x8000000000000001,
+            0x0000000000000001,
+            0x3ff8000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x8000000000000001,
+            0x0000000000000001,
+            0x4000000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0000000000000003,
+            0x0000000000000002,
+            0x3fd5555555555555,
+            true,
+        ),
+        (
+            "relative",
+            0x0000000000000003,
+            0x0000000000000002,
+            0x3fd5555555555554,
+            true,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x01a56e1fc2f8f359,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x81a56e1fc2f8f359,
+            0x3ff0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x01a56e1fc2f8f359,
+            0x3fefffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x7e37e43c8800759c,
+            0x0000000000000000,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7fefffffffffffff,
+            0x0000000000000001,
+            0x3ff0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x7fefffffffffffff,
+            0x8000000000000001,
+            0x3ff0000000000000,
+            true,
+        ),
+        (
+            "relative",
+            0x3ff0000000000000,
+            0x3ff0000000000001,
+            0x3cb0000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x3ff0000000000000,
+            0x3ff0000000000001,
+            0x3cafffffffffffff,
+            false,
+        ),
+        (
+            "relative",
+            0x3ff0000000000000,
+            0x3ff0000000000001,
+            0x00000000000007e8,
+            true,
+        ),
+        (
+            "relative",
+            0x4014000000000000,
+            0x4014000000000000,
+            0x00000000000007e8,
+            false,
+        ),
+        (
+            "relative",
+            0x3fb999999999999a,
+            0x3fd3333333333334,
+            0x3fe5555555555556,
+            false,
+        ),
+        (
+            "relative",
+            0xc01e000000000000,
+            0x4004000000000000,
+            0x3ff5555555555555,
+            true,
+        ),
+        (
+            "relative",
+            0x0010000000000000,
+            0x8008000000000000,
+            0x3ff8000000000000,
+            false,
+        ),
+        (
+            "relative",
+            0x0010000000000000,
+            0x8008000000000000,
+            0x3ff7ffffffffffff,
+            true,
+        ),
+        (
+            "relative",
+            0x000012688b70e62b,
+            0x0000143fcc95c9fc,
+            0x3fb745d1745d1746,
+            false,
+        ),
+        (
+            "relative",
+            0x419d6f3454000000,
+            0x419d6f3450000000,
+            0x3e416505a7da8610,
+            true,
+        ),
+        (
+            "relative",
+            0x419d6f3454000000,
+            0x419d6f3450000000,
+            0x3e419bff678e358c,
+            false,
+        ),
+        (
+            "absolute",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x7fe1ccf385ebc8a0,
+            true,
+        ),
+        (
+            "absolute",
+            0x7fee42d130773b76,
+            0xffee42d130773b76,
+            0x7fefffffffffffff,
+            true,
+        ),
+        (
+            "absolute",
+            0x7fefffffffffffff,
+            0xffefffffffffffff,
+            0x7fefffffffffffff,
+            true,
+        ),
+        (
+            "absolute",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x4000000000000000,
+            false,
+        ),
+        (
+            "absolute",
+            0x4341c37937e08000,
+            0x4341c37937e07fff,
+            0x3fffffffffffffff,
+            true,
+        ),
+        (
+            "absolute",
+            0x3fb999999999999a,
+            0x3fc999999999999a,
+            0x3fb999999999999a,
+            false,
+        ),
+        (
+            "absolute",
+            0x3fb999999999999a,
+            0x3fc999999999999a,
+            0x3fb9999999999999,
+            true,
+        ),
+        (
+            "absolute",
+            0x3fd3333333333333,
+            0x3fb999999999999a,
+            0x3fc9999999999999,
+            false,
+        ),
+        (
+            "absolute",
+            0x3fd3333333333333,
+            0x3fb999999999999a,
+            0x3fc999999999999a,
+            false,
+        ),
+        (
+            "absolute",
+            0x0000000000000001,
+            0x0000000000000000,
+            0x0000000000000001,
+            false,
+        ),
+        (
+            "absolute",
+            0x0000000000000002,
+            0x0000000000000000,
+            0x0000000000000001,
+            true,
+        ),
+        (
+            "absolute",
+            0x7e37e43c8800759c,
+            0x7e37e43c8800759b,
+            0x7af0000000000000,
+            false,
+        ),
+        (
+            "absolute",
+            0x7e37e43c8800759c,
+            0x7e37e43c8800759b,
+            0x7ab137367c236c65,
+            true,
+        ),
+        (
+            "absolute",
+            0x80000000000007e8,
+            0x00000000000007e8,
+            0x0000000000000fd0,
+            false,
+        ),
+        (
+            "absolute",
+            0x4014000000000000,
+            0x4014000000000000,
+            0x0000000000000001,
+            false,
+        ),
+    ];
+
+    fn decide(rule: &str, x: f64, y: f64, v: f64) -> bool {
+        if rule == "absolute" {
+            exceeds_absolute(x, y, v)
+        } else {
+            exceeds_relative(x, y, v)
+        }
+    }
+
+    #[test]
+    fn decisions_match_the_exact_rational_oracle() {
+        for &(rule, x, y, v, want) in GOLDENS {
+            let (x, y, v) = (f64::from_bits(x), f64::from_bits(y), f64::from_bits(v));
+            assert_eq!(decide(rule, x, y, v), want, "{rule} {x:e} {y:e} {v:e}");
+            assert_eq!(
+                decide(rule, y, x, v),
+                want,
+                "{rule} swapped {x:e} {y:e} {v:e}"
+            );
+            assert_eq!(
+                decide(rule, -x, -y, v),
+                want,
+                "{rule} negated {x:e} {y:e} {v:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn decisions_are_invariant_under_power_of_two_scaling_and_exact_offsets() {
+        // Integer data, exact at every scale 2^k (even 2^-1074).
+        let pairs = [
+            (5.0, 2.0),
+            (12.0, 0.0),
+            (9.0, 9.0),
+            (-7.0, 3.0),
+            (1.0, 2.0),
+            (16.0, 15.0),
+        ];
+        for k in [-1074, -1022, -500, -100, 0, 100, 500, 1000] {
+            for &(x, y) in &pairs {
+                for v in [0.25, 0.5, 1.0, 1.5, 0.0625] {
+                    let (xs, ys) = (scale_pow2(x, k), scale_pow2(y, k));
+                    assert_eq!(
+                        exceeds_relative(xs, ys, v),
+                        exceeds_relative(x, y, v),
+                        "k {k}"
+                    );
+                }
+                for v in [1.0, 3.0, 4.0, 7.0, 10.0] {
+                    let (xs, ys, vs) = (scale_pow2(x, k), scale_pow2(y, k), scale_pow2(v, k));
+                    if vs == 0.0 || scale_pow2(vs, -k) != v {
+                        continue; // the tolerance is not representable at this scale
+                    }
+                    assert_eq!(
+                        exceeds_absolute(xs, ys, vs),
+                        exceeds_absolute(x, y, v),
+                        "k {k}"
+                    );
+                }
+            }
+        }
+        // Absolute rule under exact translations: data on 2 (offset 1e16) and on
+        // 2^944 (offset 2^996) keep their differences.
+        for (unit, offset) in [(2.0, 1e16), (scale_pow2(1.0, 944), scale_pow2(1.0, 996))] {
+            for &(x, y) in &pairs {
+                for v in [1.0, 3.0, 4.0, 7.0] {
+                    let base = exceeds_absolute(x * unit, y * unit, v * unit);
+                    let shifted = exceeds_absolute(x * unit + offset, y * unit + offset, v * unit);
+                    assert_eq!(shifted, base, "offset {offset:e}");
+                }
+            }
+        }
+    }
 }

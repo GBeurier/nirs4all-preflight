@@ -188,6 +188,7 @@ fn native_snv_noise_proxy_and_pairs_match_hand_values() {
     // Population SD (ddof 0): both rows become (-sqrt(3/2), 0, sqrt(3/2)).
     let snv = provider
         .snv(&SnvRequest {
+            group_ids: None,
             matrix: vec![vec![1., 2., 3.], vec![2., 4., 6.]],
         })
         .unwrap();
@@ -463,4 +464,539 @@ impl Wire for Metric {
             .unwrap()
             .to_owned()
     }
+}
+
+#[test]
+fn native_quasi_duplicates_flag_incompatible_references_on_development_pairs() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let input: QualificationInput =
+        serde_json::from_str(include_str!("../../../examples/quasi_duplicates.json")).unwrap();
+    let report = analyze(&input, &provider);
+    let within = metric(&report, "integrity.quasi_duplicate_pairs");
+    let v = within.value.as_ref().unwrap();
+    assert_eq!(
+        (v["suspect_pairs"].as_u64(), v["candidate_pairs"].as_u64()),
+        (Some(5), Some(8))
+    );
+    // (s0, s2): RMS of (0.05, 0) = 0.05 / sqrt(2).
+    assert!(near(
+        v["listed_pairs"][1]["rms_difference"].as_f64().unwrap(),
+        0.05 / 2f64.sqrt()
+    ));
+    let by_target = |id: &str, target: &str| {
+        report
+            .metrics
+            .iter()
+            .find(|m| m.metric_id == id && m.target_id.as_deref() == Some(target))
+            .unwrap()
+            .value
+            .clone()
+            .unwrap()
+    };
+    let quasi = by_target("reference.quasi_duplicate_conflicts", "moisture");
+    assert_eq!(
+        (
+            quasi["compared_sample_pairs"].as_u64(),
+            quasi["incompatible_sample_pairs"].as_u64()
+        ),
+        (Some(3), Some(2))
+    );
+    assert!(near(
+        quasi["listed_pairs"][1]["min_rms_difference"]
+            .as_f64()
+            .unwrap(),
+        0.05 / 2f64.sqrt()
+    ));
+    assert_eq!(
+        by_target("reference.quasi_duplicate_conflicts", "grade")["incompatible_sample_pairs"],
+        2
+    );
+    assert_eq!(
+        by_target("reference.exact_duplicate_conflicts", "moisture")["incompatible_sample_pairs"],
+        1
+    );
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(!json.contains("987.654") && !json.contains("zz-test-only"));
+}
+
+#[test]
+fn native_snv_keeps_constant_spectra_flat_and_extreme_rows_standardized() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b1 #1: three constant spectra have no SNV shape; the naive mean
+    // residue used to become eleven ones (SNV dimension 1, no quasi-identity).
+    let mut constant = input_with(
+        [0.1, 0.5, 0.7]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (["a", "b", "c"][i], Partition::Development, vec![*v; 11]))
+            .collect(),
+        (0..11).map(|j| 1000. + 10. * j as f64).collect(),
+    );
+    constant.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.01,
+        view: QuasiDuplicateView::Snv,
+        context: ComparisonContext::Source,
+    });
+    let report = analyze(&constant, &provider);
+    let pairs = metric(&report, "integrity.quasi_duplicate_pairs");
+    assert_eq!(pairs.value.as_ref().unwrap()["suspect_pairs"], 3);
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert_eq!(m.status_wire(), "undefined");
+    assert_eq!(m.reason_code.as_deref(), Some("ZERO_SNV_TOTAL_VARIANCE"));
+    // Domain edges 2^256 and 2^-256: [a, 0, -a] standardizes to
+    // sqrt(3/2) [1, 0, -1] instead of zeros.
+    let (hi, lo) = (2f64.powi(256), 2f64.powi(-256));
+    let snv = provider
+        .snv(&SnvRequest {
+            group_ids: None,
+            matrix: vec![vec![hi, 0., -hi], vec![0.1; 3], vec![lo, 0., -lo]],
+        })
+        .unwrap();
+    for i in [0, 2] {
+        assert!(near(snv.matrix[i][0], 1.5f64.sqrt()) && near(snv.matrix[i][2], -(1.5f64.sqrt())));
+    }
+    assert!(snv.matrix[1].iter().all(|v| *v == 0.0) && snv.error_bounds[1] == 0.0);
+    // Just outside the supported domain: explicit refusal, never a value.
+    for row in [
+        vec![1e200, 0., -1e200],
+        vec![f64::from_bits(1), 0., 0.],
+        vec![1.0, 2f64.powi(65)],
+    ] {
+        let err = provider
+            .snv(&SnvRequest {
+                group_ids: None,
+                matrix: vec![row],
+            })
+            .unwrap_err();
+        assert_eq!(err.0, NUMERICAL_DOMAIN_EXCEEDED);
+    }
+}
+
+#[test]
+fn native_metrics_report_inputs_outside_the_numerical_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // One spectrum with a value 2^300: noise proxy, SNV sensitivity and
+    // quasi-duplicates refuse it explicitly and publish the domain.
+    let mut input = input_with(
+        vec![
+            ("a", Partition::Development, vec![1., 2., 3., 4., 5.]),
+            ("b", Partition::Development, vec![2., 1., 3., 5., 4.]),
+            (
+                "c",
+                Partition::Development,
+                vec![1., 3., 2., 2f64.powi(300), 5.],
+            ),
+            ("d", Partition::Development, vec![5., 4., 3., 2., 1.]),
+        ],
+        vec![1., 2., 3., 4., 5.],
+    );
+    input.options.noise_proxy = NoiseProxyOptions {
+        window_bands: 3,
+        polyorder: 1,
+    };
+    input.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.5,
+        view: QuasiDuplicateView::Native,
+        context: ComparisonContext::Source,
+    });
+    let report = analyze(&input, &provider);
+    // Spread boundary (rule 15): 2^32 next to 1 is computed, 2^33 refused.
+    for (big, inside) in [(2f64.powi(32), true), (2f64.powi(33), false)] {
+        let mut edge = input.clone();
+        edge.sources[0].x[2][3] = Some(big);
+        let r = analyze(&edge, &provider);
+        let m = metric(&r, "measurement.noise_proxy");
+        assert_eq!(m.status_wire() == "computed", inside, "{big}");
+        if !inside {
+            assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
+        }
+    }
+    for id in ["measurement.noise_proxy", "integrity.quasi_duplicate_pairs"] {
+        let m = metric(&report, id);
+        assert_eq!(m.status_wire(), "unsupported", "{id}");
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some(NUMERICAL_DOMAIN_EXCEEDED),
+            "{id}"
+        );
+        assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN, "{id}");
+        assert!(m.value.is_none());
+    }
+}
+
+#[test]
+fn native_snv_rounding_residue_is_not_reported_as_structure() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b1 #6: x_i = a_i [1..5] + b_i have identical SNV rows analytically;
+    // amplitudes that are not powers of two leave only rounding residue.
+    let input = input_with(
+        [(1.0, 0.0), (1.1, 100.0), (1.2, 10.0), (2.1, -3.0)]
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (
+                    ["a", "b", "c", "d"][i],
+                    Partition::Development,
+                    (1..=5).map(|j| a * j as f64 + b).collect(),
+                )
+            })
+            .collect(),
+        vec![1., 2., 3., 4., 5.],
+    );
+    let report = analyze(&input, &provider);
+    for id in [
+        "structure.snv_sensitivity",
+        "structure.snv_effective_dimension",
+    ] {
+        let m = metric(&report, id);
+        assert_eq!(m.status_wire(), "undefined", "{id}");
+        assert!(m.value.is_none());
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"),
+            "{id}"
+        );
+        let rms = m.parameters["snv_rms_band_deviation"].as_f64().unwrap();
+        let threshold = m.parameters["numerical_resolution_threshold"]
+            .as_f64()
+            .unwrap();
+        assert!(rms <= threshold && threshold < 1e-12);
+    }
+    assert_eq!(
+        metric(&report, "structure.effective_dimension").status_wire(),
+        "computed"
+    );
+}
+
+#[test]
+fn native_snv_rounding_bound_covers_wide_offset_spectra() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b1fix #3: 99,999 ones then a two under the same (a, b) offsets;
+    // every row has the analytic SNV -1/sqrt(99999), ..., sqrt(99999). The
+    // former range-based criterion accepted a 2.66e-8 residual as structure.
+    let p = 100_000;
+    let shape: Vec<f64> = (0..p).map(|j| if j + 1 < p { 1.0 } else { 2.0 }).collect();
+    let input = input_with(
+        [(1.0, 0.0), (1.1, 100.0), (1.2, 10.0), (2.1, -3.0)]
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (
+                    ["a", "b", "c", "d"][i],
+                    Partition::Development,
+                    shape.iter().map(|v| a * v + b).collect(),
+                )
+            })
+            .collect(),
+        (0..p).map(|j| j as f64).collect(),
+    );
+    let snv = provider
+        .snv(&SnvRequest {
+            group_ids: None,
+            matrix: input.sources[0]
+                .x
+                .iter()
+                .map(|r| r.iter().map(|v| v.unwrap()).collect())
+                .collect(),
+        })
+        .unwrap();
+    let (lo, hi) = (-1.0 / 99_999f64.sqrt(), 99_999f64.sqrt());
+    for (row, bound) in snv.matrix.iter().zip(&snv.error_bounds) {
+        let error = row
+            .iter()
+            .enumerate()
+            .map(|(j, z)| (z - if j + 1 < p { lo } else { hi }).abs())
+            .fold(0.0f64, f64::max);
+        assert!(error <= *bound && *bound < 1e-9, "{error} > {bound}");
+    }
+    let report = analyze(&input, &provider);
+    for id in [
+        "structure.snv_sensitivity",
+        "structure.snv_effective_dimension",
+    ] {
+        let m = metric(&report, id);
+        assert_eq!(
+            m.reason_code.as_deref(),
+            Some("SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED"),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn native_snv_bound_covers_aggregation_of_unbalanced_repeats() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b14fix #3: a [1,2,4] with a = 1, 2, 4, 8 and 1, 10000, 1, 1
+    // identical technical acquisitions: every analytic SNV row coincides, and
+    // a sequential mean of the 10000 repeats used to leave a 7e-14 residual.
+    let mut input = input_with(
+        ["a", "b", "c", "d"]
+            .iter()
+            .enumerate()
+            .map(|(g, id)| {
+                (
+                    *id,
+                    Partition::Development,
+                    [1.0, 2.0, 4.0]
+                        .iter()
+                        .map(|v| v * (1 << g) as f64)
+                        .collect(),
+                )
+            })
+            .collect(),
+        vec![1., 2., 3.],
+    );
+    let source = &mut input.sources[0];
+    for i in 1..10_000 {
+        source.observation_ids.push(format!("o-b-{i}"));
+        source.sample_ids.push("b".into());
+        source.x.push(vec![Some(2.0), Some(4.0), Some(8.0)]);
+    }
+    source.repetition_types = Some(vec![RepetitionType::Rescan; source.x.len()]);
+    let report = analyze(&input, &provider);
+    assert_eq!(
+        metric(&report, "structure.snv_pca_eigenvalues").denominators["n_aggregated_samples"],
+        4
+    );
+    // The compensated mean of identical rows is exact here, so the residual
+    // is zero; any residual must stay under the threshold, never "structure".
+    let m = metric(&report, "structure.snv_sensitivity");
+    assert_eq!(m.status_wire(), "undefined");
+    assert!(matches!(
+        m.reason_code.as_deref(),
+        Some("ZERO_SNV_TOTAL_VARIANCE" | "SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED")
+    ));
+    let rms = m.parameters["snv_rms_band_deviation"].as_f64().unwrap();
+    assert!(
+        rms <= m.parameters["numerical_resolution_threshold"]
+            .as_f64()
+            .unwrap()
+    );
+}
+
+#[test]
+fn native_target_summary_and_local_contrast_refuse_targets_outside_the_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Continuous targets with 2^300: the Methods summary and local contrast
+    // refuse them explicitly (rule 13); the summary has no spread bound.
+    let build = |big: f64| {
+        let mut input = input_with(
+            (0..6)
+                .map(|i| {
+                    (
+                        ["a", "b", "c", "d", "e", "f"][i],
+                        Partition::Development,
+                        vec![i as f64, (i * i) as f64, 1.0],
+                    )
+                })
+                .collect(),
+            vec![1., 2., 3.],
+        );
+        input.options.independence_unit = IndependenceUnit::Sample;
+        input.targets = vec![Target {
+            target_id: "y".into(),
+            kind: TargetKind::Continuous,
+            values: ["a", "b", "c", "d", "e", "f"]
+                .iter()
+                .zip([1.0, 2.0, big, 3.0, 4.0, 5.0])
+                .map(|(id, v)| TargetValue {
+                    sample_id: (*id).into(),
+                    value: Some(v),
+                    category: None,
+                    status: ReferenceStatus::Exact,
+                    reference_id: None,
+                    reference_group_id: None,
+                })
+                .collect(),
+            unit: None,
+        }];
+        analyze(&input, &provider)
+    };
+    let report = build(2f64.powi(300));
+    let m = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "target.continuous_distribution")
+        .unwrap();
+    assert_eq!(m.status_wire(), "unsupported");
+    assert_eq!(m.reason_code.as_deref(), Some(NUMERICAL_DOMAIN_EXCEEDED));
+    assert_eq!(m.parameters["numerical_domain"], NUMERICAL_DOMAIN_SUMMARY);
+    // The summary has no spread bound: 1e-20 next to 1 is summarized.
+    for value in [2f64.powi(64), 1e-20] {
+        let report = build(value);
+        let m = report
+            .metrics
+            .iter()
+            .find(|m| m.metric_id == "target.continuous_distribution")
+            .unwrap();
+        assert_eq!(m.status_wire(), "computed", "{value}");
+    }
+}
+
+#[test]
+fn native_metrics_publish_their_operation_specific_numerical_domain() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Review b14fix5: Y = [1, 2, 2^33, 3, 4, 5] is a valid summary input
+    // (magnitude bound only) but exceeds the global 2^32 target spread of the
+    // continuous local contrast. Both metrics publish their own domain.
+    let build = |y3: f64| {
+        let ids = ["a", "b", "c", "d", "e", "f"];
+        let mut input = input_with(
+            // Full-rank spectra, so no PCA score is a rounding residue.
+            ids.iter()
+                .zip([
+                    [1.0, 4.0, 2.0, 7.0],
+                    [2.0, 1.0, 5.0, 3.0],
+                    [3.0, 6.0, 1.0, 4.0],
+                    [5.0, 2.0, 4.0, 1.0],
+                    [4.0, 5.0, 3.0, 6.0],
+                    [6.0, 3.0, 6.0, 2.0],
+                ])
+                .map(|(id, x)| (*id, Partition::Development, x.to_vec()))
+                .collect(),
+            vec![1., 2., 3., 4.],
+        );
+        input.options.noise_proxy = NoiseProxyOptions {
+            window_bands: 3,
+            polyorder: 1,
+        };
+        input.options.independence_unit = IndependenceUnit::Sample;
+        input.targets = vec![Target {
+            target_id: "y".into(),
+            kind: TargetKind::Continuous,
+            values: ids
+                .iter()
+                .zip([1.0, 2.0, y3, 3.0, 4.0, 5.0])
+                .map(|(id, v)| TargetValue {
+                    sample_id: (*id).into(),
+                    value: Some(v),
+                    category: None,
+                    status: ReferenceStatus::Exact,
+                    reference_id: None,
+                    reference_group_id: None,
+                })
+                .collect(),
+            unit: None,
+        }];
+        analyze(&input, &provider)
+    };
+    let report = build(2f64.powi(33));
+    let summary = metric(&report, "target.continuous_distribution");
+    assert_eq!(summary.status_wire(), "computed");
+    assert_eq!(
+        summary.parameters["numerical_domain"],
+        NUMERICAL_DOMAIN_SUMMARY
+    );
+    let contrast = metric(&report, "local.global_contrast");
+    assert_eq!(contrast.status_wire(), "unsupported");
+    assert_eq!(
+        contrast.reason_code.as_deref(),
+        Some(NUMERICAL_DOMAIN_EXCEEDED)
+    );
+    assert_eq!(
+        contrast.parameters["numerical_domain"],
+        NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+    );
+    let report = build(6.0);
+    for (id, domain) in [
+        ("target.continuous_distribution", NUMERICAL_DOMAIN_SUMMARY),
+        ("local.global_contrast", NUMERICAL_DOMAIN_LOCAL_CONTINUOUS),
+        ("measurement.noise_proxy_pooled", NUMERICAL_DOMAIN),
+        ("structure.snv_pca_eigenvalues", NUMERICAL_DOMAIN),
+    ] {
+        let m = metric(&report, id);
+        eprintln!(
+            "{id} {:?} {:?}",
+            m.reason_code,
+            report
+                .metrics
+                .iter()
+                .find(|x| x.metric_id == "structure.pca_scores")
+                .map(|x| x.value.clone())
+        );
+        assert_eq!(m.status_wire(), "computed", "{id}");
+        assert!(
+            m.parameters["numerical_domain"]
+                .as_str()
+                .unwrap()
+                .starts_with(domain.split(';').next().unwrap()),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn native_local_contrast_is_computed_on_rank_deficient_spectra() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Rank 2 (columns affine in i and i^2): the PCA scores carry components
+    // around 1e-16 next to values around 10. The neighbours have no spread
+    // bound, so the local contrast is computed (lead decision).
+    let ids = ["a", "b", "c", "d", "e", "f"];
+    let mut input = input_with(
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let v = i as f64;
+                (
+                    *id,
+                    Partition::Development,
+                    vec![v, v * v + 1.0, 2.0 * v + 3.0, 7.0 - v],
+                )
+            })
+            .collect(),
+        vec![1., 2., 3., 4.],
+    );
+    input.options.independence_unit = IndependenceUnit::Sample;
+    input.targets = vec![Target {
+        target_id: "y".into(),
+        kind: TargetKind::Continuous,
+        values: ids
+            .iter()
+            .zip([1.0, 2.0, 6.0, 3.0, 4.0, 5.0])
+            .map(|(id, v)| TargetValue {
+                sample_id: (*id).into(),
+                value: Some(v),
+                category: None,
+                status: ReferenceStatus::Exact,
+                reference_id: None,
+                reference_group_id: None,
+            })
+            .collect(),
+        unit: None,
+    }];
+    let report = analyze(&input, &provider);
+    let scores = metric(&report, "structure.pca_scores")
+        .value
+        .clone()
+        .unwrap();
+    let rows = scores["scores"].as_array().unwrap();
+    assert!(rows.iter().any(|r| r
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_f64().unwrap().abs() < 1e-12 && v.as_f64().unwrap() != 0.0)));
+    let m = metric(&report, "local.global_contrast");
+    assert_eq!(m.status_wire(), "computed");
+    assert_eq!(
+        m.parameters["numerical_domain"],
+        NUMERICAL_DOMAIN_LOCAL_CONTINUOUS
+    );
 }

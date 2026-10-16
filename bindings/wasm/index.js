@@ -126,14 +126,10 @@ export async function createQualificationRuntime(options = {}) {
         break;
       }
       case 'snv': {
-        // Methods registry SNV: row mean and population SD (ddof 0).
-        const x = matrix(request.matrix);
-        const op = methods.ppCreate('StandardNormalVariate');
-        try {
-          result = { matrix: nested(methods.ppTransform(op, x.data, x.rows, x.cols), x.cols), backend_version };
-        } finally {
-          methods.ppDestroy(op);
-        }
+        // Methods SNV (row mean, population SD) with per-row rounding bounds.
+        const groups = request.group_ids ? request.group_ids.reduce((a, b) => Math.max(a, b), -1) + 1 : undefined;
+        const output = methods.preflightSnv(matrix(request.matrix), request.group_ids ?? undefined, groups);
+        result = { matrix: nested(output.matrix.data, output.matrix.cols), error_bounds: Array.from(output.errorBounds), backend_version };
         break;
       }
       case 'noise_proxy': {

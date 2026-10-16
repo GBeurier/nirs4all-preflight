@@ -378,3 +378,183 @@ test('WASM probe refuses data outside the declared numerical domain before any f
   assert.match(rmse.parameters.numerical_domain,/2\^-256, 2\^256/);
 });
 
+test('WASM duplicate reference conflicts match the hand-counted fixture',async()=>{
+ const fixture=JSON.parse(await readFile(new URL('../../../examples/quasi_duplicates.json',import.meta.url),'utf8'));
+ assert.equal(runtime.validate(fixture).valid,true);
+ const report=runtime.analyze(fixture);
+ const find=(id,target)=>report.metrics.find(m=>m.metric_id===id&&(target===undefined||m.target_id===target));
+ const within=find('integrity.quasi_duplicate_pairs').value;
+ assert.equal(within.suspect_pairs,5);
+ assert.equal(within.candidate_pairs,8);
+ assert.ok(Math.abs(within.listed_pairs[1].rms_difference-0.05/Math.SQRT2)<1e-9);
+ assert.equal(within.listed_pairs[0].concordant_indices.campaign,false);
+ assert.equal(find('integrity.quasi_duplicate_pairs').parameters.context,'same_instrument_any_campaign');
+ const quasi=find('reference.quasi_duplicate_conflicts','moisture').value;
+ assert.equal(quasi.compared_sample_pairs,3);
+ assert.equal(quasi.incompatible_sample_pairs,2);
+ assert.equal(find('reference.quasi_duplicate_conflicts','grade').value.incompatible_sample_pairs,2);
+ assert.equal(find('reference.exact_duplicate_conflicts','moisture').value.incompatible_sample_pairs,1);
+ assert.equal(find('reference.quasi_duplicate_conflicts','protein').reason_code,'REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED');
+ assert.equal(report.findings.filter(f=>f.rule_id==='reference.verify_reference_or_pairing.v1'&&f.confidence==='unknown').length,3);
+ const json=JSON.stringify(report);
+ assert.ok(!json.includes('987.654')&&!json.includes('zz-test-only'));
+});
+test('WASM validation rejects wrapping SG orders like the CPU engine',()=>{
+ // Review b1 #4: 4294967295 + 2 wrapped to a valid order on 32-bit WASM.
+ for(const [window_bands,polyorder] of [[11,4294967295],[11,4294967294],[11,Number.MAX_SAFE_INTEGER],[41,38],[21,11],[1003,2]]){
+  const v=runtime.validate({...input,options:{...input.options,noise_proxy:{window_bands,polyorder}}});
+  assert.equal(v.valid,false,`${window_bands}/${polyorder}`);
+  assert.ok(v.issues.some(i=>i.code==='INVALID_NOISE_PROXY_PARAMETERS'));
+ }
+ assert.equal(runtime.validate({...input,options:{...input.options,noise_proxy:{window_bands:13,polyorder:10}}}).valid,true);
+});
+test('WASM SNV keeps constant spectra flat and rounding residue unresolved',()=>{
+ const axis=Array.from({length:11},(_,j)=>1000+10*j);
+ const ids=['a','b','c'];
+ // Review b1 #1: constant spectra 0.1, 0.5, 0.7 are identical (zero) in the SNV view.
+ const flat=runtime.analyze({schema_version:1,data_origin:'synthetic',
+  sources:[{source_id:'nir',observation_ids:ids.map(i=>`o-${i}`),sample_ids:ids,x:[0.1,0.5,0.7].map(v=>Array(11).fill(v)),axis,axis_unit:'nm',signal_unit:'absorbance'}],
+  samples:ids.map(i=>({sample_id:i,physical_sample_id:i})),
+  options:{quasi_duplicates:{tolerance:0.01,view:'snv',context:'source'}}});
+ const fm=Object.fromEntries(flat.metrics.map(m=>[m.metric_id,m]));
+ assert.equal(fm['integrity.quasi_duplicate_pairs'].value.suspect_pairs,3);
+ assert.equal(fm['structure.snv_sensitivity'].reason_code,'ZERO_SNV_TOTAL_VARIANCE');
+ // Review b1 #6: x_i = a_i [1..5] + b_i have identical SNV rows analytically.
+ const rows=[[1,0],[1.1,100],[1.2,10],[2.1,-3]], rid=['a','b','c','d'];
+ const residue=runtime.analyze({schema_version:1,data_origin:'synthetic',
+  sources:[{source_id:'nir',observation_ids:rid.map(i=>`o-${i}`),sample_ids:rid,x:rows.map(([a,b])=>[1,2,3,4,5].map(j=>a*j+b)),axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'absorbance'}],
+  samples:rid.map(i=>({sample_id:i,physical_sample_id:i}))});
+ const rm=Object.fromEntries(residue.metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['structure.snv_sensitivity','structure.snv_effective_dimension']){
+  assert.equal(rm[id].status,'undefined');
+  assert.equal(rm[id].reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
+  assert.ok(rm[id].parameters.snv_rms_band_deviation*2<rm[id].parameters.numerical_resolution_threshold);
+ }
+});
+test('WASM relative contradiction tolerance cannot overflow and aliases are compared',async()=>{
+ // Review b4 #2: same cases as the Rust protocol test (one physical sample per case).
+ const cases=[[1.7e308,-1.7e308],[4,3],[4,2.9999999999999996],[0,0],[0,-0],[0,1e-300],[-1e-310,1e-310]];
+ const tolerances={rel_quarter:{kind:'relative',value:0.25},rel_one_half:{kind:'relative',value:1.5},rel_two:{kind:'relative',value:2},abs_huge:{kind:'absolute',value:1e308}};
+ const ids=cases.flatMap((_,i)=>[`c${i}a`,`c${i}b`]);
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids.map(i=>`o-${i}`),sample_ids:ids,x:ids.map((_,k)=>[Math.floor(k/2),1]),axis:[1,2],axis_unit:'nm',signal_unit:'abs'}],
+  samples:ids.map((id,k)=>({sample_id:id,physical_sample_id:`case${Math.floor(k/2)}`,instrument:'A'})),
+  targets:Object.keys(tolerances).map(t=>({target_id:t,kind:'continuous',values:ids.map((id,k)=>({sample_id:id,value:cases[Math.floor(k/2)][k%2],status:'exact'}))})),
+  options:{reference_contradiction_tolerances:tolerances}});
+ const flagged=t=>report.metrics.find(m=>m.metric_id==='reference.within_physical_sample_conflicts'&&m.target_id===t).value.listed_pairs.map(p=>p.physical_sample);
+ assert.deepEqual(flagged('rel_quarter'),['case0','case2','case5','case6']);
+ assert.deepEqual(flagged('rel_one_half'),['case0','case6']);
+ assert.deepEqual(flagged('rel_two'),[]);
+ assert.deepEqual(flagged('abs_huge'),['case0']);
+ // Review b4 #1: an alias of s0 (same physical p0) with reference 20.
+ const fixture=JSON.parse(await readFile(new URL('../../../examples/quasi_duplicates.json',import.meta.url),'utf8'));
+ fixture.sources[0].observation_ids.push('o-s7');fixture.sources[0].sample_ids.push('s7');fixture.sources[0].x.push([1,1]);
+ fixture.samples.push({sample_id:'s7',physical_sample_id:'p0',instrument:'A',campaign:'c1'});
+ fixture.targets[0].values.push({sample_id:'s7',value:20,status:'exact'});
+ const alias=runtime.analyze(fixture).metrics.find(m=>m.metric_id==='reference.within_physical_sample_conflicts'&&m.target_id==='moisture').value;
+ assert.equal(alias.incompatible_sample_pairs,1);
+ assert.equal(alias.listed_pairs[0].physical_sample,'p0');
+});
+test('WASM SNV rank bound rejects rounding residue on 100,000 offset bands',()=>{
+ // Review b1fix #3: identical analytic SNV rows (99,999 ones then a two).
+ const p=100000, shape=Array.from({length:p},(_,j)=>j+1<p?1:2);
+ const rows=[[1,0],[1.1,100],[1.2,10],[2.1,-3]], rid=['a','b','c','d'];
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'nir',observation_ids:rid.map(i=>`o-${i}`),sample_ids:rid,x:rows.map(([a,b])=>shape.map(v=>a*v+b)),axis:shape.map((_,j)=>j),axis_unit:'nm',signal_unit:'absorbance'}],
+  samples:rid.map(i=>({sample_id:i,physical_sample_id:i}))});
+ const m=report.metrics.find(x=>x.metric_id==='structure.snv_sensitivity');
+ assert.equal(m.reason_code,'SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED');
+ assert.ok(m.parameters.snv_rms_band_deviation<m.parameters.numerical_resolution_threshold);
+ assert.ok(m.parameters.max_snv_entry_error_bound<1e-9);
+});
+test('WASM exact reference comparisons and unbalanced SNV repeats',()=>{
+ // Review b14fix #5: 1e16 vs 9999999999999998 differ by exactly 2e-16 relative.
+ for(const [value,conflict] of [[2.1e-16,0],[1.9e-16,1]]){
+  const report=runtime.analyze({schema_version:1,
+   sources:[{source_id:'x',observation_ids:['oa','ob'],sample_ids:['a','b'],x:[[0,1],[1,0]],axis:[1,2],axis_unit:'nm',signal_unit:'abs'}],
+   samples:[{sample_id:'a',physical_sample_id:'p'},{sample_id:'b',physical_sample_id:'p'}],
+   targets:[{target_id:'y',kind:'continuous',values:[{sample_id:'a',value:1e16,status:'exact'},{sample_id:'b',value:9999999999999998,status:'exact'}]}],
+   options:{reference_contradiction_tolerances:{y:{kind:'relative',value}}}});
+  assert.equal(report.metrics.find(m=>m.metric_id==='reference.within_physical_sample_conflicts').value.incompatible_sample_pairs,conflict);
+ }
+ // Review b14fix #3: a [1,2,4], a = 1, 2, 4, 8, with 1, 10000, 1, 1 identical rescans.
+ const obs=[], sid=[], x=[];
+ [1,10000,1,1].forEach((n,g)=>{for(let i=0;i<n;i++){obs.push(`o${g}-${i}`);sid.push(`s${g}`);x.push([1,2,4].map(v=>v*2**g));}});
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:obs,sample_ids:sid,x,axis:[1,2,3],axis_unit:'nm',signal_unit:'abs',repetition_types:x.map(()=>'rescan')}],
+  samples:[0,1,2,3].map(g=>({sample_id:`s${g}`,physical_sample_id:`s${g}`}))});
+ const m=report.metrics.find(m=>m.metric_id==='structure.snv_sensitivity');
+ assert.equal(m.status,'undefined');
+ assert.ok(['ZERO_SNV_TOTAL_VARIANCE','SNV_VARIANCE_NOT_NUMERICALLY_RESOLVED'].includes(m.reason_code));
+ assert.ok(m.parameters.snv_rms_band_deviation<=m.parameters.numerical_resolution_threshold);
+});
+test('WASM noise proxy ignores a value outside every evaluable window',()=>{
+ // Review b14fix2 #2: [H,0,0,0,0,1,0,0,0,0,0], index 1 masked, window 3 / order 1.
+ const run=(H,mask)=>Object.fromEntries(runtime.analyze({schema_version:1,
+   sources:[{source_id:'x',observation_ids:['o'],sample_ids:['s'],x:[[H,null,0,0,0,1,0,0,0,0,0]],valid_mask:[mask],axis:Array.from({length:11},(_,j)=>1000+j),axis_unit:'nm',signal_unit:'abs'}],
+   samples:[{sample_id:'s',physical_sample_id:'s'}],
+   options:{noise_proxy:{window_bands:3,polyorder:1},snv_sensitivity:false}}).metrics.map(x=>[x.metric_id,x]));
+ const valid0=[true,false,true,true,true,true,true,true,true,true,true];
+ const masked0=[false,false,true,true,true,true,true,true,true,true,true];
+ for(const [H,mask] of [[0,valid0],[1e9,valid0],[2**32,valid0],[1e300,masked0],[Number.MAX_VALUE,masked0]]){
+  const m=run(H,mask);
+  assert.ok(Math.abs(m['measurement.noise_proxy'].value[5]-Math.sqrt(2/3))<=1e-15*Math.sqrt(2/3),`H ${H}`);
+  assert.ok(Math.abs(m['measurement.noise_proxy_pooled'].value-1/Math.sqrt(7))<=1e-15/Math.sqrt(7),`H ${H}`);
+ }
+ // A valid 1e300 next to 1 leaves the supported domain: explicit refusal.
+ assert.equal(run(1e300,valid0)['measurement.noise_proxy'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+});
+test('WASM refuses inputs outside the supported numerical domain explicitly',()=>{
+ // Rules 13/15: nonzero |x| in [2^-256, 2^256], per-row spread <= 2^32; one row at 2^300.
+ const analyze=(big)=>runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:['a','b','c','d'],sample_ids:['a','b','c','d'],
+   x:[[1,2,3,4,5],[2,1,3,5,4],[1,3,2,big,5],[5,4,3,2,1]],axis:[1,2,3,4,5],axis_unit:'nm',signal_unit:'abs'}],
+  samples:['a','b','c','d'].map(id=>({sample_id:id,physical_sample_id:id})),
+  options:{noise_proxy:{window_bands:3,polyorder:1},quasi_duplicates:{tolerance:0.5,context:'source'}}});
+ const outside=Object.fromEntries(analyze(2**300).metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']){
+  assert.equal(outside[id].status,'unsupported',id);
+  assert.equal(outside[id].reason_code,'NUMERICAL_DOMAIN_EXCEEDED',id);
+  assert.ok(outside[id].parameters.numerical_domain.startsWith('every nonzero |x| in [2^-256, 2^256]'));
+ }
+ // Spread exactly 2^32 within the row (2^32 next to 1) stays inside; 2^33 is refused.
+ const inside=Object.fromEntries(analyze(2**32).metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(inside[id].status,'computed',id);
+ const beyond=Object.fromEntries(analyze(2**33).metrics.map(m=>[m.metric_id,m]));
+ for(const id of ['measurement.noise_proxy','integrity.quasi_duplicate_pairs']) assert.equal(beyond[id].reason_code,'NUMERICAL_DOMAIN_EXCEEDED',id);
+});
+test('WASM summary and contrast publish their own numerical domains',()=>{
+ // Review b14fix5: Y = [1, 2, 2^33, 3, 4, 5] is summarized (magnitude bound only)
+ // but the continuous contrast refuses it (global target spread above 2^32).
+ const ids=['a','b','c','d','e','f'];
+ const x=[[1,4,2,7],[2,1,5,3],[3,6,1,4],[5,2,4,1],[4,5,3,6],[6,3,6,2]];
+ const run=(y3)=>Object.fromEntries(runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids,sample_ids:ids,x,axis:[1,2,3,4],axis_unit:'nm',signal_unit:'abs'}],
+  samples:ids.map(id=>({sample_id:id,physical_sample_id:id})),
+  targets:[{target_id:'y',kind:'continuous',values:ids.map((id,i)=>({sample_id:id,value:[1,2,y3,3,4,5][i],status:'exact'}))}],
+  options:{independence_unit:'sample'}}).metrics.map(m=>[m.metric_id,m]));
+ const wide=run(2**33);
+ assert.equal(wide['target.continuous_distribution'].status,'computed');
+ assert.ok(wide['target.continuous_distribution'].parameters.numerical_domain.startsWith('every nonzero |value| in [2^-256, 2^256]; no spread bound'));
+ assert.equal(wide['local.global_contrast'].status,'unsupported');
+ assert.equal(wide['local.global_contrast'].reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+ assert.ok(wide['local.global_contrast'].parameters.numerical_domain.includes('over the whole target vector'));
+ const plain=run(6);
+ assert.equal(plain['local.global_contrast'].status,'computed');
+ assert.ok(plain['local.global_contrast'].parameters.numerical_domain.startsWith('neighbours: magnitude bound only'));
+ const huge=run(2**300)['target.continuous_distribution'];
+ assert.equal(huge.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+ assert.equal(run(1e-20)['target.continuous_distribution'].status,'computed');
+});
+test('WASM local contrast is computed on rank-deficient spectra',()=>{
+ // Rank 2: PCA scores carry rounding-level components next to large ones;
+ // the neighbours have no spread bound, so the contrast is computed.
+ const ids=['a','b','c','d','e','f'];
+ const report=runtime.analyze({schema_version:1,
+  sources:[{source_id:'x',observation_ids:ids,sample_ids:ids,x:ids.map((_,i)=>[i,i*i+1,2*i+3,7-i]),axis:[1,2,3,4],axis_unit:'nm',signal_unit:'abs'}],
+  samples:ids.map(id=>({sample_id:id,physical_sample_id:id})),
+  targets:[{target_id:'y',kind:'continuous',values:ids.map((id,i)=>({sample_id:id,value:[1,2,6,3,4,5][i],status:'exact'}))}],
+  options:{independence_unit:'sample'}});
+ const m=report.metrics.find(x=>x.metric_id==='local.global_contrast');
+ assert.equal(m.status,'computed');
+});

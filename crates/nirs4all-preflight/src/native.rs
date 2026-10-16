@@ -163,9 +163,14 @@ type FreedmanLane = unsafe extern "C" fn(
     *mut i64,
     *mut i32,
 ) -> i32;
-type SnvCreate = unsafe extern "C" fn(*mut *mut c_void, i32, i32, i32) -> i32;
-type SnvDestroy = unsafe extern "C" fn(*mut c_void);
-type SnvTransform = unsafe extern "C" fn(*const c_void, MatrixView, MatrixView) -> i32;
+type Snv = unsafe extern "C" fn(
+    *mut c_void,
+    *const MatrixView,
+    *const i64,
+    i64,
+    *const MatrixView,
+    *mut f64,
+) -> i32;
 type NoiseProxy = unsafe extern "C" fn(
     *mut c_void,
     *const MatrixView,
@@ -255,9 +260,7 @@ pub struct NativeMethodsProvider {
     local_fn: LocalContrast,
     hdbscan_fn: Hdbscan,
     ari_fn: Ari,
-    snv_create: SnvCreate,
-    snv_destroy: SnvDestroy,
-    snv_transform: SnvTransform,
+    snv_fn: Snv,
     noise_fn: NoiseProxy,
     pairs_fn: TolerancePairs,
     association_fn: Association,
@@ -322,14 +325,8 @@ impl NativeMethodsProvider {
             let ari_fn = *library
                 .get::<Ari>(b"n4m_preflight_adjusted_rand_index\0")
                 .map_err(err)?;
-            let snv_create = *library
-                .get::<SnvCreate>(b"n4m_transform_snv_create\0")
-                .map_err(err)?;
-            let snv_destroy = *library
-                .get::<SnvDestroy>(b"n4m_transform_snv_destroy\0")
-                .map_err(err)?;
-            let snv_transform = *library
-                .get::<SnvTransform>(b"n4m_transform_snv_transform\0")
+            let snv_fn = *library
+                .get::<Snv>(b"n4m_preflight_snv_compute\0")
                 .map_err(err)?;
             let noise_fn = *library
                 .get::<NoiseProxy>(b"n4m_preflight_noise_proxy_compute\0")
@@ -420,9 +417,7 @@ impl NativeMethodsProvider {
                 intervals_fn,
                 group_means_fn,
                 regression_scores_fn,
-                snv_create,
-                snv_destroy,
-                snv_transform,
+                snv_fn,
                 noise_fn,
                 pairs_fn,
                 hdbscan_fn,
@@ -780,27 +775,31 @@ impl MethodsProvider for NativeMethodsProvider {
     }
     fn snv(&self, r: &SnvRequest) -> Result<SnvDiagnostics, ProviderError> {
         let (mut x, n, p) = flatten(&r.matrix)?;
-        let mut out = vec![0.; n * p];
-        let xv = MatrixView::new(&mut x, n, p);
-        let ov = MatrixView::new(&mut out, n, p);
-        let mut handle = std::ptr::null_mut();
-        // SAFETY: Methods SNV with mean and population SD (ddof 0), the same
-        // operator the WASM registry builds; the handle is destroyed below.
-        let status = unsafe {
-            let created = (self.snv_create)(&mut handle, 1, 1, 0);
-            if created != 0 || handle.is_null() {
-                created.max(1)
-            } else {
-                let status = (self.snv_transform)(handle, xv, ov);
-                (self.snv_destroy)(handle);
-                status
-            }
+        let groups = match &r.group_ids {
+            Some(ids) if ids.len() == n => ids.iter().copied().max().map_or(0, |g| g + 1),
+            Some(_) => return Err(ProviderError::internal("INVALID_SNV_GROUPS")),
+            None => n as i64,
         };
-        if status != 0 {
-            return Err(ProviderError::from_methods_status(status));
+        if groups < 1 || groups > n as i64 {
+            return Err(ProviderError::internal("INVALID_SNV_GROUPS"));
         }
+        let g = groups as usize;
+        let mut out = vec![0.; g * p];
+        let mut bounds = vec![f64::NAN; g];
+        let xv = MatrixView::new(&mut x, n, p);
+        let ov = MatrixView::new(&mut out, g, p);
+        let ids = r
+            .group_ids
+            .as_ref()
+            .map_or(std::ptr::null(), |v| v.as_ptr());
+        // SAFETY: caller-owned buffers sized rows x cols, groups x cols and
+        // groups; Methods validates the group codes.
+        self.check(unsafe {
+            (self.snv_fn)(self.context, &xv, ids, groups, &ov, bounds.as_mut_ptr())
+        })?;
         Ok(SnvDiagnostics {
             matrix: out.chunks(p).map(<[f64]>::to_vec).collect(),
+            error_bounds: bounds,
             backend_version: self.version.clone(),
         })
     }
