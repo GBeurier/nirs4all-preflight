@@ -1295,6 +1295,12 @@ pub enum ProviderErrorKind {
     Internal,
 }
 
+/// Supported numerical domain of the Methods kernels whose statistics depend
+/// on differences between input values (lead rule 15, Methods
+/// `N4M_DOMAIN_MAX_SPREAD_LOG2 = 32`), published by the metrics using them.
+pub const DIFFERENCE_NUMERICAL_DOMAIN: &str =
+    "finite values, every nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^32";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderError {
@@ -1897,10 +1903,13 @@ pub struct EnergyDistanceRequest {
 pub struct EnergyDistanceDiagnostics {
     /// Energy distances E = 2M_ab - M_aa - M_bb (zero diagonal), unit of X.
     pub energy: Vec<Vec<f64>>,
+    /// Absolute rounding bounds of the energies.
+    pub energy_bounds: Vec<Vec<f64>>,
     /// Mean Euclidean distances over all ordered pairs (V-statistic).
     pub mean_distances: Vec<Vec<f64>>,
-    /// sum_{a<b} n_a n_b / (n_a + n_b) energy[a][b].
+    /// sum_{a<b} n_a n_b / (n_a + n_b) energy[a][b], and its bound.
     pub statistic: f64,
+    pub statistic_bound: f64,
     /// log10(n! / prod n_a!).
     pub log10_distinct_permutations: f64,
     pub p_value: Option<f64>,
@@ -1936,10 +1945,17 @@ pub struct PcaMonitorDiagnostics {
     /// Type-7 (1 - alpha) quantiles of the out-of-fold reference values.
     pub t2_limit: Option<f64>,
     pub q_limit: f64,
-    /// Monitored rows strictly above the limits, decided in the scaled unit.
+    /// Limit intervals (quantiles of the out-of-fold interval ends).
+    pub t2_limit_interval: Option<[f64; 2]>,
+    pub q_limit_interval: [f64; 2],
+    /// Monitored rows certainly beyond the limits (interval above the limit
+    /// interval), and rows the rounding intervals cannot decide.
     pub n_beyond_t2: usize,
     pub n_beyond_q: usize,
     pub n_beyond_either: usize,
+    pub n_undetermined_t2: usize,
+    pub n_undetermined_q: usize,
+    pub n_undetermined_either: usize,
     pub reference_total_variance: f64,
     pub monitored_total_variance: Option<f64>,
     pub centroid_distance: f64,

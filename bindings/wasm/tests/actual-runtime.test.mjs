@@ -264,3 +264,23 @@ test('WASM domain shift: residual-free reference, effective k and explicit refus
   for(const m of report.metrics.filter(m=>m.metric_id.startsWith('domain_shift.')))
     assert.equal(m.value!==null,m.status==='computed',m.metric_id);
 });
+
+test('WASM domain shift refuses inputs outside the numerical domain with the same reason',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/domain_shift.json',import.meta.url),'utf8'));
+  const scaled={...fixture,sources:fixture.sources.map(s=>({...s,x:s.x.map(r=>r.map(v=>v*2**300))}))};
+  const report=runtime.analyze(scaled);
+  const coverage=report.metrics.find(m=>m.metric_id==='domain_shift.coverage'&&m.parameters.factor==='instrument'&&m.parameters.target_domain==='A');
+  assert.equal(coverage.status,'unsupported');
+  assert.equal(coverage.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+  assert.equal(coverage.value,null);
+  // Inside the domain the Q of a tiny real residual is counted.
+  const a=[-5,-4,-3,-2,-1,0,1,2,3,4,5].map(i=>[i,0]);
+  const rows=[...a,[1,2**-27],[3,0]];
+  const ids=rows.map((_,i)=>`s${String(i).padStart(2,'0')}`);
+  const input={...fixture,targets:[],samples:ids.map((id,i)=>({sample_id:id,physical_sample_id:`p${i}`,partition:'development',instrument:i<11?'A':'B',campaign:'c1'})),
+    sources:[{...fixture.sources[0],observation_ids:ids.map(i=>`o_${i}`),sample_ids:ids,x:rows,axis:[1000,1010]}],
+    options:{...fixture.options,domain_shift:{}}};
+  const b=runtime.analyze(input).metrics.find(m=>m.metric_id==='domain_shift.coverage'&&m.parameters.target_domain==='B');
+  assert.equal(b.value.n_target_beyond_q_limit,1);
+  assert.equal(b.value.n_target_undetermined_q,1);
+});
