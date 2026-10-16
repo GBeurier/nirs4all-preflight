@@ -34,10 +34,11 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
   - The Searle F interval needs one independence component per physical group in the band (`GROUPS_SHARE_INDEPENDENCE_UNIT`).
   - A `reference_group` unit needs reference identities (`MISSING_REFERENCE_GROUP`).
   - Units are counted per band after masks, with separate within-df counts for the SD.
-  - Variances use exponent-managed scaling (status 6, `VALUE_NOT_REPRESENTABLE`, instead of overflow).
+  - Variances use exponent-managed scaling instead of overflowing.
   - Non-convergence and numerical failures are `error` with per-band `band_reason`, never insufficient data or a missing capability.
   - The measured bootstrap coverage is documented; the intervals stay exploratory.
   - Bootstrap plans move to `bootstrap_plan.v2`.
+- Lead rule 13: Methods refuses inputs outside the supported domain (nonzero |x| in [2^-256, 2^256], spread <= 2^64 over values and the differences used). The five repeatability metrics are then `unsupported` with `NUMERICAL_DOMAIN_EXCEEDED` and publish `numerical_domain`, through the shared `METHODS_DOMAIN_MESSAGE` mapping (native and WASM). The band status 6 and the interval status are removed, since every variance is representable inside the domain. The balanced-repeat sensitivity applies the same domain per band, and its means become compensated means. The REML grid limitation is documented with a polynomial degree bound (4K-3 stationary points for K distinct group sizes; balanced designs are unimodal).
 
 ## 0.1.0-alpha.3 — 2026-10-13
 
