@@ -300,7 +300,7 @@ impl NativeMethodsProvider {
             return Ok(());
         }
         // SAFETY: live provider context; error string copied before next call.
-        let _message = unsafe {
+        let message = unsafe {
             let p = (self.last_error)(self.context);
             if p.is_null() {
                 String::new()
@@ -308,6 +308,9 @@ impl NativeMethodsProvider {
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
+        if status == 10 && message.starts_with(METHODS_DOMAIN_MESSAGE) {
+            return Err(ProviderError(NUMERICAL_DOMAIN_EXCEEDED.into()));
+        }
         Err(ProviderError(format!("METHODS_STATUS_{status}")))
     }
 }
@@ -679,7 +682,7 @@ impl MethodsProvider for NativeMethodsProvider {
         if rows == 0
             || cols == 0
             || r.cost.iter().any(|row| row.len() != cols)
-            || (rows as f64) * (cols as f64) * (rows.min(cols) as f64) > 2.5e9
+            || (rows as f64) * (cols as f64) * (rows.min(cols) as f64) > 1e8
         {
             return Err(ProviderError("ASSIGNMENT_SHAPE_OR_WORK_BUDGET".into()));
         }

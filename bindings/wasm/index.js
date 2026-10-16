@@ -30,7 +30,18 @@ export async function createQualificationRuntime(options = {}) {
     reason: `${backend_version}; alpha protocol`,
   }));
   const callback = (operation, payload) => {
-    const request = JSON.parse(payload);
+    try {
+      return dispatch(operation, JSON.parse(payload));
+    } catch (error) {
+      // Methods refuses inputs outside its rule-13 numerical domain with
+      // N4M_ERR_UNSUPPORTED (10); the engine reports them as a reason.
+      if (error?.status === 10 && String(error.message).includes('input outside the supported numerical domain')) {
+        return JSON.stringify({ provider_error: 'NUMERICAL_DOMAIN_EXCEEDED' });
+      }
+      throw error;
+    }
+  };
+  const dispatch = (operation, request) => {
     let result;
     switch (operation) {
       case 'capabilities': result = methodsCapabilities; break;
@@ -88,7 +99,7 @@ export async function createQualificationRuntime(options = {}) {
       }
       case 'linear_sum_assignment': {
         const cost = { data: Float64Array.from(request.cost.flat()), rows: request.cost.length, cols: request.cost[0]?.length ?? 0 };
-        if (!cost.rows || !cost.cols || cost.rows * cost.cols * Math.min(cost.rows, cost.cols) > 2.5e9) throw new RangeError('ASSIGNMENT_WORK_BUDGET');
+        if (!cost.rows || !cost.cols || cost.rows * cost.cols * Math.min(cost.rows, cost.cols) > 1e8) throw new RangeError('ASSIGNMENT_WORK_BUDGET');
         const output = methods.linearSumAssignment(cost, request.maximize);
         result = { row_indices: output.rowInd, column_indices: output.colInd, backend_version };
         break;

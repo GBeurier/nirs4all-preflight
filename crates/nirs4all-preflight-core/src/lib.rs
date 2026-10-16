@@ -1218,6 +1218,13 @@ pub trait MethodsProvider {
     }
 }
 
+/// Reason for a Methods refusal of inputs outside the rule-13 numerical domain.
+pub const NUMERICAL_DOMAIN_EXCEEDED: &str = "NUMERICAL_DOMAIN_EXCEEDED";
+/// Start of the Methods error message for that refusal (status UNSUPPORTED).
+pub const METHODS_DOMAIN_MESSAGE: &str = "input outside the supported numerical domain";
+/// Supported numerical domain of the Methods clustering kernels (rule 13).
+pub const NUMERICAL_DOMAIN: &str = "finite values; every nonzero |x| in [2^-256, 2^256]; max/min nonzero |x| <= 2^64 per input array; refused as unsupported (NUMERICAL_DOMAIN_EXCEEDED) outside";
+
 /// Methods operations a complete provider exposes, in report order.
 pub const METHODS_CAPABILITY_IDS: [&str; 16] = [
     "methods.pca",

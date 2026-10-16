@@ -104,6 +104,26 @@ fn actual_methods_hdbscan_separates_blobs_and_reports_stability() {
         .enumerate()
         .all(|(i, &l)| l == result.labels[i % 2]));
     assert!(result.tree[0].parent.is_none() && result.tree[0].birth_distance.is_none());
+    // Rule 13: Methods refuses inputs outside its numerical domain; the
+    // adapter reports the reason instead of a status number.
+    for matrix in [
+        vec![vec![0.0], vec![1e155], vec![2e155], vec![3e155]],
+        vec![vec![1.0], vec![2.0], vec![2f64.powi(65)], vec![3.0]],
+    ] {
+        let refused = provider.hdbscan(&HdbscanRequest {
+            matrix,
+            min_cluster_size: 2,
+            min_samples: 2,
+            selection: ClusterSelection::Eom,
+            allow_single_cluster: false,
+        });
+        assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
+    }
+    let refused = provider.linear_sum_assignment(&LinearAssignmentRequest {
+        cost: vec![vec![-1e20, 1e20], vec![1.0, 0.0]],
+        maximize: false,
+    });
+    assert_eq!(refused.unwrap_err().0, NUMERICAL_DOMAIN_EXCEEDED);
     let ari = provider
         .adjusted_rand_index(&AdjustedRandRequest {
             labels_a: vec![0, 0, 1, 2],

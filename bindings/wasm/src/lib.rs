@@ -24,7 +24,12 @@ impl CallbackProvider<'_> {
         let text = result
             .as_string()
             .ok_or_else(|| ProviderError("METHODS_CALLBACK_MUST_RETURN_JSON_STRING".into()))?;
-        serde_json::from_str(&text)
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|_| ProviderError("METHODS_CALLBACK_INVALID_RESPONSE".into()))?;
+        if let Some(reason) = value.get("provider_error").and_then(|r| r.as_str()) {
+            return Err(ProviderError(reason.into()));
+        }
+        serde_json::from_value(value)
             .map_err(|_| ProviderError("METHODS_CALLBACK_INVALID_RESPONSE".into()))
     }
 }

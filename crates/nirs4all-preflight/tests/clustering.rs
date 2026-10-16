@@ -8,11 +8,14 @@ use std::cell::Cell;
 struct Mock {
     hdbscan_calls: Cell<usize>,
     permutation_seeds: std::cell::RefCell<Vec<u64>>,
+    /// Refuse HDBSCAN as Methods does outside its numerical domain.
+    outside_domain: bool,
 }
 fn mock() -> Mock {
     Mock {
         hdbscan_calls: Cell::new(0),
         permutation_seeds: Default::default(),
+        outside_domain: false,
     }
 }
 impl MethodsProvider for Mock {
@@ -55,6 +58,9 @@ impl MethodsProvider for Mock {
     }
     fn hdbscan(&self, r: &HdbscanRequest) -> Result<HdbscanDiagnostics, ProviderError> {
         self.hdbscan_calls.set(self.hdbscan_calls.get() + 1);
+        if self.outside_domain {
+            return Err(ProviderError(NUMERICAL_DOMAIN_EXCEEDED.into()));
+        }
         let labels: Vec<i64> = r.matrix.iter().map(|s| i64::from(s[0] > 0.0)).collect();
         let n = labels.len();
         let node = |label: usize| HdbscanTreeNode {
@@ -478,4 +484,21 @@ fn clustering_capability_follows_methods_provider() {
         metric(&report, "clustering.partition").status,
         Availability::Unsupported
     ));
+}
+
+/// Rule 13: a Methods refusal outside the numerical domain becomes an
+/// unsupported metric with reason NUMERICAL_DOMAIN_EXCEEDED and the domain.
+#[test]
+fn numerical_domain_refusal_is_reported() {
+    let mut refusing = mock();
+    refusing.outside_domain = true;
+    let report = analyze(&input(40), &refusing);
+    let partition = metric(&report, "clustering.partition");
+    assert!(matches!(partition.status, Availability::Unsupported));
+    assert_eq!(
+        partition.reason_code.as_deref(),
+        Some(NUMERICAL_DOMAIN_EXCEEDED)
+    );
+    assert_eq!(partition.parameters["numerical_domain"], NUMERICAL_DOMAIN);
+    assert!(partition.value.is_none());
 }
