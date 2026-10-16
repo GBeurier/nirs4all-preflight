@@ -800,3 +800,47 @@ fn native_domain_boundary_is_explicit() {
         }
     }
 }
+
+/// Review b9fix P1: a balanced band whose values are all equal is undefined
+/// (ZERO_TOTAL_VARIANCE), not "unbalanced"; the other band stays computed.
+#[test]
+fn native_constant_balanced_band_is_zero_total_variance() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let mut input = linked_design(0);
+    input.samples.truncate(2);
+    let source = &mut input.sources[0];
+    source.observation_ids.truncate(4);
+    source.sample_ids = vec!["o0".into(), "o0".into(), "o1".into(), "o1".into()];
+    source.x = vec![
+        vec![Some(1.0), Some(1.0)],
+        vec![Some(1.0), Some(2.0)],
+        vec![Some(1.0), Some(4.0)],
+        vec![Some(1.0), Some(5.0)],
+    ];
+    source.repetition_types = Some(vec![RepetitionType::Rescan; 4]);
+    let report = analyze(&input, &provider);
+    let f = find(&report, "measurement.icc_1_1_ci_exact_f", "a");
+    assert_eq!(status(f), "computed");
+    assert_eq!(
+        f.parameters["band_reason"],
+        serde_json::json!(["ZERO_TOTAL_VARIANCE", null])
+    );
+    // Only the constant band: the whole metric is undefined.
+    let mut constant = input.clone();
+    for row in &mut constant.sources[0].x {
+        row[1] = Some(1.0);
+    }
+    let report = analyze(&constant, &provider);
+    let f = find(&report, "measurement.icc_1_1_ci_exact_f", "a");
+    assert_eq!(
+        (status(f).as_str(), f.reason_code.as_deref()),
+        ("undefined", Some("ZERO_TOTAL_VARIANCE"))
+    );
+    let reml = find(&report, "measurement.icc_1_reml", "a");
+    assert_eq!(
+        (status(reml).as_str(), reml.reason_code.as_deref()),
+        ("undefined", Some("ZERO_TOTAL_VARIANCE"))
+    );
+}

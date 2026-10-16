@@ -20,13 +20,15 @@ const BOOTSTRAP_WORK_BUDGET: f64 = 2.5e9;
 const COVERAGE_NOTE: &str =
     "not_qualified_percentile_interval_measured_coverage_in_docs_REUSE_ENGINE";
 /// Numerical domain of the Methods kernel, published with the REML metric.
-const NUMERICAL_DOMAIN: &str = "rule_13: nonzero |x| in [2^-256, 2^256], spread <= 2^64 over values and the differences used; outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; inside: exact power-of-two scaling from centred variation, per-group residuals from original values";
+const NUMERICAL_DOMAIN: &str = "rules_13_15: nonzero |x| in [2^-256, 2^256], spread <= 2^32 over values and the differences used; outside: unsupported NUMERICAL_DOMAIN_EXCEEDED; inside: exact power-of-two scaling from centred variation, per-group residuals from original values";
 const COUNTS_ID: &str = "measurement.repeat_counts";
 const REML_ID: &str = "measurement.icc_1_reml";
 const SD_CHI2_ID: &str = "measurement.repeatability_sd_ci_chi_square";
 const ICC_F_ID: &str = "measurement.icc_1_1_ci_exact_f";
 const SD_BOOT_ID: &str = "measurement.repeatability_sd_ci_cluster_bootstrap";
 const ICC_BOOT_ID: &str = "measurement.icc_1_reml_ci_cluster_bootstrap";
+/// Shared Methods constant N4M_DOMAIN_MAX_SPREAD_LOG2 (lead rule 15).
+const DOMAIN_MAX_SPREAD_LOG2: i32 = 32;
 const REML_STATUS: &str = "0_interior_1_insufficient_2_between_variance_zero_3_zero_total_4_within_variance_zero_5_not_converged";
 
 /// Repeat type, instrument and campaign of one technical context.
@@ -347,6 +349,8 @@ fn summary_status(
         (Availability::InsufficientData, FEW_WITHIN_UNITS)
     } else if has(FEW_UNITS) {
         (Availability::InsufficientData, FEW_UNITS)
+    } else if !reasons.is_empty() && reasons.iter().all(|r| *r == Some(INSUFFICIENT)) {
+        (Availability::InsufficientData, INSUFFICIENT)
     } else if !reasons.is_empty() && reasons.iter().all(|r| *r == Some(UNBALANCED)) {
         (Availability::Unsupported, "NO_BALANCED_BAND")
     } else {
@@ -627,7 +631,7 @@ impl Uncertainty<'_> {
             ),
             (
                 "estimator",
-                json!("reml_profiled_grid_every_local_maximum_refined_largest_likelihood_kept"),
+                json!("reml_profiled_grid_candidates_detected_by_the_grid_refined_largest_likelihood_kept"),
             ),
             (
                 "icc_definition",
@@ -703,12 +707,23 @@ impl Uncertainty<'_> {
             (Ok(_), Some(b)) => {
                 let reasons: Vec<Option<&'static str>> = (0..p)
                     .map(|j| {
-                        if b.shared[j] {
+                        // A missing bound is explained by the band itself:
+                        // no variation at all, too few groups or repeats,
+                        // or unequal repeat counts after the mask.
+                        if d.icc_ci_exact_f[j][0].is_some() {
+                            if b.shared[j] {
+                                Some(SHARED_UNIT)
+                            } else {
+                                None
+                            }
+                        } else if d.status[j] == 3 {
+                            Some(ZERO_TOTAL)
+                        } else if d.status[j] == 1 {
+                            Some(INSUFFICIENT)
+                        } else if b.shared[j] {
                             Some(SHARED_UNIT)
-                        } else if d.icc_ci_exact_f[j][0].is_none() {
-                            Some(UNBALANCED)
                         } else {
-                            None
+                            Some(UNBALANCED)
                         }
                     })
                     .collect();
@@ -810,8 +825,8 @@ fn valid_result(d: &VarianceComponentsDiagnostics, p: usize, b: usize) -> bool {
         && d.n_valid_replicates.iter().all(|&v| v <= b)
 }
 
-/// Rule 13 supported domain of an engine computation: every nonzero |x| in
-/// [2^-256, 2^256] and max/min nonzero |x| <= 2^64 (exact comparisons).
+/// Rules 13/15 supported domain of an engine computation: every nonzero |x|
+/// in [2^-256, 2^256] and max/min nonzero |x| <= 2^32 (exact comparisons).
 fn in_domain(values: impl Iterator<Item = f64>) -> bool {
     let (lowest, highest) = (2f64.powi(-256), 2f64.powi(256));
     let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
@@ -822,15 +837,27 @@ fn in_domain(values: impl Iterator<Item = f64>) -> bool {
         lo = lo.min(v);
         hi = hi.max(v);
     }
-    hi == 0.0 || hi <= lo * 2f64.powi(64)
+    hi == 0.0 || hi <= lo * 2f64.powi(DOMAIN_MAX_SPREAD_LOG2)
 }
 
-/// Mean with a residual-mean correction; inside the supported domain the
-/// sum cannot overflow (at most 2^256 times the number of values).
+/// Mean from a Neumaier (Kahan-Babuska) compensated sum: each addition's
+/// rounding error is accumulated exactly and added back, so the sum is
+/// exact whenever it needs no more than double precision for the result
+/// (for example [2^60, 1, -2^60] sums to 1 in every order). Inside the
+/// supported domain the sum cannot overflow. One rounding for the sum and
+/// one for the division remain: relative error of a few ulps.
 fn compensated_mean(values: &[f64]) -> f64 {
-    let n = values.len() as f64;
-    let mean = values.iter().sum::<f64>() / n;
-    mean + values.iter().map(|v| v - mean).sum::<f64>() / n
+    let (mut sum, mut compensation) = (0.0f64, 0.0f64);
+    for &v in values {
+        let t = sum + v;
+        compensation += if sum.abs() >= v.abs() {
+            (sum - t) + v
+        } else {
+            (v - t) + sum
+        };
+        sum = t;
+    }
+    (sum + compensation) / values.len() as f64
 }
 
 /// Structure sensitivity to unequal repeat counts: each aggregated sample
@@ -848,7 +875,7 @@ pub(crate) fn balanced_repeat_sensitivity(
 ) {
     const ID: &str = "structure.balanced_repeat_sensitivity";
     const SENSITIVITY: &str = "balanced_repeat_sensitivity.v1";
-    const SENSITIVITY_DOMAIN: &str = "rule_13: per band, nonzero |x| in [2^-256, 2^256] and spread <= 2^64 over the acquisitions of the aggregated samples";
+    const SENSITIVITY_DOMAIN: &str = "rules_13_15: per band, nonzero |x| in [2^-256, 2^256] and spread <= 2^32 over the acquisitions of the aggregated samples; means from a Neumaier compensated sum";
     let src = Some(source.source_id.as_str());
     let push = |report: &mut QualificationReport, mut m: Metric| {
         m.view_id = "canonical:centered".into();
@@ -1053,4 +1080,90 @@ pub(crate) fn balanced_repeat_sensitivity(
         m.parameters.insert(key.into(), value);
     }
     push(report, m);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compensated_mean;
+
+    /// Exact mean of doubles as a rational S / (n 2^E) with an i128
+    /// numerator (spread <= 2^32 keeps it far below 2^127), rounded once
+    /// through f64 for the comparison.
+    fn rational_mean(values: &[f64]) -> f64 {
+        let parts: Vec<(i128, i32)> = values
+            .iter()
+            .map(|&v| {
+                if v == 0.0 {
+                    return (0, 0);
+                }
+                let bits = v.to_bits();
+                let exponent = ((bits >> 52) & 0x7ff) as i32;
+                let mantissa = (bits & ((1u64 << 52) - 1)) | (1u64 << 52);
+                let signed = if v < 0.0 {
+                    -(mantissa as i128)
+                } else {
+                    mantissa as i128
+                };
+                (signed, exponent - 1075)
+            })
+            .collect();
+        let e = parts
+            .iter()
+            .filter(|p| p.0 != 0)
+            .map(|p| p.1)
+            .min()
+            .unwrap_or(0);
+        let s: i128 = parts
+            .iter()
+            .map(|&(m, x)| if m == 0 { 0 } else { m << (x - e) })
+            .sum();
+        s as f64 * 2f64.powi(e) / values.len() as f64
+    }
+
+    fn permutations(values: &[f64]) -> Vec<Vec<f64>> {
+        if values.len() <= 1 {
+            return vec![values.to_vec()];
+        }
+        let mut out = Vec::new();
+        for i in 0..values.len() {
+            let mut rest = values.to_vec();
+            let head = rest.remove(i);
+            for mut tail in permutations(&rest) {
+                tail.insert(0, head);
+                out.push(tail);
+            }
+        }
+        out
+    }
+
+    /// Review b9fix P0: [2^60, 1, -2^60] must give 1/3 in every order (the
+    /// residual-mean correction gave 0 or 5/9).
+    #[test]
+    fn neumaier_mean_recovers_lost_terms_in_every_order() {
+        let x = 2f64.powi(60);
+        for p in permutations(&[x, 1.0, -x]) {
+            assert_eq!(compensated_mean(&p), 1.0 / 3.0, "{p:?}");
+        }
+    }
+
+    /// Rational oracle inside the supported domain (spread <= 2^32):
+    /// decimal values, offsets and mixed signs, every permutation within one
+    /// ulp of the exact mean rounded through f64.
+    #[test]
+    fn compensated_mean_matches_rational_oracle_in_every_order() {
+        let sets: [&[f64]; 4] = [
+            &[0.1, 0.2, 0.3, 0.7],
+            &[1e9 + 0.1, 1e9 - 0.3, 1e9 + 0.7, 1e9],
+            &[4.2e9, 1.0, -4.2e9, 3.7],
+            &[2.5e-3, -7.3e-4, 1.1e-2, 9.9e-3, -3.3e-3],
+        ];
+        for set in sets {
+            let exact = rational_mean(set);
+            for p in permutations(set) {
+                let got = compensated_mean(&p);
+                let ulp = f64::from_bits(exact.abs().to_bits() + 1) - exact.abs();
+                assert!((got - exact).abs() <= ulp, "{p:?}: {got} vs {exact}");
+            }
+        }
+    }
 }
