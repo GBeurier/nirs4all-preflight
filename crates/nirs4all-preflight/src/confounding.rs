@@ -16,8 +16,19 @@ const FAMILY_ALPHA: f64 = 0.05;
 /// sqrt(f64::EPSILON), applied by Methods on the F scale: F_perm >= F_obs - tolerance (vegan).
 const TIE_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 const VIEW: &str = "canonical:centered";
-/// Domain of validity of the Methods kernels, published with each metric.
-const NUMERICAL_DOMAIN: &str = "columns centred before a power-of-two scale chosen from centred variation (constant columns and offsets have no effect); residual sums of squares from explicit residuals; F and ratios formed in the scaled unit; sums of squares and distances published as value x 2^binary_exponent (exponent 0 when every positive value is a normal double, never a positive value rounded to 0 or infinity); status error METHODS_NUMERICAL_FAILURE only for a value below 2^-1074 of the largest";
+/// Supported numerical domain of the Methods kernels (rule 13), published
+/// with each metric; same bounds and keys as the association metrics.
+fn numerical_domain() -> Value {
+    json!({"supported_domain": {
+               "nonzero_abs_min": "2^-256", "nonzero_abs_max": "2^256",
+               "max_over_min_nonzero_abs_per_array": "2^64",
+               "zeros": "allowed",
+               "checked_arrays": "unit coordinate matrix (canonical PCA scores averaged per unit), one array"},
+           "outside_domain": "unsupported_NUMERICAL_DOMAIN_EXCEEDED",
+           "invariance": "scale_2k_translation_and_constant_columns_inside_domain",
+           "sums_of_squares": "explicit residuals; published as value x 2^binary_exponent, exponent 0 when every positive value is a normal double",
+           "unresolved_residual": "pseudo_f_undefined_when_residual_ss_at_or_below_rounding_resolution"})
+}
 
 /// Categorical metadata factors in report order: `instrument`, `campaign`,
 /// then the declared categorical columns of the typed metadata map
@@ -54,7 +65,7 @@ fn tag(metric: &mut Metric, factor: Option<&str>) {
     metric.parameters.insert("protocol".into(), json!(PROTOCOL));
     metric
         .parameters
-        .insert("numerical_domain".into(), json!(NUMERICAL_DOMAIN));
+        .insert("numerical_domain".into(), numerical_domain());
     if let Some(factor) = factor {
         metric.scope = "source_factor".into();
         metric.parameters.insert("factor".into(), json!(factor));

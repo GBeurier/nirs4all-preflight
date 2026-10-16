@@ -1046,6 +1046,27 @@ fn provider_failures_are_errors_unless_a_declared_limit() {
         (unknown.kind, unknown.reason.as_str()),
         (ProviderErrorKind::Internal, "METHODS_STATUS_99")
     );
+    // The domain refusal is recognised from the context message (native) or
+    // the N4mError message "n4m error 10: <message>" (WASM); any other
+    // status 10 stays METHODS_UNSUPPORTED.
+    for message in [
+        "input outside the supported numerical domain (nonzero |x| in [2^-256, 2^256], max/min nonzero |x| <= 2^64)",
+        "n4m error 10: input outside the supported numerical domain (...)",
+    ] {
+        let e = ProviderError::from_methods_error(10, message);
+        assert_eq!(
+            (e.kind, e.reason.as_str()),
+            (ProviderErrorKind::Unsupported, "NUMERICAL_DOMAIN_EXCEEDED")
+        );
+    }
+    assert_eq!(
+        ProviderError::from_methods_error(10, "work budget").reason,
+        "METHODS_UNSUPPORTED"
+    );
+    assert_eq!(
+        ProviderError::from_methods_error(7, "input outside the supported numerical domain").reason,
+        "METHODS_NUMERICAL_FAILURE"
+    );
 }
 
 #[test]
@@ -1351,12 +1372,11 @@ fn unit_coordinates_are_running_means_that_cannot_overflow() {
 }
 
 #[test]
-fn native_engine_partition_is_scale_invariant_or_fails_explicitly() {
-    // Robustness rule at engine level: spectra scaled by 2^k give the same
-    // R2, pseudo-F and permutation counts, or an explicit error status.
-    // k = -1000 is excluded: the canonical PCA (n4m_preflight_pca_compute,
-    // not part of this protocol) then returns zero eigenvalues and the
-    // structure is reported as ZERO_NUMERICAL_RANK before confounding runs.
+fn native_engine_partition_is_scale_invariant_inside_the_domain() {
+    // Rule 13 at engine level: inside the supported domain D spectra scaled
+    // by 2^k give the same R2, pseudo-F and permutation counts; outside D
+    // (unit coordinates outside [2^-256, 2^256]) the Methods refusal is reported as
+    // unsupported with NUMERICAL_DOMAIN_EXCEEDED, never as a value.
     let Some(provider) = native() else {
         return;
     };
@@ -1386,14 +1406,17 @@ fn native_engine_partition_is_scale_invariant_or_fails_explicitly() {
     let (status0, value0, tests0) = summary(&base);
     assert!(matches!(status0, Availability::Computed));
     let value0 = value0.unwrap();
-    for k in [-500, -100, 100, 500, 1000] {
+    let scaled = |k: i32| {
         let mut input = crossed(6, false);
         for row in &mut input.sources[0].x {
             for v in row.iter_mut() {
                 *v = v.map(|x| x * 2f64.powi(k));
             }
         }
-        let report = analyze(&input, &provider);
+        input
+    };
+    for k in [-200, -100, 100, 200] {
+        let report = analyze(&scaled(k), &provider);
         let (status, value, tests) = summary(&report);
         match status {
             Availability::Computed => {
@@ -1413,9 +1436,23 @@ fn native_engine_partition_is_scale_invariant_or_fails_explicitly() {
                     assert_eq!(t["n_at_least_observed"], t0["n_at_least_observed"], "k={k}");
                 }
             }
-            Availability::Error => {}
             other => panic!("k={k}: unexpected status {other:?}"),
         }
+    }
+    // Spectra at 2^-258 / 2^-262 give unit coordinates below 2^-256. Above
+    // 2^256 the canonical PCA (n4m_preflight_pca_compute, outside this
+    // protocol) fails first (convergence or numerical failure from 2^256);
+    // that side of D is covered at provider level by the dyadic test.
+    for k in [-258, -262] {
+        let report = analyze(&scaled(k), &provider);
+        let p = find(&report, "confounding.variance_partition", None);
+        assert!(matches!(p.status, Availability::Unsupported), "k={k}");
+        assert_eq!(
+            p.reason_code.as_deref(),
+            Some("NUMERICAL_DOMAIN_EXCEEDED"),
+            "k={k}"
+        );
+        assert!(p.value.is_none());
     }
 }
 
@@ -1514,49 +1551,96 @@ fn unknown_additive_identifiability_is_not_reported_as_non_identifiable() {
 }
 
 #[test]
-fn native_dyadic_sums_of_squares_keep_their_exponent() {
-    // Astra round 3 dyadic fixture through the native adapter: SS_A = SS_res
-    // = 2^-1116 (not a normal double) travel as value x 2^exponent.
+fn native_dyadic_case_on_both_sides_of_the_domain() {
+    // Astra dyadic fixture through the native adapter: columns 2^p B and
+    // 2^q (A + r). At the spread boundary (p = 33, q = -32: max/min nonzero
+    // |x| = 2^64) SS_A = SS_res = 2^-60 exactly, F = 13; with p = 34 or the
+    // round-4 columns 2^600 / 2^-500 the input is outside D and the provider
+    // returns unsupported NUMERICAL_DOMAIN_EXCEEDED instead of erasing the
+    // small column.
     let Some(provider) = native() else {
         return;
     };
-    let mut matrix = Vec::new();
-    let (mut a, mut b) = (Vec::new(), Vec::new());
-    for i in 0..16 {
-        let cell = i / 4;
-        let ai: i64 = if cell < 2 { -1 } else { 1 };
-        let bi: i64 = if cell % 2 == 0 { -1 } else { 1 };
-        let r = if i % 2 == 0 { 1.0 } else { -1.0 };
-        matrix.push(vec![
-            bi as f64 * 2f64.powi(-500),
-            (ai as f64 + r) * 2f64.powi(-560),
-        ]);
-        a.push(ai);
-        b.push(bi);
-    }
+    let fixture = |p: i32, q: i32| {
+        let mut matrix = Vec::new();
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for i in 0..16 {
+            let cell = i / 4;
+            let ai: i64 = if cell < 2 { -1 } else { 1 };
+            let bi: i64 = if cell % 2 == 0 { -1 } else { 1 };
+            let r = if i % 2 == 0 { 1.0 } else { -1.0 };
+            matrix.push(vec![
+                bi as f64 * 2f64.powi(p),
+                (ai as f64 + r) * 2f64.powi(q),
+            ]);
+            a.push(ai);
+            b.push(bi);
+        }
+        (matrix, a, b)
+    };
+    let fl_request = |(matrix, a, b): (Vec<Vec<f64>>, Vec<i64>, Vec<i64>)| FreedmanLaneRequest {
+        matrix,
+        term_codes: a,
+        condition_codes: vec![b],
+        n_permutations: 0,
+        seed: 1,
+    };
+    let cells_request = |(matrix, a, b): (Vec<Vec<f64>>, Vec<i64>, Vec<i64>)| PermanovaRequest {
+        matrix,
+        term_codes: a,
+        strata_codes: Some(b),
+        n_permutations: 0,
+        seed: 1,
+    };
+    let ss_a = 2f64.powi(-60);
     let fl = provider
-        .permanova_freedman_lane(&FreedmanLaneRequest {
-            matrix: matrix.clone(),
-            term_codes: a.clone(),
-            condition_codes: vec![b.clone()],
-            n_permutations: 0,
-            seed: 1,
-        })
+        .permanova_freedman_lane(&fl_request(fixture(33, -32)))
         .unwrap();
-    let log2 = |v: f64, e: i32| v.log2() + e as f64;
-    assert_ne!(fl.ss_binary_exponent, 0);
-    assert!((log2(fl.ss_term, fl.ss_binary_exponent) + 1116.0).abs() < 1e-12);
-    assert!((log2(fl.ss_residual, fl.ss_binary_exponent) + 1116.0).abs() < 1e-12);
+    assert_eq!(fl.ss_binary_exponent, 0);
+    assert_eq!((fl.ss_term, fl.ss_residual), (ss_a, ss_a));
     assert!((fl.pseudo_f.unwrap() - 13.0).abs() < 1e-11);
     let cells = provider
-        .permanova(&PermanovaRequest {
+        .permanova(&cells_request(fixture(33, -32)))
+        .unwrap();
+    assert_eq!(cells.ss_binary_exponent, 0);
+    assert_eq!((cells.ss_term, cells.ss_residual), (ss_a, ss_a));
+    assert!((cells.partial_r2.unwrap() - 0.5).abs() < 1e-12);
+    let (matrix, _, b) = fixture(33, -32);
+    let disp = provider
+        .permdisp(&PermdispRequest {
             matrix,
-            term_codes: a,
-            strata_codes: Some(b),
+            group_codes: b,
             n_permutations: 0,
             seed: 1,
         })
         .unwrap();
-    assert!((log2(cells.ss_residual, cells.ss_binary_exponent) + 1116.0).abs() < 1e-12);
-    assert!((cells.partial_r2.unwrap() - 0.5).abs() < 1e-12);
+    assert_eq!(disp.distance_binary_exponent, 0);
+    assert_eq!(disp.f, Some(0.0));
+    let refused = |e: ProviderError| {
+        assert!(matches!(e.kind, ProviderErrorKind::Unsupported));
+        assert_eq!(e.reason, "NUMERICAL_DOMAIN_EXCEEDED");
+    };
+    for (p, q) in [(34, -32), (600, -500)] {
+        refused(
+            provider
+                .permanova_freedman_lane(&fl_request(fixture(p, q)))
+                .unwrap_err(),
+        );
+        refused(
+            provider
+                .permanova(&cells_request(fixture(p, q)))
+                .unwrap_err(),
+        );
+        let (matrix, _, b) = fixture(p, q);
+        refused(
+            provider
+                .permdisp(&PermdispRequest {
+                    matrix,
+                    group_codes: b,
+                    n_permutations: 0,
+                    seed: 1,
+                })
+                .unwrap_err(),
+        );
+    }
 }

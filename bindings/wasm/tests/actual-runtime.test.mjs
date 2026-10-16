@@ -133,10 +133,37 @@ test('WASM confounding matches the native engine goldens',async()=>{
   assert.equal(find('confounding.design').value.factors[0].df_identifiable_given_other_factors,1);
   assert.equal(find('confounding.design').value.factors[0].aliased_with_other_factor_cells,false);
   assert.equal(find('confounding.design').value.factors[0].identifiable_under_additive_model,true);
-  assert.match(find('confounding.variance_partition').parameters.numerical_domain,/METHODS_NUMERICAL_FAILURE/);
+  assert.equal(find('confounding.variance_partition').parameters.numerical_domain.supported_domain.max_over_min_nonzero_abs_per_array,'2^64');
   assert.equal(find('confounding.variance_partition').value.ss_binary_exponent,0);
   assert.equal(find('confounding.dispersion','campaign').value.distance_binary_exponent,0);
   assert.ok(runtime.capabilities().some(c=>c.capability_id==='confounding'&&c.available&&!c.qualified));
+});
+// Rule 13 (native test native_engine_partition_is_scale_invariant_inside_the_domain):
+// spectra scaled by 2^k inside D give the same R2 and counts; at 2^-258 the
+// unit coordinates fall below 2^-256 and the Methods refusal crosses the
+// bridge as unsupported NUMERICAL_DOMAIN_EXCEEDED.
+test('WASM confounding follows the supported numerical domain',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../../../examples/confounding.json',import.meta.url),'utf8'));
+  const run=k=>{
+    const input=structuredClone(fixture);
+    input.sources[0].x=input.sources[0].x.map(row=>row.map(v=>v===null?v:v*2**k));
+    const report=runtime.analyze(input);
+    const find=(id,factor)=>report.metrics.find(m=>m.metric_id===id&&(factor===undefined||m.parameters.factor===factor));
+    return {partition:find('confounding.variance_partition'),test:find('confounding.permanova_marginal_test','campaign')};
+  };
+  const base=run(0);
+  for(const k of [-200,200]){
+    const r=run(k);
+    assert.equal(r.partition.status,'computed');
+    r.partition.value.factors.forEach((f,i)=>assert.ok(Math.abs(f.r2_marginal-base.partition.value.factors[i].r2_marginal)<=1e-8));
+    assert.equal(r.test.value.n_at_least_observed,base.test.value.n_at_least_observed);
+  }
+  for(const k of [-258,-262]){
+    const {partition}=run(k);
+    assert.equal(partition.status,'unsupported');
+    assert.equal(partition.reason_code,'NUMERICAL_DOMAIN_EXCEEDED');
+    assert.equal(partition.value,null);
+  }
 });
 // A Methods numerical failure keeps its kind and reason across hosts (the
 // native test native_numerical_failure_is_reported_as_error).
