@@ -646,3 +646,91 @@ fn an_r2_beyond_the_double_range_is_published_scaled_not_as_absent() {
     let report = analyze_with_validation(&constant, &Scoring { huge_r2: true }, &Honest);
     assert_eq!(reason(&report), Some("CONSTANT_TARGET"));
 }
+
+/// The probe kernels plus a nearest-neighbour stand-in recording the
+/// canonical PCA sample order and the local-contrast neighbour groups.
+#[derive(Default)]
+struct LocalSpy {
+    pca_sample_ids: RefCell<Option<Vec<String>>>,
+    neighbor_groups: RefCell<Option<Vec<i64>>>,
+}
+impl MethodsProvider for LocalSpy {
+    fn capabilities(&self) -> Vec<Capability> {
+        Kernels.capabilities()
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        self.pca_sample_ids
+            .borrow_mut()
+            .get_or_insert_with(|| r.sample_ids.clone());
+        Kernels.pca(r)
+    }
+    fn repeatability(
+        &self,
+        r: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Kernels.repeatability(r)
+    }
+    fn group_means(&self, r: &GroupMeansRequest) -> Result<GroupMeansDiagnostics, ProviderError> {
+        Kernels.group_means(r)
+    }
+    fn nearest_neighbors(
+        &self,
+        r: &NearestNeighborsRequest,
+    ) -> Result<NearestNeighborsDiagnostics, ProviderError> {
+        assert_eq!(r.query_group_ids, r.reference_group_ids);
+        *self.neighbor_groups.borrow_mut() = Some(r.query_group_ids.clone());
+        Err(ProviderError::unsupported("SPY_NO_NEIGHBORS"))
+    }
+}
+
+/// Review final1 P0: the local contrast excludes the same indivisible
+/// identity components as the validation probe (individuals, reference
+/// groups, bridges through a censored reference), on the same population.
+#[test]
+fn local_contrast_excludes_the_probe_identity_components() {
+    let mut x = input(12);
+    x.samples[1].individual_id = Some("animal".into());
+    x.samples[7].individual_id = Some("animal".into());
+    x.targets[0].values[2].reference_group_id = Some("pool".into());
+    x.targets[0].values[9].reference_group_id = Some("pool".into());
+    x.samples[4].individual_id = Some("bridge".into());
+    x.samples[10].individual_id = Some("bridge".into());
+    x.targets[0].values[10].status = ReferenceStatus::Censored;
+    x.targets[0].values[10].reference_group_id = Some("composite".into());
+    x.targets[0].values[5].reference_group_id = Some("composite".into());
+    let methods = LocalSpy::default();
+    let spy = Spy::default();
+    analyze_with_validation(&x, &methods, &spy);
+    let requests = spy.requests.borrow();
+    let probe = &requests[0];
+    // Local-contrast rows: canonical PCA order, censored s10 not eligible.
+    let ids: Vec<String> = methods
+        .pca_sample_ids
+        .borrow()
+        .clone()
+        .unwrap()
+        .into_iter()
+        .filter(|id| id != "s10")
+        .collect();
+    let local = methods.neighbor_groups.borrow().clone().unwrap();
+    assert_eq!(local.len(), ids.len());
+    let mut probe_ids = probe.sample_ids.clone();
+    probe_ids.sort();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(sorted, probe_ids);
+    let probe_group =
+        |id: &str| &probe.group_ids[probe.sample_ids.iter().position(|s| s == id).unwrap()];
+    for (a, ga) in ids.iter().zip(&local) {
+        for (b, gb) in ids.iter().zip(&local) {
+            assert_eq!(ga == gb, probe_group(a) == probe_group(b), "{a} {b}");
+        }
+    }
+    assert_eq!(
+        local
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        8
+    );
+}

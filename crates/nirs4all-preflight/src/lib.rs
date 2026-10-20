@@ -1111,25 +1111,17 @@ fn analyze_local(
     report: &mut QualificationReport,
 ) {
     let (representative_ids, scores) = geometry;
-    let mut exact = BTreeMap::<&str, Vec<&TargetValue>>::new();
-    for v in &target.values {
-        if v.status == ReferenceStatus::Exact {
-            exact.entry(&v.sample_id).or_default().push(v);
-        }
-    }
-    let mut selected = Vec::new();
-    for (i, id) in representative_ids.iter().enumerate() {
-        let Some(values) = exact.get(id.as_str()) else {
-            continue;
-        };
-        if values.iter().any(|v| match target.kind {
-            TargetKind::Continuous => v.value != values[0].value,
-            TargetKind::Categorical => v.category != values[0].category,
-        }) {
-            continue;
-        }
-        selected.push((i, values[0]));
-    }
+    // Exact, consistent development references, as for every other block.
+    let eligible: HashMap<&str, &TargetValue> = exact_development_references(target, samples)
+        .eligible
+        .into_iter()
+        .map(|v| (v.sample_id.as_str(), v))
+        .collect();
+    let selected: Vec<(usize, &TargetValue)> = representative_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| eligible.get(id.as_str()).map(|v| (i, *v)))
+        .collect();
     if selected.len() < 4 {
         report.metrics.push(Metric::unavailable(
             "local.global_contrast",
@@ -1140,64 +1132,43 @@ fn analyze_local(
         ));
         return;
     }
-    fn root(parent: &mut [usize], mut i: usize) -> usize {
-        while parent[i] != i {
-            i = parent[i];
-        }
-        i
+    if input.options.independence_unit == IndependenceUnit::Group
+        && selected
+            .iter()
+            .any(|(_, v)| samples[v.sample_id.as_str()].independence_group.is_none())
+    {
+        report.metrics.push(Metric::unavailable(
+            "local.global_contrast",
+            Availability::NotIdentifiable,
+            "MISSING_INDEPENDENCE_GROUP",
+            Some(&source.source_id),
+            Some(&target.target_id),
+        ));
+        return;
     }
-    let mut parent: Vec<usize> = (0..selected.len()).collect();
-    // Structured keys: a reference group named like a sample ID, or a
-    // physical ID equal to another sample's ID, never merges by accident.
-    let mut first_for_key = BTreeMap::<IdentityKey, usize>::new();
-    for (i, (_, v)) in selected.iter().enumerate() {
-        let sample = samples[v.sample_id.as_str()];
-        let physical = match &sample.physical_sample_id {
-            Some(p) => IdentityKey::Physical(p),
-            None => IdentityKey::Sample(&sample.sample_id),
-        };
-        let base = match input.options.independence_unit {
-            IndependenceUnit::Sample | IndependenceUnit::Unknown => physical,
-            IndependenceUnit::ReferenceGroup => match &v.reference_group_id {
-                Some(g) => IdentityKey::Reference(&target.target_id, g),
-                None => IdentityKey::Sample(&sample.sample_id),
-            },
-            IndependenceUnit::Group => match &sample.independence_group {
-                Some(g) => IdentityKey::Group(g),
-                None => {
-                    report.metrics.push(Metric::unavailable(
-                        "local.global_contrast",
-                        Availability::NotIdentifiable,
-                        "MISSING_INDEPENDENCE_GROUP",
-                        Some(&source.source_id),
-                        Some(&target.target_id),
-                    ));
-                    return;
-                }
-            },
-        };
-        let mut keys = vec![physical, base];
-        if let Some(reference_group) = &v.reference_group_id {
-            keys.push(IdentityKey::Reference(&target.target_id, reference_group));
-        }
-        for key in keys {
-            if let Some(&first) = first_for_key.get(&key) {
-                let a = root(&mut parent, i);
-                let b = root(&mut parent, first);
-                parent[a] = b;
-            } else {
-                first_for_key.insert(key, i);
-            }
-        }
-    }
+    // Excluded neighbour groups are the identity components of all samples,
+    // built from every identity and reference link of this target before any
+    // analytic exclusion (`independence_components`, shared with the
+    // associations, clustering and the validation probe), then projected on
+    // the eligible references; labels follow the first eligible row.
+    let component = independence_components(input, &[target]);
+    let index: HashMap<&str, usize> = input
+        .samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.sample_id.as_str(), i))
+        .collect();
     let mut group_labels = BTreeMap::<usize, i64>::new();
-    let group_ids: Vec<i64> = (0..selected.len())
-        .map(|i| {
-            let component = root(&mut parent, i);
+    let group_ids: Vec<i64> = selected
+        .iter()
+        .map(|(_, v)| {
             let next = group_labels.len() as i64;
-            *group_labels.entry(component).or_insert(next)
+            *group_labels
+                .entry(component[index[v.sample_id.as_str()]])
+                .or_insert(next)
         })
         .collect();
+    let n_components = group_labels.len();
     let n = selected.len();
     let k = 10.min(3.max((n as f64).sqrt().floor() as usize));
     let request = NearestNeighborsRequest {
@@ -1343,7 +1314,14 @@ fn analyze_local(
     };
     metric.view_id = "canonical:centered".into();
     metric.denominators.insert("n_eligible_samples".into(), n);
+    metric
+        .denominators
+        .insert("n_independent_components".into(), n_components);
     metric.parameters.insert("k".into(), json!(k));
+    metric.parameters.insert(
+        "excluded_neighbor_unit".into(),
+        json!("shared_independence_components"),
+    );
     if input.options.independence_unit == IndependenceUnit::Unknown {
         metric.parameters.insert(
             "independence_assumption".into(),

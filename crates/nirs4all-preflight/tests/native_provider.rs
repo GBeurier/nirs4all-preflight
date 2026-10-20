@@ -1213,3 +1213,67 @@ fn regression_scores_publish_an_out_of_range_r2_scaled() {
         .unwrap_err();
     assert_eq!(e.reason, NUMERICAL_DOMAIN_EXCEEDED);
 }
+
+/// Review final1 P0: twelve distinct physical objects, four per individual,
+/// spectra `10 g + j / 10` and target `g`. Excluding only the physical
+/// samples, the three nearest neighbours share the individual and the
+/// contrast is 1. Excluding the shared identity components (individuals),
+/// every neighbour lies in an adjacent individual at |dy| = 1, so with the
+/// sample variance 8/11 the contrast is 1 - 1 / (2 * 8/11) = 5/16.
+#[test]
+fn native_local_contrast_excludes_the_shared_identity_components() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let ids: Vec<String> = (0..12).map(|i| format!("s{i:02}")).collect();
+    let mut input = input_with(
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let (g, j) = ((i / 4) as f64, (i % 4) as f64);
+                (
+                    id.as_str(),
+                    Partition::Development,
+                    vec![10.0 * g + j / 10.0],
+                )
+            })
+            .collect(),
+        vec![1.0],
+    );
+    input.options.independence_unit = IndependenceUnit::Sample;
+    input.targets = vec![Target {
+        target_id: "y".into(),
+        kind: TargetKind::Continuous,
+        values: ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| TargetValue {
+                sample_id: id.clone(),
+                value: Some((i / 4) as f64),
+                category: None,
+                status: ReferenceStatus::Exact,
+                reference_id: None,
+                reference_group_id: None,
+            })
+            .collect(),
+        unit: None,
+    }];
+    let contrast = |input: &QualificationInput| {
+        let report = analyze(input, &provider);
+        let m = metric(&report, "local.global_contrast").clone();
+        assert_eq!(m.status_wire(), "computed");
+        (
+            m.value.unwrap().as_f64().unwrap(),
+            m.denominators["n_independent_components"],
+        )
+    };
+    let (value, units) = contrast(&input);
+    assert!(near(value, 1.0), "{value}");
+    assert_eq!(units, 12);
+    for (i, sample) in input.samples.iter_mut().enumerate() {
+        sample.individual_id = Some(format!("animal-{}", i / 4));
+    }
+    let (value, units) = contrast(&input);
+    assert!(near(value, 5.0 / 16.0), "{value}");
+    assert_eq!(units, 3);
+}
