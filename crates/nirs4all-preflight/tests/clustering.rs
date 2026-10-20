@@ -439,16 +439,64 @@ fn reference_groups_define_units_from_identities() {
         missing.reason_code.as_deref(),
         Some("MISSING_REFERENCE_GROUP")
     );
+    // A row carrying two reference groups (one per target) links them, as
+    // the shared identity components do: s005 (r5, r6) joins s006 (r6).
     let mut other = reference_target(|i| Some(format!("r{i}")));
     other.target_id = "other".into();
     other.values[5].reference_group_id = Some("r6".into());
     x.targets = vec![reference_target(|i| Some(format!("r{i}"))), other];
-    let ambiguous = metric(&analyze(&x, &mock), "clustering.subsample_stability").clone();
-    assert!(matches!(ambiguous.status, Availability::NotIdentifiable));
+    let linked = metric(&analyze(&x, &mock), "clustering.subsample_stability").clone();
+    assert!(matches!(linked.status, Availability::Computed));
+    assert_eq!(linked.denominators["n_resampling_units"], 39);
+}
+
+/// Review final1 P0: A (s000) and B (s001) are eligible; C, absent from the
+/// source, shares A's physical sample and B's individual. The shared identity
+/// components join A and B through C, so the 12 rows form 11 units, and the
+/// Gaussian null cannot be decisional with a two-row unit.
+#[test]
+fn units_follow_identity_links_through_samples_outside_the_geometry() {
+    let mock = mock();
+    let mut x = input(12);
+    x.options.independence_unit = IndependenceUnit::Sample;
+    let units = |x: &QualificationInput| {
+        let report = analyze(x, &mock);
+        let stability = metric(&report, "clustering.subsample_stability").clone();
+        let null = metric(&report, "clustering.gaussian_null_model").clone();
+        (stability, null)
+    };
+    let (stability, null) = units(&x);
+    assert_eq!(stability.denominators["n_resampling_units"], 12);
     assert_eq!(
-        ambiguous.reason_code.as_deref(),
-        Some("AMBIGUOUS_REFERENCE_GROUP")
+        null.value.as_ref().unwrap()["fitted_null_tail"]["decisional"],
+        true
     );
+    x.samples[1].individual_id = Some("cow".into());
+    x.samples.push(Sample {
+        sample_id: "c".into(),
+        physical_sample_id: Some("s000".into()),
+        partition: Partition::Development,
+        independence_group: None,
+        instrument: None,
+        campaign: None,
+        individual_id: Some("cow".into()),
+        augmentation_parent_id: None,
+    });
+    let (stability, null) = units(&x);
+    assert!(matches!(stability.status, Availability::Computed));
+    assert_eq!(stability.denominators["n_resampling_units"], 11);
+    assert_eq!(stability.denominators["n_independent_units"], 11);
+    assert_eq!(stability.denominators["n_units_per_subsample"], 9);
+    // Unit 0 holds rows 0 and 1; plan 0 keeps units 0..9, i.e. rows 0..10.
+    let value = stability.value.as_ref().unwrap();
+    assert_eq!(
+        value["unit_plans"][0],
+        serde_json::json!((0..9).collect::<Vec<u64>>())
+    );
+    assert_eq!(value["intersection_size"]["max"], 10.0);
+    let test = &null.value.as_ref().unwrap()["fitted_null_tail"];
+    assert_eq!(test["decisional"], false);
+    assert_eq!(test["decisional_reason"], "MULTI_ROW_RESAMPLING_UNITS");
 }
 
 #[test]

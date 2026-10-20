@@ -250,91 +250,62 @@ struct Units {
     independent: bool,
 }
 
+/// Units are the identity components of all samples, built from every
+/// identity and reference link of every target before any analytic exclusion
+/// (`independence_components`, shared with the associations, repeatability,
+/// confounding, local contrast and the validation probe), then projected on
+/// the geometry rows: two rows linked only through a sample absent from this
+/// source stay one unit. The declared unit must resolve for every row:
+/// `group` needs `independence_group`, `reference_group` a
+/// `reference_group_id` of some target; nothing falls back to rows.
 fn build_units(
     input: &QualificationInput,
     samples: &HashMap<&str, &Sample>,
     geometry: &Geometry,
 ) -> Result<Units, Failure> {
-    let n = geometry.sample_ids.len();
-    let mut reference_groups = HashMap::<&str, BTreeSet<&str>>::new();
-    if input.options.independence_unit == IndependenceUnit::ReferenceGroup {
-        for target in &input.targets {
-            for value in &target.values {
-                if let Some(group) = &value.reference_group_id {
-                    reference_groups
-                        .entry(value.sample_id.as_str())
-                        .or_default()
-                        .insert(group.as_str());
-                }
-            }
-        }
-    }
-    let mut keys = Vec::with_capacity(n);
+    let unit = input.options.independence_unit;
+    let referenced: BTreeSet<&str> = input
+        .targets
+        .iter()
+        .flat_map(|t| &t.values)
+        .filter(|v| v.reference_group_id.is_some())
+        .map(|v| v.sample_id.as_str())
+        .collect();
     for sample_id in geometry.sample_ids {
         let sample = samples[sample_id.as_str()];
-        let mut row_keys = Vec::new();
-        if let Some(individual) = &sample.individual_id {
-            row_keys.push(format!("individual:{individual}"));
-        }
-        match input.options.independence_unit {
-            IndependenceUnit::Group => match &sample.independence_group {
-                Some(group) => row_keys.push(format!("group:{group}")),
-                None => {
-                    return Err(failure(
-                        Availability::NotIdentifiable,
-                        "MISSING_INDEPENDENCE_GROUP",
-                    ))
-                }
-            },
-            IndependenceUnit::ReferenceGroup => {
-                let groups = reference_groups.get(sample_id.as_str());
-                match groups.map(BTreeSet::len) {
-                    Some(1) => row_keys.push(format!(
-                        "reference:{}",
-                        groups.and_then(|g| g.first()).expect("one group")
-                    )),
-                    Some(0) | None => {
-                        return Err(failure(
-                            Availability::NotIdentifiable,
-                            "MISSING_REFERENCE_GROUP",
-                        ))
-                    }
-                    Some(_) => {
-                        return Err(failure(
-                            Availability::NotIdentifiable,
-                            "AMBIGUOUS_REFERENCE_GROUP",
-                        ))
-                    }
-                }
+        match unit {
+            IndependenceUnit::Group if sample.independence_group.is_none() => {
+                return Err(failure(
+                    Availability::NotIdentifiable,
+                    "MISSING_INDEPENDENCE_GROUP",
+                ))
             }
-            IndependenceUnit::Sample | IndependenceUnit::Unknown => {}
-        }
-        keys.push(row_keys);
-    }
-    let mut parent: Vec<usize> = (0..n).collect();
-    fn root(parent: &mut [usize], mut i: usize) -> usize {
-        while parent[i] != i {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
-        i
-    }
-    let mut first = HashMap::<&str, usize>::new();
-    for (row, row_keys) in keys.iter().enumerate() {
-        for key in row_keys {
-            if let Some(&other) = first.get(key.as_str()) {
-                let (a, b) = (root(&mut parent, row), root(&mut parent, other));
-                parent[a.max(b)] = a.min(b);
-            } else {
-                first.insert(key, row);
+            IndependenceUnit::ReferenceGroup if !referenced.contains(sample_id.as_str()) => {
+                return Err(failure(
+                    Availability::NotIdentifiable,
+                    "MISSING_REFERENCE_GROUP",
+                ))
             }
+            _ => {}
         }
     }
+    let targets: Vec<&Target> = input.targets.iter().collect();
+    let component = independence_components(input, &targets);
+    let index: HashMap<&str, usize> = input
+        .samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.sample_id.as_str(), i))
+        .collect();
+    let mut first_row = BTreeMap::<usize, usize>::new();
     let mut members = BTreeMap::<usize, Vec<usize>>::new();
-    for row in 0..n {
-        members.entry(root(&mut parent, row)).or_default().push(row);
+    for (row, sample_id) in geometry.sample_ids.iter().enumerate() {
+        let first = *first_row
+            .entry(component[index[sample_id.as_str()]])
+            .or_insert(row);
+        members.entry(first).or_default().push(row);
     }
-    // Roots are the smallest member, so units are ordered by first eligible row.
+    // Keyed by their first row, so units are ordered by first eligible row.
     let members: Vec<Vec<usize>> = members.into_values().collect();
     let (label, independent) = match input.options.independence_unit {
         IndependenceUnit::Sample => ("physical_sample", true),
@@ -1030,7 +1001,7 @@ fn resampling_metadata(
         ("independent_unit_resampling", json!(r.units.independent)),
         (
             "unit_definition",
-            json!("eligible rows merged by shared individual_id and, by independence_unit, independence_group or the single reference_group_id over all targets; never by Y values"),
+            json!("shared identity components of all samples (physical sample, individual, augmentation parent, independence_group when the unit is group, reference_group_id of every target), built before exclusions and projected on the eligible rows; never by Y values"),
         ),
         ("subsample_fraction", json!(0.8)),
         ("subsample_with_replacement", json!(false)),
