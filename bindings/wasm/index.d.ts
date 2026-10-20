@@ -8,4 +8,5 @@ export interface QualificationRuntime {
   capabilities(): unknown;
 }
 /** Creates one Rust + Methods instance. Run inside a worker to support cancellation. */
-export function createQualificationRuntime(options?: { wasmModule?: BufferSource | WebAssembly.Module }): Promise<QualificationRuntime>;
+/** `dagMlWasmModule` supplies the dag-ml-wasm module bytes (validation probe) where it cannot be fetched. */
+export function createQualificationRuntime(options?: { wasmModule?: BufferSource | WebAssembly.Module; dagMlWasmModule?: BufferSource | WebAssembly.Module }): Promise<QualificationRuntime>;

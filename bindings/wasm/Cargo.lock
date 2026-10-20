@@ -54,9 +54,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.41"
+version = "0.3.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94e72b7b755794f85848508289b636cb184679cfe66aa4915a1679733688a446"
+checksum = "d2c9b0bc2af3b25400ff1b1b05404c7cd2e6984b5b8dfd3f1dfa35fec28f7eef"
 dependencies = [
  "indexmap",
  "n4m",

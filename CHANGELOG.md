@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-10-20
 
-Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require Methods 1.3.7 (ABI 2.20; the native and WASM providers refuse older libraries with `METHODS_ABI_2_20_REQUIRED`) and, for the validation probe, dag-ml 0.3.42 (`nested_selection`; until it is published, local builds use the override `.cargo/dag-ml-local.toml`, see README). Every engine capability — `noise_proxy`, `snv_sensitivity`, `quasi_duplicates`, `duplicate_reference_conflicts`, `metadata_association_tests`, `clustering`, `confounding`, `domain_shift`, `repeatability_uncertainty` and `validation_probe` — is available but unqualified (exploratory); none is `PROTOCOL_NOT_IMPLEMENTED`.
+Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require the published Methods 1.3.7 (ABI 2.20; crates and native library, `@nirs4all/methods@1.3.7`; the native and WASM providers refuse older libraries with `METHODS_ABI_2_20_REQUIRED`) and, for the validation probe, the published dag-ml 0.3.42 (`dag-ml-core` 0.3.42 with `nested_selection`, `dag-ml-wasm@0.3.42`). The committed lock files resolve these registry releases; no local override is needed. Every engine capability — `noise_proxy`, `snv_sensitivity`, `quasi_duplicates`, `duplicate_reference_conflicts`, `metadata_association_tests`, `clustering`, `confounding`, `domain_shift`, `repeatability_uncertainty` and `validation_probe` — is available but unqualified (exploratory); none is `PROTOCOL_NOT_IMPLEMENTED`.
 
 ### Shared contracts
 
@@ -150,13 +150,12 @@ Requires Methods ABI 2.20 (`n4m_stats_correlation_test`, `n4m_stats_bh_adjust`, 
 - Metrics: `probe.plan`, `probe.folds`, `probe.oof_predictions`, `probe.rmse`, `probe.mae`, `probe.r2_oof`, `probe.skill_vs_train_mean`, `probe.train_mean_rmse`, `probe.train_mean_mae` and `probe.domain_scores`, all with `numerical_domain`. Finding: `probe.no_skill_over_train_mean.v1`.
 - Capabilities: `validation_probe`, which requires a validation provider and the four Methods kernels and is no longer `PROTOCOL_NOT_IMPLEMENTED`; `validation.nested_grouped_probe`; and `validation_probe.classification`, unavailable with `CLASSIFICATION_PROBE_NOT_QUALIFIED`.
 - The CLI (`--methods-library`), the C ABI and Python run the probe with `DagMlValidationProvider`. The npm package depends on `dag-ml-wasm` and accepts `dagMlWasmModule`.
-- Until the dag-ml release, local builds use `cargo --config .cargo/dag-ml-local.toml` against a sibling `../dag-ml`. The lock files are refreshed after dag-ml 0.3.42 and Methods 1.3.7 are published.
 - Review follow-up:
   - Selection metrics come from Methods through the DAG-ML metrics provider (native) or a JS callback (browser).
   - R² and skill beyond the double range are published as `{significand, exponent}` (`RegressionScores::r2_exponent`).
   - `independence_unit = reference_group` requires a resolved reference group per component (`REFERENCE_GROUP_UNRESOLVED`).
   - CPU and WASM parity with the scikit-learn golden covers RMSE, MAE, R², skill, baseline RMSE and per-domain RMSE and baseline RMSE, with a strictly relative tolerance.
-  - The analytic out-of-range R² case (`y_true = [2^-255, 2^-254]`, `y_pred = [2^256, 2^256]`, R² = -0.5 · 2^1025) is tested through the CPU provider and the Methods WASM kernel. It needs Methods with the four-double `n4m_stats_regression_scores` (integrate/v1.3.7, which CI pins).
+  - The analytic out-of-range R² case (`y_true = [2^-255, 2^-254]`, `y_pred = [2^256, 2^256]`, R² = -0.5 · 2^1025) is tested through the CPU provider and the Methods WASM kernel. It needs Methods with the four-double `n4m_stats_regression_scores` (Methods 1.3.7; CI builds the `v1.3.7` tag commit).
 - Example: `examples/validation_probe.json`.
 
 ### Integrated-batch review fixes (final1)
