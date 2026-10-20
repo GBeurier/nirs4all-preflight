@@ -311,6 +311,9 @@ pub fn analyze_with_validation(
         .iter()
         .map(|target| TargetReferences::new(target, &samples))
         .collect();
+    // Before sources and domain shift: confounding findings and domain-shift
+    // recommendations read the association results.
+    association::analyze_metadata_associations(input, &samples, provider, &mut report);
     for source in &input.sources {
         analyze_source(source, &samples, &references, input, provider, &mut report);
     }
@@ -318,8 +321,6 @@ pub fn analyze_with_validation(
     for target in &input.targets {
         analyze_target(target, &samples, input, provider, &mut report);
     }
-    association::analyze_metadata_associations(input, &samples, provider, &mut report);
-    // After associations: domain-shift recommendations read their results.
     domain_shift::analyze(input, &samples, provider, &mut report);
     probe::analyze(input, &samples, provider, validation_provider, &mut report);
     // Operation-specific numerical domain on success and on refusal.

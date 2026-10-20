@@ -211,6 +211,13 @@ pub(crate) fn analyze_repeats(
                         None,
                     )
                 };
+                icc.denominators.insert("n_observations".into(), rows.len());
+                icc.denominators
+                    .insert("n_physical_groups".into(), counts.len());
+                icc.parameters.insert("repeat_type".into(), json!(kind));
+                icc.parameters
+                    .insert("instrument".into(), json!(instrument));
+                icc.parameters.insert("campaign".into(), json!(campaign));
                 icc.parameters.insert(
                     "band_status_0_computed_1_insufficient_2_unbalanced_3_zero_total".into(),
                     json!(d.band_status),
@@ -922,7 +929,7 @@ pub(crate) fn balanced_repeat_sensitivity(
     let domain = format!("nirs4all-preflight\0{SENSITIVITY}\0{}", source.source_id);
     let seed = derive_seed(input.options.seed, &domain);
     let p = source.axis.len();
-    let domain = (0..p).all(|c| {
+    let within_domain = (0..p).all(|c| {
         in_domain(
             group_rows
                 .iter()
@@ -930,7 +937,7 @@ pub(crate) fn balanced_repeat_sensitivity(
                 .filter_map(|&r| valid_cell(source, r, c)),
         )
     });
-    if !domain {
+    if !within_domain {
         let mut m = Metric::unavailable(
             ID,
             Availability::Unsupported,

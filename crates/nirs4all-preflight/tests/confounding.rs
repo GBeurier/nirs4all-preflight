@@ -786,6 +786,47 @@ fn native_engine_reports_instrument_equals_campaign_as_aliased() {
         .any(|f| f.rule_id == "confounding.aliased_factors.v1"));
 }
 
+/// Associations run before confounding, so its findings cite them.
+#[test]
+fn native_confounding_findings_cite_metadata_target_associations() {
+    let Some(provider) = native() else {
+        return;
+    };
+    let mut input = crossed(6, true);
+    input.targets = vec![Target {
+        target_id: "moisture".into(),
+        kind: TargetKind::Continuous,
+        values: input
+            .samples
+            .iter()
+            .enumerate()
+            .map(|(i, s)| TargetValue {
+                sample_id: s.sample_id.clone(),
+                value: Some(10.0 + wobble(i, 5)),
+                category: None,
+                status: ReferenceStatus::Exact,
+                reference_id: None,
+                reference_group_id: None,
+            })
+            .collect(),
+        unit: None,
+    }];
+    let report = analyze(&input, &provider);
+    assert!(report
+        .metrics
+        .iter()
+        .any(|m| m.metric_id == "association.metadata_target"));
+    let aliased = report
+        .findings
+        .iter()
+        .find(|f| f.rule_id == "confounding.aliased_factors.v1")
+        .expect("aliased finding");
+    assert!(aliased
+        .evidence
+        .iter()
+        .any(|e| e == "association.metadata_target"));
+}
+
 /// examples/confounding.json: instrument × campaign partially crossed (2026
 /// holds instrument b only). Goldens are an independent NumPy 2.2.6
 /// reproduction on the reported canonical scores: R² from `lstsq` on full
