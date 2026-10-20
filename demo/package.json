@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@nirs4all/preflight": "0.1.0-alpha.2",
-    "nirs4all-ui": "github:GBeurier/nirs4all-ui#6acb0274ce7181f06e59774468e27d52e216c31b",
+    "nirs4all-ui": "github:GBeurier/nirs4all-ui#48661fd067ca92117c3696d912d3d0829c8b99a8",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },

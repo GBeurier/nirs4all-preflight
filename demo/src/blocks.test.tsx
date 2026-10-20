@@ -5,7 +5,7 @@ import type { Locale } from "nirs4all-ui/lab";
 import { buildQualificationReportView, type EngineReport } from "nirs4all-ui/qualification";
 // Synthetic reports following the preflight 0.1.0 Rust contract (one block per capability,
 // merged; plus the probe case whose R² and skill exceed the double range). Shared with the
-// nirs4all-ui tests; the published 0.1.0-alpha engine does not emit these metrics yet.
+// nirs4all-ui tests, they fix every layout case; engine.integration.test.tsx runs the real engine.
 import reportJson from "./fixtures/preflight-0.1.0-report.json";
 import extendedJson from "./fixtures/preflight-0.1.0-probe-extended.json";
 import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
