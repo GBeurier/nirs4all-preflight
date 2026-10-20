@@ -1,7 +1,20 @@
 // Plain-language control points read from engine values. A point is "ok" only for an engine
 // count of zero; nothing here is a calibrated threshold or a global score.
 import type { Locale } from "nirs4all-ui/lab";
-import { extractIntegrity, extractObservationFlow, extractPca, extractRepeatability, extractTarget, type CheckItem, type QualificationReportView } from "nirs4all-ui/qualification";
+import {
+  extractConfounding,
+  extractDomainShift,
+  extractDuplicates,
+  extractIntegrity,
+  extractObservationFlow,
+  extractPca,
+  extractProbes,
+  extractRepeatability,
+  extractTarget,
+  formatEngineNumber,
+  type CheckItem,
+  type QualificationReportView,
+} from "nirs4all-ui/qualification";
 import type { T } from "./App";
 import { fill, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
@@ -86,6 +99,8 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
     href: "#s-structure",
   });
 
+  if (sourceId) items.push(...blockChecks(view, sourceId, targetId, t, locale));
+
   const unit = input.options.independence_unit ?? "unknown";
   items.push({
     id: "unit",
@@ -97,3 +112,41 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
 }
 
 export const needsReview = (items: readonly CheckItem[]) => items.filter((i) => i.status === "attention" || i.status === "critical").length;
+
+/** Control points of the 0.1.0 blocks, only when the report carries them. */
+function blockChecks(view: QualificationReportView, sourceId: string, targetId: string | null, t: T, locale: Locale): CheckItem[] {
+  const f = (k: TextKey, vars: Record<string, string | number> = {}) => fill(t(k), vars);
+  const items: CheckItem[] = [];
+  const dups = extractDuplicates(view, sourceId).filter((d) => d.state.status === "computed");
+  const cross = dups.find((d) => d.id === "integrity.cross_partition_quasi_duplicate_pairs");
+  if (cross) {
+    items.push({ id: "quasi-leak", title: t("chkQuasiLeak"), status: (cross.pairs ?? 0) > 0 ? "critical" : "ok", detail: (cross.pairs ?? 0) > 0 ? f("chkQuasiLeakKo", { n: cross.pairs ?? 0 }) : t("chkQuasiLeakOk"), href: "#s-duplicates" });
+  }
+  const conflicts = dups.filter((d) => d.id.startsWith("reference.") && (d.targetId === targetId || targetId === null));
+  if (conflicts.length) {
+    const nConf = conflicts.reduce((acc, d) => acc + (d.pairs ?? 0), 0);
+    items.push({ id: "conflicts", title: t("chkConflicts"), status: nConf > 0 ? "attention" : "ok", detail: nConf > 0 ? f("chkConflictsKo", { n: nConf }) : t("chkConflictsOk"), href: "#s-duplicates" });
+  }
+  const conf = extractConfounding(view, sourceId);
+  if (conf?.factors.length) {
+    const aliased = conf.factors.filter((x) => x.aliasedWithOtherFactorCells && x.identifiableUnderAdditiveModel !== true).map((x) => x.factor);
+    items.push({ id: "aliased", title: t("chkAliased"), status: aliased.length ? "attention" : "ok", detail: aliased.length ? f("chkAliasedKo", { f: aliased.join(", ") }) : t("chkAliasedOk"), href: "#s-confounding" });
+  }
+  const shift = extractDomainShift(view, sourceId).filter((x) => !x.audit && x.test?.state.status === "computed");
+  if (shift.length) {
+    const rejected = shift.filter((x) => x.test?.rejects).map((x) => x.factor);
+    items.push({ id: "shift", title: t("chkShift"), status: rejected.length ? "attention" : "ok", detail: rejected.length ? f("chkShiftKo", { f: rejected.join(", ") }) : t("chkShiftOk"), href: "#s-shift" });
+  }
+  const probes = extractProbes(view).filter((p) => p.sourceId === sourceId && (!targetId || p.targetId === targetId));
+  for (const p of probes) {
+    const title = `${t("chkProbe")} · ${p.targetId}${p.estimator ? ` · ${p.estimator.toUpperCase()}` : ""}`;
+    if (p.state.status !== "computed" || !p.skill) {
+      items.push({ id: `probe-${p.targetId}-${p.estimator ?? ""}`, title, status: "unavailable", detail: f("chkProbeNa", { r: p.unavailable["probe.skill_vs_train_mean"]?.reasonCode ?? p.state.reasonCode ?? "—" }), href: "#s-probe" });
+      continue;
+    }
+    const positive = p.skill.kind === "double" ? p.skill.value > 0 : p.skill.significand > 0;
+    const s = formatEngineNumber(p.skill.kind === "double" ? p.skill.value : { significand: p.skill.significand, exponent: p.skill.exponent, representation: "significand_times_2_pow_exponent" }, locale) ?? "—";
+    items.push({ id: `probe-${p.targetId}-${p.estimator ?? ""}`, title, status: positive ? "ok" : "attention", detail: f(positive ? "chkProbeOk" : "chkProbeKo", { s }), href: "#s-probe" });
+  }
+  return items;
+}

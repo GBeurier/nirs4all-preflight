@@ -10,6 +10,7 @@ import {
   EigenvalueScree,
   EvidenceTable,
   FindingList,
+  MeasureBars,
   PopulationFlow,
   ProfileStatusBadge,
   RepeatabilityProfile,
@@ -21,18 +22,22 @@ import {
   extractObservationFlow,
   extractPca,
   extractRepeatability,
+  extractRepeatabilityUncertainty,
   extractSamplePopulations,
   extractTarget,
+  formatEngineNumber,
   metricLabel,
   observationFlowStages,
   samplePopulationStage,
   type CheckItem,
   type QualificationReportView,
+  withRepeatabilityUncertainty,
 } from "nirs4all-ui/qualification";
+import { NoiseProxyCard } from "./Blocks";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
 import { Measured } from "./Measured";
-import type { TextKey } from "./i18n";
+import { fill, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
 import { developmentTargetPoints, pcaPoints, type PcaColorBy } from "./views";
 
@@ -45,8 +50,9 @@ export interface Scope {
   targetId: string | null;
 }
 
+/** Counts exactly; other engine numbers with `digits` significant digits, exponent form outside [1e-4, 1e6). */
 const num = (v: number | null, locale: Locale, digits = 3) =>
-  v === null ? "—" : Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(digits)).toLocaleString(locale);
+  v === null || v === undefined || !Number.isFinite(v) ? "—" : Number.isInteger(v) && Math.abs(v) < 1e15 ? v.toLocaleString(locale) : (formatEngineNumber(v, locale, digits) ?? "—");
 
 export type Accent = "teal" | "cyan" | "indigo" | "amber" | "green" | "rose";
 
@@ -215,25 +221,39 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
 
 // --- 05 repeatability -------------------------------------------------------------------------
 
-export function RepeatSection({ t, locale, view, input, sourceId }: Scope) {
+export function RepeatSection(scope: Scope) {
+  const { t, locale, view, input, sourceId } = scope;
   const source = input.sources.find((s) => s.source_id === sourceId);
-  const contexts = sourceId ? extractRepeatability(view, sourceId) : [];
-  const reasons = view.metrics.filter((m) => m.sourceId === sourceId && m.id.startsWith("measurement.") && m.status !== "computed");
+  const uncertainty = sourceId ? extractRepeatabilityUncertainty(view, sourceId) : [];
+  const contexts = sourceId ? withRepeatabilityUncertainty(extractRepeatability(view, sourceId), uncertainty) : [];
+  const reasons = view.metrics.filter((m) => m.sourceId === sourceId && m.id.startsWith("measurement.") && !m.id.startsWith("measurement.noise_proxy") && m.status !== "computed");
+  const counts = uncertainty.filter((u) => u.repeatCounts?.histogram.length);
   return (
     <Section id="s-repeat" icon="repeat" accent="green" title={t("repeatTitle")} lead={t("repeatLead")}>
       <div className="card">
         {contexts.length && source ? (
           <>
             <Measured>{(w) => <RepeatabilityProfile axis={source.axis} axisUnit={source.axis_unit ?? ""} contexts={contexts} title={`${t("repeatTitle")} — ${source.source_id}`} locale={locale} width={w} />}</Measured>
-            <p className="hint">{t("hoverHint")}</p>
+            <p className="hint">{t("hoverHint")}{contexts.some((c) => c.sdInterval || c.iccInterval) ? ` ${t("repeatUncertaintyHint")}` : ""}</p>
           </>
         ) : (
           <div className="empty">
             <p>{t("repeatNone")}</p>
-            {reasons.map((m, i) => <p key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></p>)}
           </div>
         )}
+        {reasons.length ? <ul className="plain small">{reasons.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul> : null}
       </div>
+      {counts.length || source ? (
+        <div className="grid-2 flow-gap-sm">
+          {counts.map((u) => (
+            <div className="card" key={u.id}>
+              <h3 className="card-title">{metricLabel("measurement.repeat_counts", locale)} <span className="unit">· {u.id}</span></h3>
+              <Measured>{(w) => <MeasureBars width={w} title={`${metricLabel("measurement.repeat_counts", locale)} — ${u.id}`} valueLabel={t("physicalGroups")} locale={locale} rows={u.repeatCounts!.histogram.map((h) => ({ id: String(h.r), label: fill(t("repeatsR"), { r: h.r }), value: h.nGroups }))} />}</Measured>
+            </div>
+          ))}
+          {source ? <NoiseProxyCard {...scope} axis={source.axis} /> : null}
+        </div>
+      ) : null}
     </Section>
   );
 }

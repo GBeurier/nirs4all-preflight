@@ -9,6 +9,7 @@ import type { EngineValidation } from "./engine";
 import { fill, type TextKey } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { countIndependenceGroups, defaultConfig, parseSeed, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
+import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
 type View = "data" | "diagnosis" | "evidence" | "export";
@@ -205,12 +206,19 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           <>
             <DiagnosisSummary {...scope} checks={checks} />
             <nav className="chip-nav" aria-label={t("diagCharts")}>
-              {DIAG_LINKS.map((l) => <a key={l.id} href={`#${l.id}`} className="chip-link">{t(l.label)}</a>)}
+              {[...DIAG_LINKS, ...presentSections(scope)].map((l) => <a key={l.id} href={`#${l.id}`} className="chip-link">{t(l.label)}</a>)}
             </nav>
             <PopulationsSection {...scope} />
+            <DuplicatesSection {...scope} />
             <StructureSection key={`pca-${source ?? ""}`} {...scope} />
+            <SensitivitySection {...scope} />
+            <ClusteringSection {...scope} />
             <RepeatSection {...scope} />
             <TargetSection {...scope} />
+            <AssociationSection {...scope} />
+            <ConfoundingSection {...scope} />
+            <DomainShiftSection {...scope} />
+            <ProbeSection {...scope} />
             <NextStep label={t("stepEvidence")} t={t} onClick={() => go("evidence")} />
           </>
         ) : null}
