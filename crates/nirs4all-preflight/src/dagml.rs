@@ -57,6 +57,28 @@ pub fn dag_error(error: dag_ml_core::DagMlError) -> ProviderError {
     .with_detail(error.to_string())
 }
 
+/// A failed nested selection, mapped identically on CPU and in WASM. The
+/// first provider error raised by the selection-metrics callback (`cause`)
+/// keeps its kind and reason, with the DAG-ML message as detail. Otherwise a
+/// Methods numerical-domain refusal reported through a controller (the
+/// DAG-ML message contains [`METHODS_DOMAIN_MESSAGE`]) is `unsupported`
+/// with reason [`NUMERICAL_DOMAIN_EXCEEDED`]; any other failure stays the
+/// host's `ordinary` provider error. `ordinary` carries the DAG-ML message
+/// as its detail.
+pub fn nested_selection_failure(
+    cause: Option<ProviderError>,
+    ordinary: ProviderError,
+) -> ProviderError {
+    let detail = ordinary.detail.clone().unwrap_or_default();
+    match cause {
+        Some(cause) => cause.with_detail(detail),
+        None if detail.contains(METHODS_DOMAIN_MESSAGE) => {
+            ProviderError::unsupported(NUMERICAL_DOMAIN_EXCEEDED).with_detail(detail)
+        }
+        None => ordinary,
+    }
+}
+
 fn contract(e: impl std::fmt::Display) -> ProviderError {
     ProviderError::internal("DAG_ML_CONTRACT_TRANSLATION_FAILED").with_detail(e.to_string())
 }
@@ -509,9 +531,8 @@ mod native {
                 &rows,
                 &metrics,
             )
-            .map_err(|e| match metrics.error.borrow_mut().take() {
-                Some(provider) => provider.with_detail(e.to_string()),
-                None => dag_error(e),
+            .map_err(|e| {
+                nested_selection_failure(metrics.error.borrow_mut().take(), dag_error(e))
             })?;
             let library = self
                 .runtime

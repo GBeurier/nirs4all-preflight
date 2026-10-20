@@ -13,6 +13,7 @@ const invalid = reason => Object.assign(new TypeError(reason), { providerKind: '
  * and reason by the Rust engine exactly as the native adapter maps
  * n4m_status_t and n4m_context_last_error. */
 function providerError(error) {
+  if (error?.providerWire) return error.providerWire;
   if (error instanceof methods.N4mError) return { methods_status: error.status, message: error.message };
   if (error?.providerKind) {
     return { kind: error.providerKind, reason: error.message, ...(error.providerDetail ? { detail: error.providerDetail } : {}) };
@@ -20,14 +21,13 @@ function providerError(error) {
   return { kind: 'internal', reason: 'METHODS_CALLBACK_FAILED' };
 }
 
-/** DAG-ML refusals and execution failures keep their message as detail; a
- * Methods domain refusal raised inside the metrics callback keeps its reason. */
-const dagFailure = error => {
-  const detail = String(error?.message ?? error);
-  return detail.includes(DOMAIN_MESSAGE)
-    ? Object.assign(new Error(NUMERICAL_DOMAIN_EXCEEDED), { providerKind: 'unsupported', providerDetail: detail })
-    : Object.assign(new Error('DAG_ML_WASM_NESTED_SELECTION_FAILED'), { providerKind: 'internal', providerDetail: detail });
-};
+/** A failed nested selection travels as its DAG-ML message plus the first
+ * error raised by the selection-metrics callback; the Rust engine maps both
+ * exactly as the native provider (`dagml::nested_selection_failure`), so the
+ * Methods domain message and reason are never duplicated here. */
+const dagFailure = (error, cause) => Object.assign(new Error('DAG_ML_WASM_NESTED_SELECTION_FAILED'), {
+  providerWire: { dag_ml_failure: String(error?.message ?? error), cause: cause === undefined ? null : providerError(cause) },
+});
 
 /** Optional dag-ml-wasm (nested grouped selection) in the same worker. */
 async function loadDagMl(options) {
@@ -270,22 +270,28 @@ export async function createQualificationRuntime(options = {}) {
           resolveTargets: ({ sampleIds }) => ({ sampleIds: [...sampleIds], matrix: pick(sampleIds, i => [rows.y[i]]) }),
         });
         try {
-          let outcome;
+          let outcome, cause;
           try {
             // Selection metrics come from Methods; DAG-ML keeps the
             // comparison and the tie rule. mse is the square of the RMSE.
+            // The first error raised here is kept as the failure cause.
             const metrics = (name, payload) => {
-              const { y_true, y_pred } = JSON.parse(payload);
-              const s = methods.statsRegressionScores(Float64Array.from(y_true), Float64Array.from(y_pred));
-              if (name === 'rmse') return s.rmse;
-              if (name === 'mse') return s.rmse * s.rmse;
-              if (name === 'mae') return s.mae;
-              throw invalid('UNSUPPORTED_SELECTION_METRIC');
+              try {
+                const { y_true, y_pred } = JSON.parse(payload);
+                const s = methods.statsRegressionScores(Float64Array.from(y_true), Float64Array.from(y_pred));
+                if (name === 'rmse') return s.rmse;
+                if (name === 'mse') return s.rmse * s.rmse;
+                if (name === 'mae') return s.mae;
+                throw invalid('UNSUPPORTED_SELECTION_METRIC');
+              } catch (error) {
+                cause ??= error;
+                throw error;
+              }
             };
             outcome = dag.dagMl.execute_nested_selection_json(JSON.stringify(nestedRequest),
               JSON.stringify([controller.manifest(dag.dagMl)]), JSON.stringify(envelope), controller.callback, metrics);
           } catch (error) {
-            throw dagFailure(error);
+            throw dagFailure(error, cause);
           }
           result = JSON.parse(outcome);
         } finally {

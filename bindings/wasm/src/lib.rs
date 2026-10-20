@@ -26,11 +26,7 @@ impl CallbackProvider<'_> {
             .ok_or_else(|| ProviderError::internal("METHODS_CALLBACK_MUST_RETURN_JSON_STRING"))?;
         match serde_json::from_str(&text) {
             Ok(Reply::Ok(value)) => Ok(value),
-            Ok(Reply::ProviderError(WireError::Methods {
-                methods_status,
-                message,
-            })) => Err(ProviderError::from_methods_error(methods_status, &message)),
-            Ok(Reply::ProviderError(WireError::Adapter(error))) => Err(error),
+            Ok(Reply::ProviderError(error)) => Err(error.into_provider_error()),
             Err(_) => Err(ProviderError::internal("METHODS_CALLBACK_INVALID_RESPONSE")),
         }
     }
@@ -47,11 +43,37 @@ enum Reply<T> {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WireError {
+    /// A failed dag-ml-wasm nested selection: its message and the first
+    /// error of the selection-metrics callback, mapped by the engine exactly
+    /// as on CPU (`dagml::nested_selection_failure`).
+    NestedSelection {
+        dag_ml_failure: String,
+        cause: Option<Box<WireError>>,
+    },
     Methods {
         methods_status: i32,
         message: String,
     },
     Adapter(ProviderError),
+}
+impl WireError {
+    fn into_provider_error(self) -> ProviderError {
+        match self {
+            Self::NestedSelection {
+                dag_ml_failure,
+                cause,
+            } => dagml::nested_selection_failure(
+                cause.map(|c| c.into_provider_error()),
+                ProviderError::internal("DAG_ML_WASM_NESTED_SELECTION_FAILED")
+                    .with_detail(dag_ml_failure),
+            ),
+            Self::Methods {
+                methods_status,
+                message,
+            } => ProviderError::from_methods_error(methods_status, &message),
+            Self::Adapter(error) => error,
+        }
+    }
 }
 impl MethodsProvider for CallbackProvider<'_> {
     fn capabilities(&self) -> Vec<Capability> {

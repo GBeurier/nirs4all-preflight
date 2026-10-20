@@ -490,3 +490,42 @@ fn probe_is_correct_or_explicit_inside_the_domain_and_refuses_outside() {
         Some("NUMERICAL_DOMAIN_EXCEEDED")
     );
 }
+
+/// Review final1 P0 (CPU/WASM parity): both validation providers map a failed
+/// nested selection with `dagml::nested_selection_failure`. A Methods domain
+/// refusal from the metrics callback, or reported by a controller inside the
+/// DAG-ML message, is `unsupported` NUMERICAL_DOMAIN_EXCEEDED with the DAG-ML
+/// message as detail; any other failure stays the host provider error.
+#[test]
+fn nested_selection_failures_keep_their_cause_and_domain_refusals() {
+    use nirs4all_preflight::dagml::nested_selection_failure;
+    let refusal = format!("N4M_ERR_UNSUPPORTED: {METHODS_DOMAIN_MESSAGE} (spread above 2^32)");
+    let ordinary = |detail: &str| {
+        ProviderError::internal("DAG_ML_WASM_NESTED_SELECTION_FAILED").with_detail(detail)
+    };
+    let from_metrics = nested_selection_failure(
+        Some(ProviderError::from_methods_error(10, &refusal)),
+        ordinary("selection metric callback failed"),
+    );
+    assert_eq!(
+        from_metrics,
+        ProviderError::unsupported(NUMERICAL_DOMAIN_EXCEEDED)
+            .with_detail("selection metric callback failed")
+    );
+    let from_controller =
+        nested_selection_failure(None, ordinary(&format!("controller failed: {refusal}")));
+    assert_eq!(
+        from_controller,
+        ProviderError::unsupported(NUMERICAL_DOMAIN_EXCEEDED)
+            .with_detail(format!("controller failed: {refusal}"))
+    );
+    let plain = nested_selection_failure(None, ordinary("fold assignment failed"));
+    assert_eq!(plain, ordinary("fold assignment failed"));
+    assert!(matches!(plain.availability(), Availability::Error));
+    let numerical = nested_selection_failure(
+        Some(ProviderError::from_methods_error(7, "NumericalFailure")),
+        ordinary("metric failed"),
+    );
+    assert_eq!(numerical.reason, "METHODS_NUMERICAL_FAILURE");
+    assert!(matches!(numerical.availability(), Availability::Error));
+}

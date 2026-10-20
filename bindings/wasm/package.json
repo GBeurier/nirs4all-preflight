@@ -32,7 +32,7 @@
   },
   "scripts": {
     "build:native": "wasm-pack build . --target web --out-dir native --release && node scripts/prepare-native.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test --experimental-test-module-mocks tests/*.test.mjs",
     "prepack": "npm run build:native"
   },
   "publishConfig": {
