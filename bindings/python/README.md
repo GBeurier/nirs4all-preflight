@@ -13,6 +13,6 @@ with open('report.html', 'w') as f:
     f.write(report_html(report))
 ```
 
-Inputs must follow the canonical JSON schema shown in the repository examples. Dataset assembly and vendor decoding remain in nirs4all-io and nirs4all-formats. The alpha does not include the nested validation probe, calibrated inferential tests, qualified clustering or domain shift; clustering is exploratory. Capabilities and limitations are present in every report.
+Inputs must follow the canonical JSON schema shown in the repository examples. Dataset assembly and vendor decoding remain in nirs4all-io and nirs4all-formats. The grouped PLS/PCR validation probe runs through DAG-ML nested selection and is exploratory, as is clustering. Version 0.1.0 does not include calibrated inferential tests, qualified clustering or domain shift. Capabilities and limitations are present in every report.
 
 `N4PF_LIBRARY_PATH` selects the Rust C ABI library; `N4M_LIBRARY_PATH` selects a compatible Methods library (ABI 2.20 or newer). Each analysis owns a separate native context. The Python binding does not implement scientific calculations.

@@ -2505,8 +2505,13 @@ pub struct RegressionScoresRequest {
 pub struct RegressionScores {
     pub rmse: f64,
     pub mae: f64,
-    /// `None` (undefined) when the target is constant.
+    /// R² significand: R² = r2 * 2^r2_exponent; `None` (undefined) when the
+    /// target is constant.
     pub r2: Option<f64>,
+    /// 0 whenever R² is a double; otherwise R² = -SSE/SST is scaled
+    /// (Methods `n4m_stats_regression_scores`).
+    #[serde(default)]
+    pub r2_exponent: i32,
     pub backend_version: String,
 }
 
@@ -2585,7 +2590,6 @@ pub struct ProbeScores {
     pub mse: f64,
     pub rmse: f64,
     pub mae: f64,
-    pub r2: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

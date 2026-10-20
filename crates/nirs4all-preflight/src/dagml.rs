@@ -295,7 +295,6 @@ pub fn probe_result(
             mse: metric("mse")?,
             rmse: metric("rmse")?,
             mae: metric("mae")?,
-            r2: metric("r2")?,
         },
         n_fits: outcome.n_fits,
         backend_version: format!("{BACKEND} schema {}; {backend}", outcome.schema_version),
@@ -306,18 +305,61 @@ pub fn probe_result(
 mod native {
     use super::*;
     use dag_ml_core::{
-        derive_host_controller_registry, execute_nested_selection,
+        derive_host_controller_registry, execute_nested_selection_with_metrics,
         methods_estimator_host_controller_specs, register_methods_estimator_controllers,
         ControllerId, DataBinding, DataMaterializationRequest, DataViewRequest, HandleKind,
         HandleRef, MethodsPlsData, MethodsPlsDataRequest, MethodsPlsDataset, MethodsPlsMatrix,
-        MethodsRuntime, RuntimeControllerRegistry, RuntimeDataProvider, TrainingDataIdentity,
+        MethodsRuntime, NestedSelectionMetrics, RegressionMetricKind, RuntimeControllerRegistry,
+        RuntimeDataProvider, TrainingDataIdentity,
     };
+    use std::cell::RefCell;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// CPU validation provider: DAG-ML with its native Methods role controllers.
+    /// CPU validation provider: DAG-ML with its native Methods role controllers;
+    /// selection metrics come from Methods `n4m_stats_regression_scores`.
     pub struct DagMlValidationProvider {
         runtime: MethodsRuntime,
+        methods: crate::native::NativeMethodsProvider,
+    }
+
+    /// DAG-ML selection metrics through Methods. The first provider error is
+    /// kept so its kind and reason (e.g. `NUMERICAL_DOMAIN_EXCEEDED`) survive.
+    struct MethodsMetrics<'a> {
+        methods: &'a crate::native::NativeMethodsProvider,
+        error: RefCell<Option<ProviderError>>,
+    }
+
+    impl NestedSelectionMetrics for MethodsMetrics<'_> {
+        fn regression_metric(
+            &self,
+            metric: RegressionMetricKind,
+            y_true: &[f64],
+            y_pred: &[f64],
+        ) -> dag_ml_core::Result<f64> {
+            let scores = self
+                .methods
+                .regression_scores(&RegressionScoresRequest {
+                    y_true: y_true.to_vec(),
+                    y_pred: y_pred.to_vec(),
+                })
+                .map_err(|e| {
+                    let reason = e.reason.clone();
+                    self.error.borrow_mut().get_or_insert(e);
+                    dag_ml_core::DagMlError::RuntimeValidation(format!(
+                        "Methods regression scores refused: {reason}"
+                    ))
+                })?;
+            match metric {
+                RegressionMetricKind::Rmse => Ok(scores.rmse),
+                RegressionMetricKind::Mse => Ok(scores.rmse * scores.rmse),
+                RegressionMetricKind::Mae => Ok(scores.mae),
+                other => Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                    "metric `{}` is not a probe selection metric",
+                    other.name()
+                ))),
+            }
+        }
     }
 
     impl DagMlValidationProvider {
@@ -326,8 +368,9 @@ mod native {
             let library = std::fs::canonicalize(library).map_err(|e| {
                 ProviderError::unsupported("METHODS_LIBRARY_LOAD_FAILED").with_detail(e.to_string())
             })?;
+            let methods = crate::native::NativeMethodsProvider::load(&library)?;
             MethodsRuntime::configure(library)
-                .map(|runtime| Self { runtime })
+                .map(|runtime| Self { runtime, methods })
                 .map_err(|e| {
                     ProviderError::unsupported("DAG_ML_METHODS_RUNTIME_UNAVAILABLE")
                         .with_detail(e.to_string())
@@ -455,8 +498,21 @@ mod native {
                 probe: &probe,
                 next: AtomicU64::new(0),
             };
-            let outcome = execute_nested_selection(&probe.request, &registry, &controllers, &rows)
-                .map_err(dag_error)?;
+            let metrics = MethodsMetrics {
+                methods: &self.methods,
+                error: RefCell::new(None),
+            };
+            let outcome = execute_nested_selection_with_metrics(
+                &probe.request,
+                &registry,
+                &controllers,
+                &rows,
+                &metrics,
+            )
+            .map_err(|e| match metrics.error.borrow_mut().take() {
+                Some(provider) => provider.with_detail(e.to_string()),
+                None => dag_error(e),
+            })?;
             let library = self
                 .runtime
                 .library_path()

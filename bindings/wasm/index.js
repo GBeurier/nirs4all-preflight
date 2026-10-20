@@ -20,10 +20,14 @@ function providerError(error) {
   return { kind: 'internal', reason: 'METHODS_CALLBACK_FAILED' };
 }
 
-/** DAG-ML refusals and execution failures keep their message as detail. */
-const dagFailure = error => Object.assign(new Error('DAG_ML_WASM_NESTED_SELECTION_FAILED'), {
-  providerKind: 'internal', providerDetail: String(error?.message ?? error),
-});
+/** DAG-ML refusals and execution failures keep their message as detail; a
+ * Methods domain refusal raised inside the metrics callback keeps its reason. */
+const dagFailure = error => {
+  const detail = String(error?.message ?? error);
+  return detail.includes(DOMAIN_MESSAGE)
+    ? Object.assign(new Error(NUMERICAL_DOMAIN_EXCEEDED), { providerKind: 'unsupported', providerDetail: detail })
+    : Object.assign(new Error('DAG_ML_WASM_NESTED_SELECTION_FAILED'), { providerKind: 'internal', providerDetail: detail });
+};
 
 /** Optional dag-ml-wasm (nested grouped selection) in the same worker. */
 async function loadDagMl(options) {
@@ -242,7 +246,7 @@ export async function createQualificationRuntime(options = {}) {
       case 'regression_scores': {
         if (!request.y_true.length || request.y_true.length !== request.y_pred.length) throw invalid('INVALID_REGRESSION_SCORES_REQUEST');
         const output = methods.statsRegressionScores(Float64Array.from(request.y_true), Float64Array.from(request.y_pred));
-        result = { rmse: output.rmse, mae: output.mae, r2: nullable(output.r2), backend_version };
+        result = { rmse: output.rmse, mae: output.mae, r2: nullable(output.r2), r2_exponent: output.r2Exponent, backend_version };
         break;
       }
       case 'validation_capabilities': {
@@ -268,8 +272,18 @@ export async function createQualificationRuntime(options = {}) {
         try {
           let outcome;
           try {
+            // Selection metrics come from Methods; DAG-ML keeps the
+            // comparison and the tie rule. mse is the square of the RMSE.
+            const metrics = (name, payload) => {
+              const { y_true, y_pred } = JSON.parse(payload);
+              const s = methods.statsRegressionScores(Float64Array.from(y_true), Float64Array.from(y_pred));
+              if (name === 'rmse') return s.rmse;
+              if (name === 'mse') return s.rmse * s.rmse;
+              if (name === 'mae') return s.mae;
+              throw invalid('UNSUPPORTED_SELECTION_METRIC');
+            };
             outcome = dag.dagMl.execute_nested_selection_json(JSON.stringify(nestedRequest),
-              JSON.stringify([controller.manifest(dag.dagMl)]), JSON.stringify(envelope), controller.callback);
+              JSON.stringify([controller.manifest(dag.dagMl)]), JSON.stringify(envelope), controller.callback, metrics);
           } catch (error) {
             throw dagFailure(error);
           }

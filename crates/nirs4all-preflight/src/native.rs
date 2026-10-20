@@ -1385,8 +1385,8 @@ impl MethodsProvider for NativeMethodsProvider {
         {
             return Err(ProviderError::internal("INVALID_REGRESSION_SCORES_REQUEST"));
         }
-        let mut out = [f64::NAN; 3];
-        // SAFETY: both inputs hold n finite values; out holds three doubles.
+        let mut out = [f64::NAN; 4];
+        // SAFETY: both inputs hold n finite values; out holds four doubles.
         self.check(unsafe {
             (self.regression_scores_fn)(
                 self.context,
@@ -1400,6 +1400,7 @@ impl MethodsProvider for NativeMethodsProvider {
             rmse: out[0],
             mae: out[1],
             r2: out[2].is_finite().then_some(out[2]),
+            r2_exponent: out[3] as i32,
             backend_version: self.version.clone(),
         })
     }

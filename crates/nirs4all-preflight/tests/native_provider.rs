@@ -1180,3 +1180,36 @@ fn rank_two_spectra_drop_unresolved_components_before_downstream_metrics() {
         partition.reason_code
     );
 }
+
+#[test]
+fn regression_scores_publish_an_out_of_range_r2_scaled() {
+    let Ok(path) = std::env::var("N4M_LIBRARY_PATH") else {
+        return;
+    };
+    let provider = NativeMethodsProvider::load(path).expect("compatible Methods ABI");
+    // Rational oracle: SST = 2^-511, SSE = 2^513, R² = 1 - 2^1024 = -0.5 * 2^1025.
+    let s = provider
+        .regression_scores(&RegressionScoresRequest {
+            y_true: vec![2f64.powi(-255), 2f64.powi(-254)],
+            y_pred: vec![2f64.powi(256), 2f64.powi(256)],
+        })
+        .unwrap();
+    assert_eq!(s.rmse, 2f64.powi(256));
+    assert_eq!((s.r2, s.r2_exponent), (Some(-0.5), 1025));
+    // Constant target: undefined, distinct from the scaled case.
+    let c = provider
+        .regression_scores(&RegressionScoresRequest {
+            y_true: vec![2.0, 2.0],
+            y_pred: vec![1.0, 3.0],
+        })
+        .unwrap();
+    assert_eq!((c.r2, c.r2_exponent), (None, 0));
+    // Outside the domain: explicit refusal with the shared reason.
+    let e = provider
+        .regression_scores(&RegressionScoresRequest {
+            y_true: vec![1.0, 2f64.powi(33)],
+            y_pred: vec![1.0, 1.0],
+        })
+        .unwrap_err();
+    assert_eq!(e.reason, NUMERICAL_DOMAIN_EXCEEDED);
+}

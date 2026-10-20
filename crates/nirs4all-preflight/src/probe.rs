@@ -367,6 +367,16 @@ fn population(
     ] {
         denominators.insert(key.into(), excluded.get(key).copied().unwrap_or(0));
     }
+    // With `reference_group` units, every retained component must carry a
+    // resolved reference group of this target, possibly through another
+    // (even excluded) sample of the component; an unresolved one would act as
+    // a singleton and could hide a dependence across folds.
+    let resolved_reference: BTreeSet<usize> = target
+        .values
+        .iter()
+        .filter(|v| v.reference_group_id.is_some())
+        .filter_map(|v| index.get(v.sample_id.as_str()).map(|&i| roots[i]))
+        .collect();
     let mut rows = Vec::with_capacity(kept.len());
     for (sample_id, domain, _) in &kept {
         let s = samples[sample_id.as_str()];
@@ -374,6 +384,9 @@ fn population(
             return Err((Availability::NotIdentifiable, "MISSING_INDEPENDENCE_GROUP").into());
         }
         let root = roots[index[sample_id.as_str()]];
+        if unit == IndependenceUnit::ReferenceGroup && !resolved_reference.contains(&root) {
+            return Err((Availability::NotIdentifiable, "REFERENCE_GROUP_UNRESOLVED").into());
+        }
         rows.push(Row {
             y: y_of[sample_id.as_str()],
             sample_id: sample_id.clone(),
@@ -632,11 +645,10 @@ fn validate_result(
     }
     let m = &result.model;
     if seen != all
-        || ![m.mse, m.rmse, m.mae, m.r2].iter().all(|v| v.is_finite())
+        || ![m.mse, m.rmse, m.mae].iter().all(|v| v.is_finite())
         || m.mse < 0.0
         || m.rmse < 0.0
         || m.mae < 0.0
-        || m.r2 > 1.0
     {
         return Err(invalid("INVALID_PROVIDER_RESULT"));
     }
@@ -656,20 +668,71 @@ fn scores(
     let s = methods.regression_scores(&RegressionScoresRequest { y_true, y_pred })?;
     if !(s.rmse.is_finite() && s.mae.is_finite() && s.rmse >= 0.0 && s.mae >= 0.0)
         || s.r2.is_some_and(|v| !v.is_finite() || v > 1.0)
+        || (s.r2_exponent != 0 && s.r2.is_none_or(|v| !(-1.0 < v && v <= -0.5)))
     {
         return Err(invalid("INVALID_PROVIDER_RESULT"));
     }
     Ok(s)
 }
 
-/// `1 - SSE_model / SSE_train_mean` on identical rows (ratio of mean squares).
-fn skill(model: &RegressionScores, baseline: &RegressionScores) -> Result<f64, Failure> {
-    let base = baseline.rmse * baseline.rmse;
-    if base > 0.0 {
-        Ok(1.0 - model.rmse * model.rmse / base)
-    } else {
-        Err((Availability::Undefined, "ZERO_TRAIN_MEAN_ERROR").into())
+/// `significand * 2^exponent`, with exponent 0 for an ordinary double. Ratios
+/// of finite errors can exceed the double range inside the numerical domain;
+/// they are published scaled, never as an infinity or an absent value.
+#[derive(Debug, Clone, Copy)]
+struct Scaled {
+    significand: f64,
+    exponent: i32,
+}
+
+impl Scaled {
+    fn value(self) -> Value {
+        if self.exponent == 0 {
+            json!(self.significand)
+        } else {
+            json!({"significand": self.significand, "exponent": self.exponent,
+                   "representation": "significand_times_2_pow_exponent"})
+        }
     }
+    fn is_nonpositive(self) -> bool {
+        self.significand <= 0.0
+    }
+}
+
+/// Mantissa in [0.5, 1) and exponent of a positive normal double.
+fn split(x: f64) -> (f64, i32) {
+    let exponent = ((x.to_bits() >> 52) & 0x7ff) as i32 - 1022;
+    (
+        f64::from_bits((x.to_bits() & !(0x7ff << 52)) | (1022u64 << 52)),
+        exponent,
+    )
+}
+
+/// `1 - SSE_model / SSE_train_mean` on identical rows (ratio of mean
+/// squares), scaled when the ratio exceeds the double range.
+fn skill(model: &RegressionScores, baseline: &RegressionScores) -> Result<Scaled, Failure> {
+    let (num, den) = (model.rmse * model.rmse, baseline.rmse * baseline.rmse);
+    if den <= 0.0 {
+        return Err((Availability::Undefined, "ZERO_TRAIN_MEAN_ERROR").into());
+    }
+    if num == 0.0 {
+        return Ok(Scaled {
+            significand: 1.0,
+            exponent: 0,
+        });
+    }
+    let ((mn, en), (md, ed)) = (split(num), split(den));
+    if en - ed < 1000 {
+        return Ok(Scaled {
+            significand: 1.0 - num / den,
+            exponent: 0,
+        });
+    }
+    // 1 is below the resolution of a ratio >= 2^999: skill = -num/den.
+    let (m, e) = split(mn / md);
+    Ok(Scaled {
+        significand: -m,
+        exponent: en - ed + e,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -762,7 +825,6 @@ fn run_probe(
     if !close(reported.rmse, model.rmse, y_scale)
         || !close(reported.mae, model.mae, y_scale)
         || !close(reported.mse, model.rmse * model.rmse, y_scale * y_scale)
-        || model.r2.is_some_and(|r2| !close(reported.r2, r2, 1.0))
     {
         return Err(invalid("PROVIDER_SCORES_DISAGREE_WITH_METHODS"));
     }
@@ -925,7 +987,11 @@ fn run_probe(
         report,
         "probe.r2_oof",
         if let (true, Some(r2)) = (y_varies, model.r2) {
-            Ok(json!(r2))
+            Ok(Scaled {
+                significand: r2,
+                exponent: model.r2_exponent,
+            }
+            .value())
         } else {
             Err((Availability::Undefined, "ZERO_EVALUATION_TARGET_VARIANCE").into())
         },
@@ -936,7 +1002,7 @@ fn run_probe(
     push(
         report,
         "probe.skill_vs_train_mean",
-        skill_value.map(|v| json!(v)),
+        skill_value.map(Scaled::value),
         false,
     );
     push(
@@ -957,7 +1023,7 @@ fn run_probe(
         domain_scores(rows, &result, &train_mean, methods),
         false,
     );
-    if skill_finding.is_some_and(|v| v <= 0.0) {
+    if skill_finding.is_some_and(Scaled::is_nonpositive) {
         report.findings.push(Finding {
             rule_id: "probe.no_skill_over_train_mean.v1".into(),
             severity: "info".into(),
@@ -1013,7 +1079,7 @@ fn domain_scores(
             "mae": model.mae,
             "train_mean_rmse": baseline.rmse,
             "train_mean_mae": baseline.mae,
-            "skill_vs_train_mean": skill(&model, &baseline).ok(),
+            "skill_vs_train_mean": skill(&model, &baseline).ok().map(Scaled::value),
         }));
     }
     Ok(json!(out))
