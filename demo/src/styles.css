@@ -290,3 +290,16 @@ code{font-size:.85em}
   .ready-cta{display:none}
   .ws-head-inner{align-items:flex-start}
 }
+
+/* ── 0.1.0 capability blocks ── */
+.grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:18px;margin-top:18px}
+.section > .card + .card,.section > .card + .card-flush,.section > .card-flush + .card,.section > .stats + .grid-2,.section > .grid-2 + .card,.section > .grid-3-2 + .grid-2,.section > .grid-2 + .card-flush{margin-top:18px}
+.flow-gap-sm{margin-top:18px}
+.help{margin:-6px 0 12px;max-width:68ch}
+.unavailable{margin-top:14px}
+.tag-warn{margin-left:8px;font-size:.66rem;color:#b45309;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.45)}
+:root[data-theme=dark] .tag-warn{color:#fbbf24}
+.section .tag{vertical-align:middle}
+.probe + .probe{margin-top:28px;padding-top:24px;border-top:1px solid var(--border)}
+.probe > .card-title{margin-bottom:0}
+.card .n4q-matrix caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
