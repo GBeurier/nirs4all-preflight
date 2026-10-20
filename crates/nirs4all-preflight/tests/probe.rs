@@ -105,7 +105,6 @@ impl ValidationProvider for Spy {
             mse: 1.0,
             rmse: 1.0,
             mae: 1.0,
-            r2: 0.0,
         };
         Ok(ProbeResult {
             outer_folds: (0..request.outer_splits)
@@ -450,4 +449,198 @@ fn missing_methods_kernels_make_the_probe_unavailable_before_any_fit() {
         .find(|c| c.capability_id == "validation_probe")
         .unwrap();
     assert!(!capability.available);
+}
+
+#[test]
+fn reference_group_units_require_a_resolved_reference_group_before_any_fit() {
+    // No reference group at all: every component would be a singleton.
+    let mut x = input(12);
+    x.options.independence_unit = IndependenceUnit::ReferenceGroup;
+    let spy = Spy::default();
+    let report = analyze_with_validation(&x, &Kernels, &spy);
+    assert!(spy.requests.borrow().is_empty());
+    assert_eq!(reason(&report), Some("REFERENCE_GROUP_UNRESOLVED"));
+    // Every sample but s04 carries a group; s04 is resolved only through s10,
+    // an excluded (censored) sample of the same individual.
+    for (i, v) in x.targets[0].values.iter_mut().enumerate() {
+        if i != 4 {
+            v.reference_group_id = Some(format!("rg{i}"));
+        }
+    }
+    x.targets[0].values[10].status = ReferenceStatus::Censored;
+    x.samples[4].individual_id = Some("bridge".into());
+    x.samples[10].individual_id = Some("bridge".into());
+    let spy = Spy::default();
+    let report = analyze_with_validation(&x, &Kernels, &spy);
+    assert_eq!(spy.requests.borrow().len(), 1);
+    assert_eq!(reason(&report), Some("SPY_NO_FIT"));
+    // Without the bridge, s04 is unresolved again.
+    x.samples[10].individual_id = None;
+    let spy = Spy::default();
+    let report = analyze_with_validation(&x, &Kernels, &spy);
+    assert!(spy.requests.borrow().is_empty());
+    assert_eq!(reason(&report), Some("REFERENCE_GROUP_UNRESOLVED"));
+}
+
+/// Kernels with test-only summary and regression scores; `huge_r2` makes
+/// every R² the scaled value -0.5 * 2^1025 (SSE/SST beyond the double range).
+struct Scoring {
+    huge_r2: bool,
+}
+impl MethodsProvider for Scoring {
+    fn capabilities(&self) -> Vec<Capability> {
+        Kernels.capabilities()
+    }
+    fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        Kernels.pca(r)
+    }
+    fn repeatability(
+        &self,
+        r: &RepeatabilityRequest,
+    ) -> Result<RepeatabilityDiagnostics, ProviderError> {
+        Kernels.repeatability(r)
+    }
+    fn group_means(&self, r: &GroupMeansRequest) -> Result<GroupMeansDiagnostics, ProviderError> {
+        Kernels.group_means(r)
+    }
+    fn summary(&self, r: &SummaryRequest) -> Result<SummaryDiagnostics, ProviderError> {
+        let n = r.values.len();
+        Ok(SummaryDiagnostics {
+            count: n,
+            min: 0.0,
+            max: 0.0,
+            mean: r.values.iter().sum::<f64>() / n as f64,
+            sample_sd: None,
+            q25: 0.0,
+            median: 0.0,
+            q75: 0.0,
+            backend_version: "test".into(),
+        })
+    }
+    fn regression_scores(
+        &self,
+        r: &RegressionScoresRequest,
+    ) -> Result<RegressionScores, ProviderError> {
+        let n = r.y_true.len() as f64;
+        let e: Vec<f64> = r.y_true.iter().zip(&r.y_pred).map(|(a, b)| a - b).collect();
+        let (r2, r2_exponent) = if self.huge_r2 { (-0.5, 1025) } else { (0.5, 0) };
+        Ok(RegressionScores {
+            rmse: (e.iter().map(|v| v * v).sum::<f64>() / n).sqrt(),
+            mae: e.iter().map(|v| v.abs()).sum::<f64>() / n,
+            r2: Some(r2),
+            r2_exponent,
+            backend_version: "test".into(),
+        })
+    }
+}
+
+/// A consistent provider on singleton components: folds by position, every
+/// candidate tied (so one component is selected), predictions y + 1.
+struct Honest;
+impl ValidationProvider for Honest {
+    fn capabilities(&self) -> Vec<Capability> {
+        Spy::default().capabilities()
+    }
+    fn probe(&self, request: &ProbeRequest) -> Result<ProbeResult, ProviderError> {
+        let ids = &request.sample_ids;
+        let split = |universe: &[usize], k: usize, prefix: &str| -> Vec<ProbeFoldAssignment> {
+            (0..k)
+                .map(|f| ProbeFoldAssignment {
+                    fold_id: format!("{prefix}{f}"),
+                    train_sample_ids: universe
+                        .iter()
+                        .enumerate()
+                        .filter(|(p, _)| p % k != f)
+                        .map(|(_, &i)| ids[i].clone())
+                        .collect(),
+                    validation_sample_ids: universe
+                        .iter()
+                        .enumerate()
+                        .filter(|(p, _)| p % k == f)
+                        .map(|(_, &i)| ids[i].clone())
+                        .collect(),
+                })
+                .collect()
+        };
+        let all: Vec<usize> = (0..ids.len()).collect();
+        let outer = split(&all, request.outer_splits, "fold");
+        let outer_folds: Vec<ProbeOuterFold> = outer
+            .into_iter()
+            .map(|fold| {
+                let train: Vec<usize> = all
+                    .iter()
+                    .copied()
+                    .filter(|&i| fold.train_sample_ids.contains(&ids[i]))
+                    .collect();
+                ProbeOuterFold {
+                    inner_folds: split(
+                        &train,
+                        request.inner_splits,
+                        &format!("{}.inner", fold.fold_id),
+                    ),
+                    candidates: request
+                        .components
+                        .iter()
+                        .map(|&k| ProbeCandidateScore {
+                            n_components: k,
+                            inner_rmse: 1.0,
+                        })
+                        .collect(),
+                    selected_components: request.components[0],
+                    fold,
+                }
+            })
+            .collect();
+        let oof: Vec<ProbeOofRow> = all
+            .iter()
+            .map(|&i| ProbeOofRow {
+                sample_id: ids[i].clone(),
+                fold_id: format!("fold{}", i % request.outer_splits),
+                y_true: request.targets[i],
+                prediction: request.targets[i] + 1.0,
+            })
+            .collect();
+        Ok(ProbeResult {
+            n_fits: request.outer_splits * (request.components.len() * request.inner_splits + 1),
+            outer_folds,
+            oof,
+            model: ProbeScores {
+                mse: 1.0,
+                rmse: 1.0,
+                mae: 1.0,
+            },
+            backend_version: "honest".into(),
+        })
+    }
+}
+
+#[test]
+fn an_r2_beyond_the_double_range_is_published_scaled_not_as_absent() {
+    let x = input(40);
+    let ordinary = analyze_with_validation(&x, &Scoring { huge_r2: false }, &Honest);
+    let r2 = probe_metric(&ordinary, "probe.r2_oof");
+    assert_eq!(
+        serde_json::to_value(&r2.status).unwrap(),
+        serde_json::json!("computed")
+    );
+    assert_eq!(r2.value, Some(serde_json::json!(0.5)));
+    let huge = analyze_with_validation(&x, &Scoring { huge_r2: true }, &Honest);
+    let r2 = probe_metric(&huge, "probe.r2_oof");
+    assert_eq!(
+        serde_json::to_value(&r2.status).unwrap(),
+        serde_json::json!("computed")
+    );
+    assert_eq!(
+        r2.value,
+        Some(serde_json::json!({"significand": -0.5, "exponent": 1025,
+                                "representation": "significand_times_2_pow_exponent"}))
+    );
+    // A constant target stays a distinct, undefined R² (refused upstream as
+    // CONSTANT_TARGET before any fit).
+    let mut constant = input(40);
+    for v in &mut constant.targets[0].values {
+        v.value = Some(3.0);
+    }
+    let report = analyze_with_validation(&constant, &Scoring { huge_r2: true }, &Honest);
+    assert_eq!(reason(&report), Some("CONSTANT_TARGET"));
 }

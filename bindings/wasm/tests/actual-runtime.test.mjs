@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createQualificationRuntime } from '../index.js';
+import * as methods from '@nirs4all/methods';
 
 const bytes = await readFile(new URL('../native/nirs4all_preflight_wasm_bg.wasm',import.meta.url));
 const dagMlBytes = await readFile(new URL('../node_modules/dag-ml-wasm/dag_ml_wasm_bg.wasm',import.meta.url));
@@ -194,7 +195,8 @@ test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
 // against the CPU scikit-learn golden (folds, selections, OOF within 1e-7).
 test('WASM validation probe matches the CPU scikit-learn golden',async()=>{
   const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/probe_sklearn_v1.json',import.meta.url),'utf8'));
-  const close=(a,e,label)=>assert.ok(Math.abs(a-e)<=1e-7*(1+Math.abs(e)),`${label}: ${a} vs ${e}`);
+  // Strictly relative tolerance (no reference value is zero here).
+  const close=(a,e,label)=>{assert.notEqual(e,0,label);assert.ok(Math.abs(a-e)<=1e-7*Math.abs(e),`${label}: ${a} vs ${e}`);};
   for(const [name,data] of Object.entries(golden.cases)){
     const report=runtime.analyze(data.input);
     for(const estimator of ['pls','pcr']){
@@ -213,7 +215,21 @@ test('WASM validation probe matches the CPU scikit-learn golden',async()=>{
       assert.deepEqual(oof.sample_ids,data.sample_ids,label);
       oof.prediction.forEach((v,i)=>close(v,expected.prediction[i],`${label} oof ${i}`));
       close(get('probe.rmse').value,expected.rmse,`${label} rmse`);
+      close(get('probe.mae').value,expected.mae,`${label} mae`);
+      close(get('probe.r2_oof').value,expected.r2_oof,`${label} r2`);
       close(get('probe.skill_vs_train_mean').value,expected.skill_vs_train_mean,`${label} skill`);
+      close(get('probe.train_mean_rmse').value,expected.train_mean_rmse,`${label} baseline rmse`);
+      oof.train_mean_prediction.forEach((v,i)=>close(v,expected.train_mean_prediction[i],`${label} baseline ${i}`));
+      const domains=get('probe.domain_scores').value;
+      assert.equal(domains.length,expected.domains.length,label);
+      domains.forEach((d,i)=>{
+        const e=expected.domains[i];
+        assert.equal(d.instrument,e.instrument,label);
+        assert.equal(d.campaign,e.campaign,label);
+        assert.equal(d.n_samples,e.n_samples,label);
+        close(d.rmse,e.rmse,`${label} domain rmse`);
+        close(d.train_mean_rmse,e.train_mean_rmse,`${label} domain baseline`);
+      });
       assert.match(get('probe.rmse').parameters.validation_backend,/dag-ml-wasm/);
     }
   }
@@ -230,3 +246,17 @@ test('WASM probe refuses data outside the declared numerical domain before any f
   assert.match(rmse.parameters.numerical_domain,/2\^-256, 2\^256/);
 });
 
+
+// Analytic case (rational oracle): y_true = (2^-255, 2^-254), y_pred = (2^256, 2^256)
+// gives SST = 2^-511 and SSE/SST = 2^1024 (1 - ~2^-510): R² = -0.5 * 2^1025 is
+// published scaled by the Methods WASM kernel the probe consumes, never -Infinity,
+// and stays distinct from the undefined R² of a constant target.
+test('WASM Methods regression scores publish an out-of-range R² scaled',()=>{
+  const huge=methods.statsRegressionScores(new Float64Array([2**-255,2**-254]),new Float64Array([2**256,2**256]));
+  assert.equal(huge.rmse,2**256);
+  assert.equal(huge.r2,-0.5);
+  assert.equal(huge.r2Exponent,1025);
+  const constant=methods.statsRegressionScores(new Float64Array([2,2]),new Float64Array([1,3]));
+  assert.ok(Number.isNaN(constant.r2));
+  assert.equal(constant.r2Exponent,0);
+});

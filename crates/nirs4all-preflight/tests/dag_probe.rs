@@ -29,9 +29,11 @@ fn parse(value: Value) -> QualificationInput {
     serde_json::from_str(&value.to_string()).unwrap()
 }
 
+/// Strictly relative tolerance; no reference value used here is zero.
 fn close(actual: f64, expected: f64, tol: f64, label: &str) {
+    assert!(expected != 0.0, "{label}: zero reference");
     assert!(
-        (actual - expected).abs() <= tol * (1.0 + expected.abs()),
+        (actual - expected).abs() <= tol * expected.abs(),
         "{label}: {actual} vs {expected}"
     );
 }
@@ -261,7 +263,7 @@ fn contradictory_provider_results_are_rejected_without_a_new_cv() {
             Some("INVALID_PROVIDER_RESULT"),
         ),
         (
-            Box::new(|r| r.model.r2 = 42.0),
+            Box::new(|r| r.model.mae = f64::INFINITY),
             Some("INVALID_PROVIDER_RESULT"),
         ),
         (
