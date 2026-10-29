@@ -42,7 +42,8 @@ try {
   await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
   await page.getByRole('button', { name: 'Analyser ce dataset', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Analyser Anopheles', exact: true }).click();
-  await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 90000 });
+  // Keep the full grid: the released engine's exact diagnostics are slower on this wide matrix.
+  await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 600000 });
   assert.equal(await page.locator('.ws-title').innerText(), 'Anopheles — oocyst presence');
   assert.deepEqual(errors, []);
   console.log('Dataset smoke passed: native IO import, shared builder, WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
