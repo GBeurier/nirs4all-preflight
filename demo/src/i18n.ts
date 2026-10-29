@@ -24,6 +24,7 @@ const DICT = {
   },
   realDemoDatasets: { fr: "Essayer un dataset réel", en: "Try a real dataset" },
   realDemoHint: { fr: "Les mêmes jeux Beer et Anopheles que dans Web, chargés à la demande. Leurs partitions d’origine sont conservées.", en: "The same Beer and Anopheles datasets as Web, loaded on demand. Their existing splits are preserved." },
+  largeDemoHint: { fr: "L’analyse des 2 151 bandes peut prendre plusieurs minutes. Elle peut être annulée sans bloquer la page.", en: "Analysing all 2,151 bands can take several minutes. You can cancel while the page remains usable." },
   tryRealDataset: { fr: "Analyser", en: "Analyse" },
   importDataset: { fr: "Importer un dataset", en: "Import a dataset" },
   configureDataset: { fr: "Configurer les sources", en: "Configure sources" },

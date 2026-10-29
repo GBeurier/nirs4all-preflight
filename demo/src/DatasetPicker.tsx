@@ -106,6 +106,7 @@ export function DatasetPicker({ locale, t, onLoad }: { locale: Locale; t: T; onL
             sampleCount: sample.samples, featureCount: sample.bands, targetCount: 1,
             splitCounts: { train: sample.train, test: sample.test } }} statListClassName="dataset-preview-stats" badgeListClassName="dataset-preview-badges" />
           <p className="note"><a href={sample.source} target="_blank" rel="noreferrer">{sample.attribution}</a> · <a href={`${import.meta.env.BASE_URL}data/demo/${sample.licenseFile}`} target="_blank" rel="noreferrer">{sample.license}</a></p>
+          {sample.id === "anopheles" ? <p className="note">{t("largeDemoHint")}</p> : null}
           <button className="btn btn-primary" disabled={busy} onClick={() => void openDemo(sample)}>{t("tryRealDataset")} {sample.id === "beer" ? "Beer" : "Anopheles"}</button>
         </div>)}
       </div>
