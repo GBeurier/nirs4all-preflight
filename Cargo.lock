@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dag-ml-core",
  "libloading",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-capi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nirs4all-preflight",
  "serde_json",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nirs4all-preflight",
  "serde_json",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",

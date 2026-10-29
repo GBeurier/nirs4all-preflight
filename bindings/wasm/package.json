@@ -1,6 +1,6 @@
 {
   "name": "@nirs4all/preflight",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Rust NIRS dataset qualification with reusable Methods diagnostics",
   "type": "module",
   "license": "(CECILL-2.1 OR AGPL-3.0-or-later)",

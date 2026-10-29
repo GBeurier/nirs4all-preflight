@@ -2,7 +2,7 @@
 
 Portable qualification of NIRS datasets before training. Rust owns the protocols and input/report contracts; reusable numerical diagnostics live in [nirs4all-methods](https://github.com/GBeurier/nirs4all-methods), and shared presentation components in [nirs4all-ui](https://github.com/GBeurier/nirs4all-ui).
 
-**nirs4all-preflight 0.1.0 (engine, crates and npm binding), exploratory profile.** This release computes integrity and linked-identity checks, exact and declared-tolerance quasi-duplicate suspicions including development/test overlap, spectral duplicates with incompatible references, a smoothing-residual noise proxy, an SNV sensitivity view, per-band technical repeatability with REML ICC and exact or cluster-bootstrap intervals, centered PCA with full variance moments and its resolution bound, target distributions, metadata–target associations with group-level permutation tests and Holm adjustment, an exploratory HDBSCAN partition with subsample stability, cluster matching and a fitted Gaussian null, PERMANOVA/PERMDISP confounding diagnostics, domain-shift distances, tests and PCA monitoring, a grouped PLS/PCR validation probe, and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
+**nirs4all-preflight 0.1.1 (engine, crates and npm binding), exploratory profile.** This release computes integrity and linked-identity checks, exact and declared-tolerance quasi-duplicate suspicions including development/test overlap, spectral duplicates with incompatible references, a smoothing-residual noise proxy, an SNV sensitivity view, per-band technical repeatability with REML ICC and exact or cluster-bootstrap intervals, centered PCA with full variance moments and its resolution bound, target distributions, metadata–target associations with group-level permutation tests and Holm adjustment, an exploratory HDBSCAN partition with subsample stability, cluster matching and a fitted Gaussian null, PERMANOVA/PERMDISP confounding diagnostics, domain-shift distances, tests and PCA monitoring, a grouped PLS/PCR validation probe, and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
 
 [Browser demo](https://gbeurier.github.io/nirs4all-preflight/) · [npm binding](https://www.npmjs.com/package/@nirs4all/preflight) · [Scientific and integration specification](docs/SPECIFICATION.md)
 
@@ -12,7 +12,7 @@ adapter preserves original reports, source/population/view identities, explicit
 unavailability and qualitative-confidence limits without recomputing diagnostics.
 
 ```sh
-cargo install nirs4all-preflight-cli --version 0.1.0
+cargo install nirs4all-preflight-cli --version 0.1.1
 n4pf validate dataset.json
 n4pf analyze dataset.json --methods-library /path/to/libn4m.so.2 --html report.html
 ```
