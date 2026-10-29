@@ -6,6 +6,7 @@ mod clustering;
 mod confounding;
 pub mod dagml;
 mod domain_shift;
+mod intrinsic;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 mod probe;
@@ -914,6 +915,7 @@ fn analyze_source(
     }
     repeatability::analyze_repeats(source, input, samples, &dev_rows, provider, report);
     analyze_noise_proxy(source, samples, &dev_rows, input, provider, report);
+    intrinsic::analyze(source, samples, &dev_rows, input, provider, report);
 }
 
 /// Structure rows of one population: equal-weight means of the complete

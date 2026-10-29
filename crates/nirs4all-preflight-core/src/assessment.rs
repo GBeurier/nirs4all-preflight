@@ -4,9 +4,10 @@
 //! metric identities are retained; consumers must explicitly qualify any mapping
 //! to their historical metric names.
 
-use crate::{Availability, QualificationReport};
+use crate::{Availability, Metric, QualificationReport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,10 @@ impl Default for MetricSemantics {
 #[serde(deny_unknown_fields)]
 pub struct AssessmentMetric {
     pub metric_id: String,
+    /// Opaque producer identity of the native parameters and denominators.
+    /// Consumers must still preserve/compare the exact native context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_context_id: Option<String>,
     pub protocol_version: String,
     pub value: Option<f64>,
     pub unit: Option<String>,
@@ -96,6 +101,8 @@ pub struct Assessment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricIdentity {
     pub metric_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_context_id: Option<String>,
     pub source_id: Option<String>,
     pub target_id: Option<String>,
     pub view_id: String,
@@ -120,6 +127,31 @@ pub struct AssessmentFinding {
     pub message: String,
     pub recommended_action: String,
     pub original_finding: Value,
+}
+
+/// Sort recursively, including nested objects, independently of serde_json's
+/// optional preserve_order feature. This is a producer-side identity; consumers
+/// preserve the token and compare the original context rather than rewriting it.
+fn canonical(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let sorted: BTreeMap<_, _> = object
+                .into_iter()
+                .map(|(key, value)| (key, canonical(value)))
+                .collect();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonical).collect()),
+        scalar => scalar,
+    }
+}
+
+fn metric_context_id(metric: &Metric) -> Result<String, String> {
+    let context = canonical(
+        serde_json::json!({"parameters": metric.parameters, "denominators": metric.denominators}),
+    );
+    let bytes = serde_json::to_vec(&context).map_err(|e| e.to_string())?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
 /// Resolve finding evidence against the declared context without dropping
@@ -167,6 +199,7 @@ pub fn extract_findings(
             for metric in matching {
                 let identity = MetricIdentity {
                     metric_id: metric.metric_id.clone(),
+                    metric_context_id: Some(metric_context_id(metric)?),
                     source_id: metric.source_id.clone(),
                     target_id: metric.target_id.clone(),
                     view_id: metric.view_id.clone(),
@@ -256,6 +289,7 @@ pub fn extract_assessment(
         };
         metrics.push(AssessmentMetric {
             metric_id: metric.metric_id.clone(),
+            metric_context_id: Some(metric_context_id(metric)?),
             protocol_version: metric.protocol_version.clone(),
             value,
             unit: metric.unit.clone(),

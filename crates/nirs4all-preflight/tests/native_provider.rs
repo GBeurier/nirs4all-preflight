@@ -2,6 +2,50 @@ use nirs4all_preflight::native::NativeMethodsProvider;
 use nirs4all_preflight::*;
 
 #[test]
+fn generic_procedure_copies_named_native_results_and_preserves_refusals() {
+    let Ok(path) = std::env::var("N4M_LIBRARY_PATH") else {
+        return;
+    };
+    let provider = NativeMethodsProvider::load(path).unwrap();
+    let mut request = ProcedureRequest {
+        method_id: "utilities.signal_type_detector".into(),
+        matrix: vec![vec![1., 2.], vec![2., 4.], vec![3., 6.], vec![4., 8.]],
+        reference: None,
+        parameters: Default::default(),
+    };
+    let result = provider.procedure(&request).unwrap();
+    assert!(
+        matches!(result.outputs.get("confidence"), Some(ProcedureOutput::Scalar { value }) if (value - 0.6363636363636362).abs() < 1e-14)
+    );
+    assert!(
+        matches!(result.outputs.get("signal_type"), Some(ProcedureOutput::Scalar { value }) if *value == 0.)
+    );
+    request.parameters.insert(
+        "confidence_threshold".into(),
+        ProcedureParameter::Double(0.8),
+    );
+    assert!(provider.procedure(&request).is_ok());
+    request
+        .parameters
+        .insert("does_not_exist".into(), ProcedureParameter::Int(1));
+    assert_eq!(
+        provider.procedure(&request).unwrap_err().reason,
+        "PROCEDURE_INVALID_PARAMETER"
+    );
+    request.parameters.clear();
+    request.method_id = "diagnostics.not_present".into();
+    assert_eq!(
+        provider.procedure(&request).unwrap_err().reason,
+        "METHODS_PROCEDURE_UNAVAILABLE"
+    );
+    request.matrix[0][0] = f64::NAN;
+    assert_eq!(
+        provider.procedure(&request).unwrap_err().reason,
+        "INVALID_PROVIDER_MATRIX"
+    );
+}
+
+#[test]
 fn actual_public_methods_abi_matches_analytic_covariance_and_repeatability() {
     let Ok(path) = std::env::var("N4M_LIBRARY_PATH") else {
         return;

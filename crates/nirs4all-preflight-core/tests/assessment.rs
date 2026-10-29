@@ -92,6 +92,64 @@ fn unavailable_evidence_is_never_replaced_by_a_clean_zero() {
 }
 
 #[test]
+fn parameterized_factors_survive_assessment_and_findings_without_identity_collision() {
+    let mut report = report();
+    let mut instrument = Metric::computed(
+        "domain_shift.design",
+        json!({"levels":2}),
+        Some("nir"),
+        None,
+    );
+    instrument
+        .parameters
+        .insert("factor".into(), json!("instrument"));
+    instrument.denominators.insert("n_observations".into(), 4);
+    let mut campaign = instrument.clone();
+    campaign
+        .parameters
+        .insert("factor".into(), json!("campaign"));
+    report["metrics"] = json!([instrument, campaign]);
+    report["findings"][0]["evidence"] = json!(["domain_shift.design"]);
+    let assessment = extract_assessment(&report, &context()).unwrap();
+    assert_eq!(assessment.metrics.len(), 2);
+    let ids: Vec<_> = assessment
+        .metrics
+        .iter()
+        .map(|m| m.metric_context_id.as_ref().unwrap())
+        .collect();
+    assert_ne!(ids[0], ids[1]);
+    assert!(ids
+        .iter()
+        .all(|id| id.len() == 71 && id.starts_with("sha256:")));
+    let findings = extract_findings(&report, &context()).unwrap();
+    assert_eq!(
+        findings[0].evidence.len(),
+        2,
+        "both distinct native factor contexts must survive"
+    );
+    assert_eq!(
+        findings[0].evidence[0].metric_context_id.as_ref(),
+        Some(ids[0])
+    );
+    assert_eq!(
+        findings[0].evidence[1].metric_context_id.as_ref(),
+        Some(ids[1])
+    );
+    let original = assessment.metrics[0].metric_context_id.clone();
+    report["metrics"][0]["denominators"]["n_observations"] = json!(5);
+    assert_ne!(
+        extract_assessment(&report, &context()).unwrap().metrics[0].metric_context_id,
+        original
+    );
+    // Compatibility: older envelopes without the optional identity still parse.
+    let mut old = serde_json::to_value(&assessment.metrics[0]).unwrap();
+    old.as_object_mut().unwrap().remove("metric_context_id");
+    let old: nirs4all_preflight_core::assessment::AssessmentMetric =
+        serde_json::from_value(old).unwrap();
+    assert!(old.metric_context_id.is_none());
+}
+
+#[test]
 fn identity_and_task_populations_are_explicit_and_separate() {
     let mut cx = context();
     cx.source_id = "another-source".into();
