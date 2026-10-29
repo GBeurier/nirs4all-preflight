@@ -1,0 +1,14 @@
+{
+  "dataset_id": "synthetic-nirs-fixture",
+  "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "producer": "nirs4all-preflight",
+  "source_id": "nir",
+  "population_id": "development_real",
+  "context_id": "intrinsic/native/v1",
+  "scope": "intrinsic",
+  "target_id": null,
+  "split_id": null,
+  "fit_population_id": null,
+  "evaluation_population_id": null,
+  "semantics": {}
+}

@@ -6,6 +6,11 @@ Portable qualification of NIRS datasets before training. Rust owns the protocols
 
 [Browser demo](https://gbeurier.github.io/nirs4all-preflight/) · [npm binding](https://www.npmjs.com/package/@nirs4all/preflight) · [Scientific and integration specification](docs/SPECIFICATION.md)
 
+[Optional assessment/findings adapter](docs/assessment-contract.md) documents the
+local additive schema-1 exports for Datasets, Domains and Quality. The Rust/CLI
+adapter preserves original reports, source/population/view identities, explicit
+unavailability and qualitative-confidence limits without recomputing diagnostics.
+
 ```sh
 cargo install nirs4all-preflight-cli --version 0.1.0
 n4pf validate dataset.json
