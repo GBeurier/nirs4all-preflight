@@ -1,6 +1,6 @@
 [package]
 name = "nirs4all-preflight-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
 repository = "https://github.com/GBeurier/nirs4all-preflight"
@@ -11,3 +11,4 @@ description = "Typed input, protocols and reports for NIRS qualification"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
+sha2 = "0.10"

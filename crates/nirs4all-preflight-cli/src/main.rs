@@ -17,9 +17,37 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    let command = args
-        .next()
-        .ok_or("usage: n4pf <capabilities|validate|analyze> [input.json|-] [--html output.html]")?;
+    let command = args.next().ok_or(
+        "usage: n4pf <capabilities|validate|analyze|extract-assessment> [input.json|-] [options]",
+    )?;
+    if command == "extract-assessment" || command == "extract-findings" {
+        let report_path = args.next().ok_or("missing report JSON path")?;
+        let context_path = args.next().ok_or("missing assessment context JSON path")?;
+        if args.next().is_some() {
+            return Err("usage: n4pf extract-assessment report.json context.json".into());
+        }
+        let report: serde_json::Value =
+            serde_json::from_str(&read_bounded(&report_path, 64 * 1024 * 1024)?)
+                .map_err(|e| e.to_string())?;
+        let context: nirs4all_preflight::assessment::AssessmentContext =
+            serde_json::from_str(&read_bounded(&context_path, 1024 * 1024)?)
+                .map_err(|e| e.to_string())?;
+        let result = if command == "extract-findings" {
+            serde_json::to_value(nirs4all_preflight::assessment::extract_findings(
+                &report, &context,
+            )?)
+        } else {
+            serde_json::to_value(nirs4all_preflight::assessment::extract_assessment(
+                &report, &context,
+            )?)
+        }
+        .map_err(|e| e.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     let provider = UnavailableMethodsProvider;
     let mut native_path = env::var("N4M_LIBRARY_PATH").ok();
     if command == "capabilities" {
@@ -112,4 +140,17 @@ fn run() -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn read_bounded(path: &str, maximum: u64) -> Result<String, String> {
+    let mut text = String::new();
+    fs::File::open(path)
+        .map_err(|e| e.to_string())?
+        .take(maximum + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| e.to_string())?;
+    if text.len() as u64 > maximum {
+        return Err("JSON_MEMORY_BUDGET_EXCEEDED".into());
+    }
+    Ok(text)
 }

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+pub mod assessment;
+
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
@@ -423,6 +425,10 @@ pub struct Options {
     /// target ID; an absent target is not compared and none is invented.
     #[serde(default)]
     pub reference_contradiction_tolerances: BTreeMap<String, ReferenceContradictionTolerance>,
+    /// Additive intrinsic diagnostics on real development observations only.
+    /// Omitted by default so existing profiles and reports are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intrinsic_qc: Option<IntrinsicQcOptions>,
 }
 
 impl Default for Options {
@@ -440,8 +446,50 @@ impl Default for Options {
             domain_shift: DomainShiftOptions::default(),
             validation_probe: ValidationProbeOptions::default(),
             reference_contradiction_tolerances: BTreeMap::new(),
+            intrinsic_qc: None,
         }
     }
+}
+
+/// Descriptive spectral signatures, not calibrated causes or model performance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IntrinsicQcOptions {
+    pub reference: bool,
+    pub events: bool,
+    pub noise: bool,
+    /// True native LOF in the declared native spectral view. Never the legacy
+    /// ratio of mean neighbour distances; optional because its cost is quadratic.
+    pub local_density: bool,
+    pub axis_basis: IntrinsicAxisBasis,
+    pub outlier_threshold: f64,
+    pub clip_lower: Option<f64>,
+    pub clip_upper: Option<f64>,
+    pub clip_tolerance: f64,
+    pub n_neighbors: usize,
+}
+impl Default for IntrinsicQcOptions {
+    fn default() -> Self {
+        Self {
+            reference: true,
+            events: true,
+            noise: true,
+            local_density: false,
+            axis_basis: IntrinsicAxisBasis::Index,
+            outlier_threshold: 8.,
+            clip_lower: None,
+            clip_upper: None,
+            clip_tolerance: 0.,
+            n_neighbors: 20,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IntrinsicAxisBasis {
+    #[default]
+    Index,
+    Physical,
 }
 
 /// Domain-shift profile. Retained-test X is read only when the external
@@ -654,6 +702,25 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             "Sample budget exceeded",
             true,
         );
+    }
+    if let Some(qc) = &input.options.intrinsic_qc {
+        if !qc.outlier_threshold.is_finite()
+            || qc.outlier_threshold <= 0.
+            || !qc.clip_tolerance.is_finite()
+            || qc.clip_tolerance < 0.
+            || qc.clip_lower.is_some_and(|v| !v.is_finite())
+            || qc.clip_upper.is_some_and(|v| !v.is_finite())
+            || matches!((qc.clip_lower, qc.clip_upper), (Some(lo), Some(hi)) if lo >= hi)
+            || qc.n_neighbors == 0
+            || qc.n_neighbors > 100
+        {
+            out.add(
+                "INVALID_INTRINSIC_QC_OPTIONS",
+                "options.intrinsic_qc",
+                "Declare finite thresholds, ordered sensor bounds, and 1..100 neighbours",
+                true,
+            );
+        }
     }
     let mut sample_ids = BTreeSet::new();
     for (i, s) in input.samples.iter().enumerate() {
@@ -2286,8 +2353,66 @@ pub struct PcaMonitorDiagnostics {
     pub backend_version: String,
 }
 
+/// Typed transport for the Methods procedure registry. Scientific operations
+/// and their parameter validation remain in Methods, on native and WASM hosts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcedureRequest {
+    pub method_id: String,
+    pub matrix: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub reference: Option<Vec<Vec<f64>>>,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, ProcedureParameter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ProcedureParameter {
+    Int(i64),
+    Double(f64),
+    Bool(bool),
+    Enum(String),
+    IntArray(Vec<i64>),
+    DoubleArray(Vec<f64>),
+}
+
+/// Native result entries copied before the Methods result is destroyed.
+/// Missing diagnostics are represented by the procedure's status/index
+/// entries, never by a nonfinite JSON number or an invented zero.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProcedureOutput {
+    Matrix {
+        rows: usize,
+        cols: usize,
+        data: Vec<f64>,
+    },
+    IntegerVector {
+        data: Vec<i64>,
+    },
+    Scalar {
+        value: f64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcedureDiagnostics {
+    pub outputs: BTreeMap<String, ProcedureOutput>,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
     fn capabilities(&self) -> Vec<Capability>;
+    fn procedure(
+        &self,
+        _request: &ProcedureRequest,
+    ) -> Result<ProcedureDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "PROCEDURE_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
     fn pca(&self, request: &PcaRequest) -> Result<PcaDiagnostics, ProviderError>;
     fn repeatability(
         &self,

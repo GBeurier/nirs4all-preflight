@@ -54,9 +54,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.42"
+version = "0.3.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2c9b0bc2af3b25400ff1b1b05404c7cd2e6984b5b8dfd3f1dfa35fec28f7eef"
+checksum = "0b91f6b70a59b2e34218fa1cc47ec4c0ef72da72fe7a53436d3fda230731af46"
 dependencies = [
  "indexmap",
  "n4m",
@@ -189,9 +189,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "n4m"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "262224913fd9338e523dea8a55e688abab21eb131422a23fc3f2dfb32a4001f6"
+checksum = "4d036a20611f734738741f0b70e8e0393a7fbf6dcf06bb41051a4eeae6d880b8"
 dependencies = [
  "cc",
  "libloading",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dag-ml-core",
  "libloading",
@@ -210,16 +210,17 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 
 [[package]]
 name = "nirs4all-preflight-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "js-sys",
  "nirs4all-preflight",
