@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "engine_version": "0.1.0",
+  "protocol_bundle_version": "0.1.0",
+  "profile_status": "synthetic_example",
+  "status": "partial",
+  "validation": {
+    "valid": true,
+    "issues": []
+  },
+  "capabilities": [],
+  "metrics": [
+    {
+      "metric_id": "structure.effective_dimension",
+      "protocol_version": "0.1.0",
+      "status": "computed",
+      "reason_code": null,
+      "scope": "source",
+      "source_id": "nir",
+      "target_id": null,
+      "view_id": "native",
+      "population_id": "development_real",
+      "value": 2.5,
+      "unit": null,
+      "denominators": {
+        "eligible_observations": 20
+      },
+      "parameters": {
+        "reference": "development_real_only"
+      }
+    },
+    {
+      "metric_id": "repeatability.pooled_sd",
+      "protocol_version": "0.1.0",
+      "status": "insufficient_data",
+      "reason_code": "NO_REPEAT_GROUPS",
+      "scope": "source",
+      "source_id": "nir",
+      "target_id": null,
+      "view_id": "native",
+      "population_id": "development_real",
+      "value": null,
+      "unit": "absorbance",
+      "denominators": {
+        "complete_repeat_groups": 0
+      },
+      "parameters": {}
+    }
+  ],
+  "findings": [
+    {
+      "rule_id": "repeatability.missing_groups.v1",
+      "severity": "info",
+      "confidence": "unknown",
+      "evidence": [
+        "repeatability.pooled_sd"
+      ],
+      "message": "Repeatability is unavailable without declared repeat groups.",
+      "action": "Declare physical repeat-group identities before evaluating repeatability."
+    }
+  ],
+  "limitations": [
+    "Synthetic fixture; no physical-cause or predictive-coverage claim"
+  ],
+  "example_provenance": "hand-authored synthetic migration fixture"
+}

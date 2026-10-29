@@ -76,6 +76,9 @@ impl WireError {
     }
 }
 impl MethodsProvider for CallbackProvider<'_> {
+    fn procedure(&self, r: &ProcedureRequest) -> Result<ProcedureDiagnostics, ProviderError> {
+        self.invoke("procedure", r)
+    }
     fn capabilities(&self) -> Vec<Capability> {
         self.invoke("capabilities", &serde_json::json!({}))
             .unwrap_or_else(|e| {

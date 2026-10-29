@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::rc::Rc;
 
+mod procedure;
+
 #[repr(C)]
 struct MatrixView {
     data: *mut c_void,
@@ -523,6 +525,9 @@ impl Drop for NativeMethodsProvider {
     }
 }
 impl MethodsProvider for NativeMethodsProvider {
+    fn procedure(&self, r: &ProcedureRequest) -> Result<ProcedureDiagnostics, ProviderError> {
+        self.run_procedure(r)
+    }
     fn capabilities(&self) -> Vec<Capability> {
         METHODS_CAPABILITY_IDS
             .iter()
