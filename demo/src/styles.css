@@ -290,3 +290,26 @@ code{font-size:.85em}
   .ready-cta{display:none}
   .ws-head-inner{align-items:flex-start}
 }
+
+/* Host layout only: source mapping and validation styles come from nirs4all-ui. */
+.dataset-picker { width: 100%; min-width: 0; text-align: left; margin: 2rem 0; }
+.dataset-entry-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: .8rem 0; }
+.dataset-builder { margin: 1.5rem 0; }
+.dataset-builder-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dataset-library { margin-top: 2rem; }
+.dataset-library h2 { font-size: 1.2rem; }
+.dataset-library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 1rem; }
+.dataset-library-item { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 1rem; min-width: 0; overflow-wrap: anywhere; }
+.dataset-preview-stats { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+.dataset-preview-stats dt { font-size: .8rem; }
+.dataset-preview-stats dd { margin: .25rem 0; font-weight: 600; }
+.dataset-preview-badges { display: flex; flex-wrap: wrap; gap: .5rem; font-size: .8rem; }
+.dataset-canonical { margin-top: 1rem; }
+.dataset-canonical summary { cursor: pointer; }
+/* Qualification preserves declared partitions and missing values. The generic
+   builder's estimated training split and transformation controls do not apply. */
+.dataset-builder .dsb-partition,
+.dataset-builder .dsb-config__advanced { display: none; }
+.dataset-public-demos { margin: 0 0 2rem; }
+.dataset-public-demos .dataset-library-grid { margin-top: 1rem; }
+.dataset-public-demos .btn { margin-top: .8rem; }
