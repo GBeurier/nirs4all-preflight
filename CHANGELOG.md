@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — 2026-10-29
+
+Add the optional schema-v1 `Assessment` and findings adapter for cross-consumer reports. Preserve the original report losslessly, including unavailable metrics and unknown confidence. Add CLI assessment/findings export, contract examples and 25 adapter/CLI checks. Existing report and numerical protocols remain compatible; this patch makes no new confidence or coverage claim.
+
 ## 0.1.0 — 2026-10-20
 
 Engine, crates, Python and npm binding move together to 0.1.0, following the plain `X.Y.Z` versioning of the other nirs4all packages (no pre-release suffix; the exploratory status is carried by `profile_status`). They require the published Methods 1.3.8 (ABI 2.20; native library and `@nirs4all/methods@1.3.8`, whose PERMANOVA and Freedman–Lane stratum means and reduced basis, used by the confounding tests, are double-double; the native and WASM providers refuse libraries below ABI 2.20 with `METHODS_ABI_2_20_REQUIRED`) and, for the validation probe, the published dag-ml 0.3.42 (`dag-ml-core` 0.3.42 with `nested_selection`, `dag-ml-wasm@0.3.42`). The committed lock files resolve these registry releases; no local override is needed. Every engine capability — `noise_proxy`, `snv_sensitivity`, `quasi_duplicates`, `duplicate_reference_conflicts`, `metadata_association_tests`, `clustering`, `confounding`, `domain_shift`, `repeatability_uncertainty` and `validation_probe` — is available but unqualified (exploratory); none is `PROTOCOL_NOT_IMPLEMENTED`.
