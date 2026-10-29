@@ -3,24 +3,31 @@
   "private": true,
   "version": "0.1.0-alpha.1",
   "type": "module",
-  "description": "Static dashboard for nirs4all-preflight: canonical JSON in, Rust/WASM engine report out.",
+  "description": "Browser dataset qualification with nirs4all IO/Formats and the Rust/WASM preflight engine.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:browser": "node scripts/dataset-smoke.mjs"
   },
   "dependencies": {
+    "@nirs4all/formats-wasm": "0.2.12",
+    "@nirs4all/io-wasm": "0.2.10",
     "@nirs4all/preflight": "0.1.0-alpha.2",
+    "idb-keyval": "6.2.2",
     "nirs4all-ui": "github:GBeurier/nirs4all-ui#6acb0274ce7181f06e59774468e27d52e216c31b",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
   "devDependencies": {
+    "@types/node": "22.20.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
+    "fake-indexeddb": "6.2.4",
+    "playwright-core": "1.58.2",
     "typescript": "^5.8.3",
     "vite": "^7.3.6",
     "vitest": "^3.2.4"

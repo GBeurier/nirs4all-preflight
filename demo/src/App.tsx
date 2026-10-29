@@ -4,7 +4,7 @@ import type { EngineReport } from "nirs4all-ui/qualification";
 import { downloadText } from "./download";
 import { createEngineHost, EngineError, type EngineHost, type EngineValidation } from "./engine";
 import { initialLocale, translate, type TextKey } from "./i18n";
-import { buildEngineInput, defaultConfig, parseCanonicalInput, type AnalysisConfig, type EngineInput } from "./input";
+import { buildEngineInput, defaultConfig, type AnalysisConfig, type EngineInput } from "./input";
 import { Landing } from "./Landing";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
 import { Workspace } from "./Workspace";
@@ -35,7 +35,6 @@ export function App() {
   const t: T = (key) => translate(key, locale);
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [input, setInput] = useState<EngineInput | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [config, setConfig] = useState<AnalysisConfig | null>(null);
   const [run, setRun] = useState<Run>({ state: "idle" });
   const [result, setResult] = useState<Result | null>(null);
@@ -99,16 +98,9 @@ export function App() {
     setOrigin(from);
     setConfig(cfg);
     setResult(null);
-    setLoadError(null);
     setHtmlError(null);
     window.scrollTo({ top: 0 });
     void execute(next, cfg, from);
-  };
-
-  const onFile = async (file: File) => {
-    const parsed = parseCanonicalInput(await file.text());
-    if (parsed.ok) load(parsed.input, { kind: "file", name: file.name });
-    else setLoadError(`${t(`err_${parsed.code}` as TextKey)} ${parsed.detail}`.trim());
   };
 
   const reset = () => {
@@ -177,7 +169,7 @@ export function App() {
             onDownloadHtml={() => void downloadHtml()}
           />
         ) : (
-          <Landing t={t} error={loadError} onFile={(f) => void onFile(f)} onSynthetic={(sc: SyntheticScenario) => load(syntheticInput(sc), { kind: "synthetic", name: sc })} />
+          <Landing t={t} locale={locale} onDataset={(data, name) => load(data, { kind: "file", name })} onSynthetic={(sc: SyntheticScenario) => load(syntheticInput(sc), { kind: "synthetic", name: sc })} />
         )}
       </main>
       <footer className="footer">
