@@ -38,8 +38,8 @@ const html = (node: ReactElement) => renderToStaticMarkup(node);
 describe("real engine on the demo synthetic sets", () => {
   const { report, scope } = analyze("clean");
 
-  it("is the 0.1.0 engine and labels the synthetic origin", () => {
-    expect(report.engine_version).toBe("0.1.0");
+  it("is the 0.1.1 engine and labels the synthetic origin", () => {
+    expect(report.engine_version).toBe("0.1.1");
     expect(report.data_origin).toBe("synthetic");
     expect(presentSections(scope).map((s) => s.id)).toEqual(["s-sensitivity", "s-duplicates", "s-clustering", "s-confounding", "s-shift", "s-association", "s-probe"]);
   });
