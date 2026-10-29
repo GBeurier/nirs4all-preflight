@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "nirs4all-ui/assets/theme.css";
 import "nirs4all-ui/assets/viz.css";
 import "nirs4all-ui/assets/qualification.css";
+import "nirs4all-ui/assets/datasetBuilder.css";
 import "./styles.css";
 import { App } from "./App";
 

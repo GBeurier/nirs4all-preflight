@@ -1,0 +1,2 @@
+# Preserve the original demo bytes, including their CRLF line endings.
+demo/src/data/demo/**/*.csv -text whitespace=cr-at-eol

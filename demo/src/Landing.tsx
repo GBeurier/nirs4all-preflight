@@ -1,4 +1,6 @@
-import { useState, type DragEvent } from "react";
+import type { Locale } from "nirs4all-ui/lab";
+import { DatasetPicker } from "./DatasetPicker";
+import type { EngineInput } from "./input";
 import type { T } from "./App";
 import type { SyntheticScenario } from "./synthetic";
 
@@ -28,14 +30,7 @@ function MiniSpectra({ pitfalls }: { pitfalls: boolean }) {
   );
 }
 
-export function Landing({ t, error, onFile, onSynthetic }: { t: T; error: string | null; onFile: (file: File) => void; onSynthetic: (sc: SyntheticScenario) => void }) {
-  const [over, setOver] = useState(false);
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) onFile(file);
-  };
+export function Landing({ t, locale, onDataset, onSynthetic }: { t: T; locale: Locale; onDataset: (input: EngineInput, name: string) => void; onSynthetic: (sc: SyntheticScenario) => void }) {
   return (
     <>
       <section className="hero">
@@ -48,34 +43,7 @@ export function Landing({ t, error, onFile, onSynthetic }: { t: T; error: string
           <h1 className="hero-title">{t("heroA")} <em>{t("heroB")}</em> {t("heroC")}</h1>
           <p className="hero-sub">{t("heroSub")}</p>
 
-          <label
-            className="dropzone"
-            data-over={over || undefined}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setOver(true);
-            }}
-            onDragLeave={() => setOver(false)}
-            onDrop={onDrop}
-          >
-            <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true" className="dropzone-icon">
-              <path fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
-            </svg>
-            <span className="dropzone-title">{over ? t("dropActive") : t("drop")}</span>
-            <span className="dropzone-or">{t("dropOr")} <u>{t("browse")}</u></span>
-            <span className="dropzone-hint">{t("dropHint")}</span>
-            <input
-              type="file"
-              accept="application/json,.json"
-              className="visually-hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) onFile(file);
-                e.target.value = "";
-              }}
-            />
-          </label>
-          {error ? <p role="alert" className="alert">{error}</p> : null}
+          <DatasetPicker t={t} locale={locale} onLoad={onDataset} />
 
           <p className="demo-title">{t("tryDemo")}</p>
           <div className="demo-cards">
