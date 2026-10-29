@@ -85,6 +85,47 @@ export async function createQualificationRuntime(options = {}) {
     let result;
     switch (operation) {
       case 'capabilities': result = methodsCapabilities; break;
+      case 'procedure': {
+        const spec = methods.manifest().methods.find(item => item.method_id === request.method_id);
+        if (!spec) throw limit('METHODS_PROCEDURE_UNAVAILABLE');
+        if (spec.kind !== 'procedure' || !spec.roles.includes('generic')) throw invalid('PROCEDURE_GENERIC_ROLE_REQUIRED');
+        const procedure = new (methods.methodClass(request.method_id))();
+        for (const [name, parameter] of Object.entries(request.parameters ?? {})) {
+          if (procedure.paramTypes[name] !== parameter.kind) throw invalid('PROCEDURE_INVALID_PARAMETER');
+          const { kind, value } = parameter;
+          if (kind === 'double' && !Number.isFinite(value)
+              || kind === 'int' && !Number.isSafeInteger(value)
+              || kind === 'double_array' && (!Array.isArray(value) || value.length > 10_000_000 || value.some(v => !Number.isFinite(v)))
+              || kind === 'int_array' && (!Array.isArray(value) || value.length > 10_000_000 || value.some(v => !Number.isSafeInteger(v)))) {
+            throw invalid('PROCEDURE_INVALID_PARAMETER_VALUE');
+          }
+          procedure.params[name] = value;
+        }
+        const x = matrix(request.matrix);
+        if (x.data.some(v => !Number.isFinite(v))) throw invalid('INVALID_PROVIDER_MATRIX');
+        const reference = request.reference ? matrix(request.reference) : undefined;
+        if (reference && reference.cols !== x.cols) throw invalid('PROCEDURE_REFERENCE_WIDTH_MISMATCH');
+        if (reference?.data.some(v => !Number.isFinite(v))) throw invalid('INVALID_PROVIDER_MATRIX');
+        const values = procedure.run(x, undefined, reference ? { XTarget: reference } : {});
+        const outputs = {};
+        for (const [name, value] of Object.entries(values)) {
+          if (typeof value === 'number') {
+            if (!Number.isFinite(value)) throw invalid('PROCEDURE_NONFINITE_RESULT');
+            outputs[name] = { kind: 'scalar', value };
+          } else if (Array.isArray(value)) {
+            if (value.length > 10_000_000 || value.some(v => !Number.isSafeInteger(v))) throw invalid('PROCEDURE_INVALID_INTEGER_RESULT');
+            outputs[name] = { kind: 'integer_vector', data: value };
+          } else {
+            const { rows, cols, data } = value;
+            if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(cols) || rows < 0 || cols < 0
+                || rows * cols > 10_000_000 || rows * cols !== data.length) throw invalid('PROCEDURE_INVALID_RESULT_SHAPE');
+            if (data.some(v => !Number.isFinite(v))) throw invalid('PROCEDURE_NONFINITE_RESULT');
+            outputs[name] = { kind: 'matrix', rows, cols, data: Array.from(data) };
+          }
+        }
+        result = { outputs, backend_version };
+        break;
+      }
       case 'pca': {
         const output = methods.preflightPca(matrix(request.matrix), request.n_components);
         result = { eigenvalues: Array.from(output.eigenvalues), scores: nested(output.scores.data, output.scores.cols), full_moments: output.fullMoments, resolution: output.resolution, unresolved: Array.from(output.unresolved, Boolean), backend_version };
