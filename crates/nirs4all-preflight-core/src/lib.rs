@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+pub mod assessment;
+
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
