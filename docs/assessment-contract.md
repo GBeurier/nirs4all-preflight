@@ -102,6 +102,11 @@ from silently entering a pre-training intrinsic summary.
 
 ## Existing intrinsic protocols and migration limits
 
+The optional 0.1.1 intrinsic protocols below are documented in
+[intrinsic-protocols.md](intrinsic-protocols.md), with their native/WASM
+conformance fixtures. Existing legacy card calculations remain separate unless
+their exact protocol mapping has been qualified.
+
 | Datasets concern | Existing shared owner / protocol | Migration rule |
 | --- | --- | --- |
 | PCA geometry, effective dimension | Preflight `structure.pca*`, `structure.effective_dimension`; Methods exact PCA and full covariance moments | Preserve native view, fit population, normalization, resolution and exact-moment availability. Effective dimension is not a Q/T² outlier ratio. |
@@ -109,7 +114,8 @@ from silently entering a pre-training intrinsic summary.
 | Roughness/noise | Methods `n4m_preflight_noise_proxy_compute`; Preflight declared noise-proxy protocol | SG residuals, window, degree, masks and reference units remain explicit. It is not automatically equivalent to Datasets' old second-difference pseudo-SNR. |
 | SNV sensitivity | Methods row SNV + Preflight `structure.snv_*` protocols | Preserve both native/SNV view identities; do not overwrite the original metric. |
 | Neighbour geometry and clustering | Native Methods neighbours, HDBSCAN, ARI; Preflight protocols | Preserve representation, seed, distance and eligibility population. A neighbour-distance ratio is not LOF by naming. |
-| Supplied-reference SAM/RMS, affine report, spikes/jumps/clipping | No identical versioned Preflight protocol verified | Return explicit unsupported/unavailable; retain old card protocol separately until native definitions and comparison fixtures are qualified. |
+| RMS/SAM and affine report to the development mean spectrum | Methods `diagnostics.spectral_reference_qc`; Preflight `intrinsic.reference.*`, `spectral-reference-pairwise-valid.v1` | Optional `intrinsic_qc`; preserve the development-population mean reference, common-valid masks, units and eligible denominators. These metrics do not imply an instrument white reference or frozen train/test coverage. |
+| Spikes, jumps and clipping | Methods `diagnostics.spectral_events_qc`; Preflight `intrinsic.events.*`, `spectral-events-declared-axis.v1` | Preserve the declared index/physical-axis mode, units, thresholds and eligible pairs/triples. `declared_clip_fraction` requires sensor bounds; absent bounds remain `not_applicable`. Observed-extrema occupancy is a separate descriptive proxy. |
 | Train/test applicability and model-performance risk | Domains using a frozen training reference | Outside Preflight intrinsic protocols; no access to retained-test target values is added. |
 | Physical cause | Heuristic interpretation layer | Separate observed signature, possible cause and recommended action. No absent-proof-to-zero coercion or uncalibrated probability. |
 
