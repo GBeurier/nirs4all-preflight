@@ -27,6 +27,18 @@ try {
   await reuse.click();
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
   await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
+  // A drop anywhere on the page (here on the title, outside the zone) imports the files too.
+  await page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['1000;1100;1200\n0.1;0.2;0.3\n0.4;0.5;0.6\n0.45;0.52;0.61'], 'X_train.csv', { type: 'text/csv' }));
+    transfer.items.add(new File(['protein\n11\n12\n13'], 'y_train.csv', { type: 'text/csv' }));
+    const target = document.querySelector('.hero-title');
+    for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  });
+  await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
+  assert.match(await page.locator('.ws-files').innerText(), /X_train\.csv → spectres X/);
+  assert.equal(await page.locator('.drop-overlay').count(), 0);
+  await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
   await page.setViewportSize({ width: 375, height: 812 });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Mobile overflow');
   await page.screenshot({ path: '/tmp/preflight-dataset-mobile.png', fullPage: true });
@@ -42,5 +54,5 @@ try {
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 600000 });
   assert.equal(await page.locator('.ws-title').innerText(), 'Anopheles — oocyst presence');
   assert.deepEqual(errors, []);
-  console.log('Dataset smoke passed: drop-to-analyse IO import, WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
+  console.log('Dataset smoke passed: drop-to-analyse IO import (zone and page-wide drop), WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
 } finally { await browser.close(); }

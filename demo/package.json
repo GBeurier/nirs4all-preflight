@@ -17,7 +17,7 @@
     "@nirs4all/io-wasm": "0.2.10",
     "@nirs4all/preflight": "0.1.1",
     "idb-keyval": "6.2.2",
-    "nirs4all-ui": "github:GBeurier/nirs4all-ui#2b5db3ff16a8e32f3dd26bf30d1b4017f375b92e",
+    "nirs4all-ui": "github:GBeurier/nirs4all-ui#36a199490844ae3b6e2a9148f9709a5b930919a6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
