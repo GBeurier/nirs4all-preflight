@@ -1,8 +1,10 @@
+import { createRequire } from "node:module";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { createQualificationRuntime } from "@nirs4all/preflight";
 import { buildQualificationReportView, type EngineReport } from "nirs4all-ui/qualification";
+import { importFiles, type FormatsRuntime, type IoRuntime } from "./dataset-io";
 import { ClusteringSection, ConfoundingSection, DomainShiftSection, ProbeSection, presentSections } from "./Blocks";
 import { translate, type TextKey } from "./i18n";
 import type { Scope } from "./Sections";
@@ -82,5 +84,27 @@ describe("real engine on the demo synthetic sets", () => {
     const pitfalls = analyze("pitfalls");
     expect(pitfalls.report.metrics.filter((m) => m.metric_id.startsWith("probe.")).every((m) => m.reason_code === "EXACT_DUPLICATE_SPECTRUM_ACROSS_COMPONENTS")).toBe(true);
     expect(html(<ProbeSection {...pitfalls.scope} />)).toContain("EXACT_DUPLICATE_SPECTRUM_ACROSS_COMPONENTS");
+  });
+});
+
+describe("real engine on dropped X/y/metadata files", () => {
+  it("accepts the IO metadata table and analyses its associations", () => {
+    const require = createRequire(import.meta.url);
+    const io = require("@nirs4all/io-wasm") as IoRuntime;
+    const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
+    const n = 24;
+    const axis = Array.from({ length: 16 }, (_, b) => 1000 + 20 * b).join(";");
+    const rows = Array.from({ length: n }, (_, r) => Array.from({ length: 16 }, (_, b) => (0.5 + 0.2 * Math.sin(b / 3 + r / 5) + 0.01 * ((r * 7 + b * 3) % 11)).toFixed(4)).join(";"));
+    const encode = (name: string, text: string) => ({ name, bytes: new TextEncoder().encode(text) });
+    const { input, tables } = importFiles([
+      encode("X_train.csv", `${axis}\n${rows.join("\n")}`),
+      encode("y_train.csv", `protein\n${Array.from({ length: n }, (_, r) => (10 + (r % 6) + r / 10).toFixed(2)).join("\n")}`),
+      encode("metadata_train.csv", `site;moisture\n${Array.from({ length: n }, (_, r) => `${r % 2 ? "north" : "south"};${(12 + (r % 5)).toFixed(1)}`).join("\n")}`),
+    ], "drop", io, formats);
+    expect(tables.map((t) => [t.file, t.role, t.partition])).toEqual([["X_train.csv", "x", "train"], ["y_train.csv", "y", "train"], ["metadata_train.csv", "metadata", "train"]]);
+    const report = runtime.analyze(input) as EngineReport & { validation: { valid: boolean }; metrics: Metric[] };
+    expect(report.validation.valid).toBe(true);
+    expect(input.metadata?.columns.map((c) => c.name)).toEqual(["site", "moisture"]);
+    expect(report.metrics.some((m) => m.metric_id === "association.metadata_target" && m.status === "computed")).toBe(true);
   });
 });

@@ -1,6 +1,5 @@
-import { buildExportConfig } from "nirs4all-ui/datasetBuilder";
 import type { NamedFile } from "@nirs4all/io-wasm/types";
-import { assembleDraft, prepareDataset, type IoRuntime, type FormatsRuntime } from "./dataset-io";
+import { importFiles, type IoRuntime, type FormatsRuntime } from "./dataset-io";
 import type { EngineInput } from "./input";
 
 /** Same real CSV extracts and original splits as Web; provenance accompanies them. */
@@ -24,15 +23,8 @@ export async function readDemoFiles(id: DemoDatasetId): Promise<NamedFile[]> {
 }
 
 export function assembleDemoDataset(sample: DemoDataset, files: NamedFile[], io: IoRuntime, formats: FormatsRuntime): EngineInput {
-  const draft = prepareDataset(files, io, formats);
-  const input = assembleDraft(draft, buildExportConfig(sample.name, draft.sources), draft.sources, io);
-  for (const target of input.targets) {
-    target.target_id = sample.target;
-    if (sample.task === "classification") {
-      // The source CSV's documented 0/1 codes denote categories, not a continuous reference.
-      target.kind = "categorical";
-      target.values = target.values.map(({ value, ...reference }) => ({ ...reference, category: value === null || value === undefined ? null : String(value) }));
-    }
-  }
+  const { input } = importFiles(files, sample.name, io, formats);
+  // IO infers the task (Anopheles 0/1 labels are a binary classification); only the target name is curated.
+  for (const target of input.targets) target.target_id = sample.target;
   return input;
 }

@@ -10,7 +10,8 @@ import { syntheticInput, type SyntheticScenario } from "./synthetic";
 import { Workspace } from "./Workspace";
 
 export type Run = { state: "idle" } | { state: "running" } | { state: "cancelled" } | { state: "error"; code: string; message: string };
-export type Origin = { kind: "file" | "synthetic"; name: string };
+import type { DetectedTable } from "./dataset-io";
+export type Origin = { kind: "file" | "synthetic"; name: string; tables?: DetectedTable[] };
 /** A report is only ever shown with the exact input that produced it. */
 export type Result = { report: EngineReport; input: EngineInput; origin: Origin };
 export type T = (k: TextKey) => string;
@@ -169,7 +170,7 @@ export function App() {
             onDownloadHtml={() => void downloadHtml()}
           />
         ) : (
-          <Landing t={t} locale={locale} onDataset={(data, name) => load(data, { kind: "file", name })} onSynthetic={(sc: SyntheticScenario) => load(syntheticInput(sc), { kind: "synthetic", name: sc })} />
+          <Landing t={t} locale={locale} onDataset={(data, name, tables) => load(data, { kind: "file", name, ...(tables?.length ? { tables } : {}) })} onSynthetic={(sc: SyntheticScenario) => load(syntheticInput(sc), { kind: "synthetic", name: sc })} />
         )}
       </main>
       <footer className="footer">

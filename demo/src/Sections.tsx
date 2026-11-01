@@ -24,6 +24,7 @@ import {
   extractRepeatability,
   extractRepeatabilityUncertainty,
   extractSamplePopulations,
+  evidenceCsv,
   extractTarget,
   formatEngineNumber,
   metricLabel,
@@ -34,6 +35,7 @@ import {
   withRepeatabilityUncertainty,
 } from "nirs4all-ui/qualification";
 import { NoiseProxyCard } from "./Blocks";
+import { downloadText } from "./download";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
 import { Measured } from "./Measured";
@@ -296,7 +298,7 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
 
 type StatusFilter = "all" | "computed" | "other";
 
-export function EvidenceSection({ t, locale, view, initialQuery = "" }: Scope & { initialQuery?: string }) {
+export function EvidenceSection({ t, locale, view, initialQuery = "", fileName }: Scope & { initialQuery?: string; fileName: string }) {
   const [query, setQuery] = useState(initialQuery);
   const [status, setStatus] = useState<StatusFilter>("all");
   const q = query.trim().toLowerCase();
@@ -316,6 +318,7 @@ export function EvidenceSection({ t, locale, view, initialQuery = "" }: Scope & 
           ))}
         </div>
         <span className="hint" role="status">{shown.length} / {view.metrics.length} {t("shown")}</span>
+        <button className="btn btn-outline btn-sm" onClick={() => downloadText(fileName, "text/csv", `\uFEFF${evidenceCsv(shown, locale)}`)}>{t("exportCsv")}</button>
       </div>
       <div className="card card-flush">
         <EvidenceTable metrics={shown} provenance={view.provenance} locale={locale} />

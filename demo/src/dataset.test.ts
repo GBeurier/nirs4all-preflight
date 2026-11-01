@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { buildExportConfig } from "nirs4all-ui/datasetBuilder";
-import { assembleDraft, prepareDataset, type FormatsRuntime, type IoRuntime } from "./dataset-io";
+import { assembleDraft, importFiles, prepareDataset, type FormatsRuntime, type IoRuntime } from "./dataset-io";
 import { toEngineInput } from "./dataset";
 import { parseCanonicalInput } from "./input";
 
@@ -120,5 +121,15 @@ describe("native dataset import → shared builder → preflight", () => {
 
   it("rejects incompatible schema versions", () => {
     expect(() => toEngineInput({ assembled_schema_version: 1, name: "old", blocks: {} })).toThrow(/v2/);
+  });
+
+  it("imports the nirs4all-io sample files with their metadata and identities", () => {
+    const names = ["X_train.csv", "y_train.csv", "metadata_train.csv", "X_test.csv", "y_test.csv", "metadata_test.csv"];
+    const samples = names.map((name) => ({ name, bytes: new Uint8Array(readFileSync(new URL(`./fixtures/io-samples/${name}`, import.meta.url))) }));
+    const { input, tables } = importFiles(samples, "samples", io, formats);
+    expect(tables.filter((t) => t.role === "x").map((t) => t.partition).sort()).toEqual(["test", "train"]);
+    expect(input.samples.some((s) => s.physical_sample_id === "te_001" && s.partition === "retained_test")).toBe(true);
+    expect(input.metadata?.columns.map((c) => c.name)).toEqual(["cultivar", "replicate", "site"]);
+    expect(input.targets.map((t) => t.target_id)).toEqual(["protein"]);
   });
 });

@@ -14,37 +14,33 @@ try {
   }
   await page.goto(url);
   const rows = Array.from({ length: 12 }, (_, i) => `s${i};${.1 + i * .01};${.2 + i * .02};${.3 + i * .01};${10 + i};A`);
+  // Dropping files starts the analysis: IO infers the dataset, no configuration step.
   await page.locator('input[type=file]').first().setInputFiles({ name: 'combined.csv', mimeType: 'text/csv', buffer: Buffer.from(['sample_id;1000;1100;1200;protein;instrument', ...rows].join('\n')) });
-  await page.locator('.dsb__source-summary, .dsb__source-card, .dsb__section').first().waitFor({ timeout: 30000 });
-  assert.equal(await page.getByRole('alert').count(), 0, await page.locator('body').innerText());
-  await page.screenshot({ path: '/tmp/preflight-dataset-builder.png', fullPage: true });
-  await page.getByRole('button', { name: /Créer le dataset/ }).first().click();
   await page.locator('.ws-title').waitFor({ timeout: 30000 });
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
-  assert.equal(await page.locator('.ws-title').innerText(), 'combined');
+  assert.equal(await page.locator('.ws-title').innerText(), 'combined.csv');
+  assert.match(await page.locator('.ws-files').innerText(), /combined\.csv → tableau complet/);
   await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
-  await page.getByRole('button', { name: 'Analyser ce dataset', exact: true }).waitFor();
+  const reuse = page.locator('.recent-item', { hasText: 'combined.csv' }).getByRole('button', { name: 'Analyser', exact: true });
+  await reuse.waitFor();
   await page.reload();
-  await page.getByRole('button', { name: 'Analyser ce dataset', exact: true }).click();
+  await reuse.click();
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
   await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
   await page.setViewportSize({ width: 375, height: 812 });
-  const configure = page.getByRole('button', { name: 'Configurer les sources', exact: true });
-  if (await configure.getAttribute('aria-expanded') === 'false') await configure.click();
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Mobile overflow');
   await page.screenshot({ path: '/tmp/preflight-dataset-mobile.png', fullPage: true });
-  await page.getByRole('button', { name: 'Supprimer combined', exact: true }).click();
-  await page.getByRole('button', { name: 'Analyser ce dataset', exact: true }).waitFor({ state: 'detached' });
+  await page.getByRole('button', { name: 'Supprimer combined.csv', exact: true }).click();
+  await page.locator('.recent-item', { hasText: 'combined.csv' }).waitFor({ state: 'detached' });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole('button', { name: 'Analyser Beer', exact: true }).click();
+  await page.locator('.demo-card', { hasText: 'Beer' }).click();
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 90000 });
   assert.equal(await page.locator('.ws-title').innerText(), 'Beer — original extract');
   await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
-  await page.getByRole('button', { name: 'Analyser ce dataset', exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Analyser Anopheles', exact: true }).click();
+  await page.locator('.demo-card', { hasText: 'Anopheles' }).click();
   // Keep the full grid: the released engine's exact diagnostics are slower on this wide matrix.
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 600000 });
   assert.equal(await page.locator('.ws-title').innerText(), 'Anopheles — oocyst presence');
   assert.deepEqual(errors, []);
-  console.log('Dataset smoke passed: native IO import, shared builder, WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
+  console.log('Dataset smoke passed: drop-to-analyse IO import, WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
 } finally { await browser.close(); }

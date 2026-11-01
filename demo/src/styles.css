@@ -304,25 +304,23 @@ code{font-size:.85em}
 .probe > .card-title{margin-bottom:0}
 .card .n4q-matrix caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
-/* Host layout only: source mapping and validation styles come from nirs4all-ui. */
-.dataset-picker { width: 100%; min-width: 0; text-align: left; margin: 2rem 0; }
-.dataset-entry-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: .8rem 0; }
-.dataset-builder { margin: 1.5rem 0; }
-.dataset-builder-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-.dataset-library { margin-top: 2rem; }
-.dataset-library h2 { font-size: 1.2rem; }
-.dataset-library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 1rem; }
-.dataset-library-item { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 1rem; min-width: 0; overflow-wrap: anywhere; }
-.dataset-preview-stats { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
-.dataset-preview-stats dt { font-size: .8rem; }
-.dataset-preview-stats dd { margin: .25rem 0; font-weight: 600; }
-.dataset-preview-badges { display: flex; flex-wrap: wrap; gap: .5rem; font-size: .8rem; }
-.dataset-canonical { margin-top: 1rem; }
-.dataset-canonical summary { cursor: pointer; }
-/* Qualification preserves declared partitions and missing values. The generic
-   builder's estimated training split and transformation controls do not apply. */
-.dataset-builder .dsb-partition,
-.dataset-builder .dsb-config__advanced { display: none; }
-.dataset-public-demos { margin: 0 0 2rem; }
-.dataset-public-demos .dataset-library-grid { margin-top: 1rem; }
-.dataset-public-demos .btn { margin-top: .8rem; }
+/* Landing import: drop zone, examples and recent datasets. */
+.dataset-picker{width:100%;min-width:0;display:flex;flex-direction:column;align-items:center}
+.drop-alert{width:min(100%,640px);text-align:left}
+.drop-help{width:min(100%,640px);margin-top:14px;text-align:left;font-size:.86rem;color:var(--text-2)}
+.drop-help summary{cursor:pointer;text-align:center;color:var(--teal-d);font-weight:600}
+.drop-help ul{margin:.6rem 0 0;padding-left:1.2rem;line-height:1.6}
+.demo-card:disabled{opacity:.6;cursor:progress;transform:none}
+.demo-card-text strong .tag{margin-left:6px;vertical-align:middle}
+.tag-real{color:var(--teal-d);background:color-mix(in srgb,var(--teal) 10%,transparent);border:1px solid color-mix(in srgb,var(--teal) 40%,transparent)}
+.demo-sources{max-width:760px;margin-top:12px;font-size:.76rem}
+.recent{width:min(100%,760px);margin-top:8px}
+.recent-list{list-style:none;margin:0;padding:0;display:grid;gap:8px;text-align:left}
+.recent-item{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card)}
+.recent-name{font-weight:600;min-width:0;overflow-wrap:anywhere;flex:1 1 200px}
+.recent-meta{font-size:.8rem;color:var(--text-2)}
+.recent-actions{display:flex;gap:6px;margin-left:auto}
+.btn-sm{padding:5px 12px;font-size:.82rem}
+.ws-files{font-size:.84rem}
+.ws-file code{font-size:.8rem}
+.demo-card-text .tag{font-size:.58rem;padding:2px 7px;letter-spacing:.06em;white-space:nowrap}
