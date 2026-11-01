@@ -1,4 +1,5 @@
-import type { EngineInput, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
+import type { DetectedTable } from "./dataset-io";
+import type { EngineInput, InputMetadata, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
 
 export interface IoMatrix { n_rows: number; n_cols: number; data: (number | null)[] }
 export interface IoBlock {
@@ -28,13 +29,50 @@ const partitionOf = (name: string): Partition => {
   throw new Error(`Unknown dataset partition: ${name}`);
 };
 
+/** Columns already carried by sample fields, identities or repetition types. */
+const RESERVED_METADATA = new Set(["instrument", "campaign", "individual_id", "augmentation_parent_id", "repetition_type", "partition"]);
+
+/**
+ * Every other IO metadata column, keyed by sample. A column whose value differs between
+ * repeated rows of one sample describes acquisitions, not samples, and is left out.
+ */
+function sampleMetadata(rows: { sampleId: string; block: IoBlock; row: number }[], reserved: ReadonlySet<string>, sourceIds: readonly string[]): InputMetadata | undefined {
+  // IO prefixes a colliding metadata column with its source id ("train_m__y"); one name per column.
+  const plain = (name: string) => {
+    const owner = sourceIds.find((id) => name.startsWith(`${id}__`));
+    return owner ? name.slice(owner.length + 2) : name;
+  };
+  const names = [...new Set(rows.flatMap(({ block }) => (block.metadata?.columns ?? []).map((c) => plain(c.name))))].filter((name) => !reserved.has(name) && !RESERVED_METADATA.has(name));
+  const columns: InputMetadata["columns"] = [];
+  const values: InputMetadata["values"] = {};
+  for (const name of names) {
+    const perSample = new Map<string, string | number>();
+    let consistent = true;
+    for (const { sampleId, block, row } of rows) {
+      const value = block.metadata?.columns.find((c) => plain(c.name) === name)?.values[row];
+      if (value === null || value === undefined || value === "" || (typeof value === "number" && !Number.isFinite(value))) continue;
+      const previous = perSample.get(sampleId);
+      if (previous !== undefined && previous !== value) { consistent = false; break; }
+      perSample.set(sampleId, value);
+    }
+    if (!consistent || !perSample.size) continue;
+    const continuous = [...perSample.values()].every((v) => typeof v === "number");
+    // A text column with one level per sample is an identifier, not a factor.
+    if (!continuous && perSample.size > 1 && new Set(perSample.values()).size === perSample.size) continue;
+    columns.push({ name, kind: continuous ? "continuous" : "categorical" });
+    for (const [sampleId, value] of perSample) (values[sampleId] ??= {})[name] = continuous ? value : String(value);
+  }
+  return columns.length ? { columns, values } : undefined;
+}
+
 /** Contract adapter only. IO already decoded, aligned and partitioned every row. */
-export function toEngineInput(full: AssembledDataset): EngineInput {
+export function toEngineInput(full: AssembledDataset, sourceIds: readonly string[] = []): EngineInput {
   if (full.assembled_schema_version !== 2) throw new Error("Expected nirs4all-io assembled dataset v2.");
   const sources: InputSource[] = [];
   const samples = new Map<string, InputSample>();
   const targets = new Map<string, InputTarget>();
   const identity = full.identity?.provenance;
+  const metadataRows: { sampleId: string; block: IoBlock; row: number }[] = [];
   for (const [part, block] of Object.entries(full.blocks)) {
     if (!block.n_samples) continue;
     const partition = partitionOf(part);
@@ -49,6 +87,7 @@ export function toEngineInput(full: AssembledDataset): EngineInput {
       // Separate records preserve a physical sample appearing in both development and test.
       const sample_id = JSON.stringify([part, physical ?? row]);
       ids.push(sample_id);
+      metadataRows.push({ sampleId: sample_id, block, row });
       const sample: InputSample = { sample_id, partition };
       if (physical !== undefined) sample.physical_sample_id = physical;
       for (const field of ["instrument", "campaign", "individual_id", "augmentation_parent_id"] as const) {
@@ -100,7 +139,9 @@ export function toEngineInput(full: AssembledDataset): EngineInput {
     }
   }
   if (!sources.length || !samples.size) throw new Error("No spectra found in the dataset.");
-  return { schema_version: 1, data_origin: "user_provided", sources, samples: [...samples.values()], targets: [...targets.values()], options: { independence_unit: "unknown" } };
+  const reserved = new Set([identity?.sample_id, identity?.observation_id, identity?.group_id].filter((name): name is string => typeof name === "string"));
+  const metadata = sampleMetadata(metadataRows, reserved, sourceIds);
+  return { schema_version: 1, data_origin: "user_provided", sources, samples: [...samples.values()], targets: [...targets.values()], ...(metadata ? { metadata } : {}), options: { independence_unit: "unknown" } };
 }
 
 export interface SavedDataset {
@@ -108,10 +149,6 @@ export interface SavedDataset {
   name: string;
   savedAt: string;
   input: EngineInput;
-}
-
-/** Small display contract consumed by nirs4all-ui's shared preview card. */
-export function datasetPreview(dataset: SavedDataset) {
-  return { id: dataset.id, name: dataset.name, sampleCount: dataset.input.samples.length,
-    featureCount: dataset.input.sources.reduce((n, s) => n + s.axis.length, 0), targetCount: dataset.input.targets.length };
+  /** How nirs4all-io read each file. */
+  tables?: DetectedTable[];
 }

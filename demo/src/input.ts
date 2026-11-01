@@ -58,12 +58,25 @@ export interface InputOptions {
   max_samples?: number;
 }
 
+export interface InputMetadataColumn {
+  name: string;
+  kind: "categorical" | "continuous";
+  unit?: string;
+}
+
+/** Sample-level metadata beyond instrument and campaign: strings are categorical, numbers continuous. */
+export interface InputMetadata {
+  columns: InputMetadataColumn[];
+  values: Record<string, Record<string, string | number | null>>;
+}
+
 export interface EngineInput {
   data_origin?: "unknown" | "synthetic" | "user_provided";
   schema_version: 1;
   sources: InputSource[];
   samples: InputSample[];
   targets: InputTarget[];
+  metadata?: InputMetadata;
   options: InputOptions;
 }
 
@@ -134,7 +147,7 @@ export function buildEngineInput(input: EngineInput, config: AnalysisConfig): En
   delete options.seed;
   if (config.assumeOneObservationPerSample) options.assume_one_observation_per_sample = true;
   if (config.seed !== null) options.seed = config.seed;
-  return { schema_version: 1, ...(input.data_origin ? { data_origin: input.data_origin } : {}), sources: input.sources, samples: input.samples, targets: input.targets, options };
+  return { schema_version: 1, ...(input.data_origin ? { data_origin: input.data_origin } : {}), sources: input.sources, samples: input.samples, targets: input.targets, ...(input.metadata ? { metadata: input.metadata } : {}), options };
 }
 
 /** Number of declared samples carrying an `independence_group` (display hint for the "group" unit). */

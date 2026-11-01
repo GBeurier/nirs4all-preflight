@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
-import { buildQualificationReportView, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import { buildQualificationReportView, evidenceCsv, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
 import { baseName, type Origin, type Result, type Run, type T } from "./App";
 import { buildChecks, needsReview } from "./checks";
 import { DataView } from "./DataView";
@@ -121,6 +121,14 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               {synthetic ? <span className="tag tag-synth">{t("synthetic")}</span> : null}
             </div>
             {synthetic ? <p className="ws-sub">{t("demoLabel")}</p> : null}
+            {origin.tables?.length ? (
+              <p className="ws-sub ws-files">
+                {t("detectedFiles")}{" "}
+                {origin.tables.map((table, i) => (
+                  <span key={table.file} className="ws-file">{i ? " · " : ""}<code>{table.file}</code> → {t(`role_${table.role}` as TextKey)}{table.partition === "test" ? ` (${t("partitionTest")})` : table.partition === "predict" ? ` (${t("partitionPredict")})` : ""}</span>
+                ))}
+              </p>
+            ) : null}
           </div>
           <div className="ws-actions">
             <div className="ws-status" role="status" aria-live="polite">
@@ -225,7 +233,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
 
         {view === "evidence" && scope ? (
           <>
-            <EvidenceSection key={evidenceQuery} {...scope} initialQuery={evidenceQuery} />
+            <EvidenceSection key={evidenceQuery} {...scope} initialQuery={evidenceQuery} fileName={`${baseName(result!)}-evidence.csv`} />
             <CapabilitiesSection {...scope} />
             <Section id="s-technical" icon="data" accent="amber" title={t("techTitle")}>
               <TechnicalSection {...scope} />
@@ -242,6 +250,9 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               </button>
               <button className="export-card" onClick={onDownloadHtml}>
                 <span className="export-ext">HTML</span><strong>{t("dlHtml")}</strong><span>{t("dlHtmlDesc")}</span>
+              </button>
+              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-evidence.csv`, "text/csv", `\uFEFF${evidenceCsv(report!.metrics, locale)}`)}>
+                <span className="export-ext">CSV</span><strong>{t("dlCsv")}</strong><span>{t("dlCsvDesc")}</span>
               </button>
               <button className="export-card" onClick={() => downloadText(`${baseName(result)}-input.json`, "application/json", JSON.stringify(result.input))}>
                 <span className="export-ext">IN</span><strong>{t("dlInput")}</strong><span>{t("dlInputDesc")}</span>

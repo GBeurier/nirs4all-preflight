@@ -1,6 +1,7 @@
-import { autoDetectSource, type DatasetExportConfig, type DatasetRole, type DatasetSource } from "nirs4all-ui/datasetBuilder";
+import { autoDetectSource, buildExportConfig, type DatasetExportConfig, type DatasetRole, type DatasetSource } from "nirs4all-ui/datasetBuilder";
 import type { DatasetPlan, DatasetSpec, NamedFile, RecordSet, SourceSpec } from "@nirs4all/io-wasm/types";
 import { toEngineInput, type AssembledDataset } from "./dataset";
+import type { EngineInput } from "./input";
 
 export interface IoRuntime {
   inferDataset: typeof import("@nirs4all/io-wasm").inferDataset;
@@ -14,6 +15,8 @@ export interface DatasetDraft {
   spec: DatasetSpec;
   sources: DatasetSource[];
   warnings: string[];
+  /** IO's task inference: "regression", "binary" or "multiclass". */
+  taskType: string | null;
 }
 
 let runtime: Promise<{ io: IoRuntime; formats: FormatsRuntime }> | undefined;
@@ -36,7 +39,7 @@ function diagnosticSpec(spec: DatasetSpec): DatasetSpec {
 const roleMap: Record<string, DatasetRole> = { features: "x", targets: "y", metadata: "metadata", id: "id", ignore: "ignored" };
 
 /** Native IO owns inference, table parsing, joins and assembly; UI gets only previews. */
-export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: FormatsRuntime): DatasetDraft {
+export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: FormatsRuntime, params: Readonly<Record<string, Record<string, unknown>>> = {}): DatasetDraft {
   if (new Set(files.map((f) => f.name)).size !== files.length) throw new Error("Duplicate input filenames. Keep their relative folder paths.");
   const records: RecordSet[] = [];
   const sidecars = Object.fromEntries(files.map((f) => [f.name, f.bytes]));
@@ -53,6 +56,11 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
   const plan = io.inferDataset(files, records, {}) as DatasetPlan;
   if (!plan.resolved_spec?.sources.length) throw new Error("nirs4all-io could not infer a dataset from these files.");
   const spec = diagnosticSpec(plan.resolved_spec);
+  // Parsing parameters declared by the host (e.g. decimal commas) override IO's guesses.
+  for (const source of spec.sources) {
+    const declared = typeof source.input === "string" ? params[source.input] : undefined;
+    if (declared) source.params = { ...source.params, ...declared };
+  }
   // Convention-named X/Y files may receive row-order joins from the global
   // plan. Ask IO to inspect each table independently so shared IDs are available
   // in the builder and lookup joins preserve repeated X observations.
@@ -89,7 +97,15 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
     }
     if (sourceIndex >= 0) for (const name of block?.feature_headers[sourceIndex] ?? []) columns.set(name, columns.get(name) ?? "x");
     if (s.role === "targets" || s.role === "mixed") for (const name of block?.y_headers ?? []) columns.set(name, columns.get(name) ?? "y");
-    if (s.role === "metadata" || s.role === "mixed") for (const c of block?.metadata?.columns ?? []) columns.set(c.name, columns.get(c.name) ?? "metadata");
+    if (s.role === "metadata" || s.role === "mixed") {
+      // IO prefixes a metadata column with its source id when the name collides (e.g. "train_m__y").
+      for (const c of block?.metadata?.columns ?? []) {
+        const owner = spec.sources.find((other) => c.name.startsWith(`${other.id}__`));
+        if (owner && owner.id !== s.id) continue;
+        const name = owner ? c.name.slice(owner.id.length + 2) : c.name;
+        columns.set(name, columns.get(name) ?? "metadata");
+      }
+    }
     if (typeof s.key === "string") columns.set(s.key, "id");
     const declaredKey = (spec.sample_index as { key?: string } | undefined)?.key;
     if (typeof declaredKey === "string" && block?.metadata?.columns.some((column) =>
@@ -117,7 +133,7 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
     const detected = autoDetectSource({ ...source, columns: source.columns.map((c) => ({ ...c, manual: false })) });
     return { ...source, columns: source.columns.map((c, i) => ({ ...c, ...detected.columns[i]!, assignedRole: s.role === "mixed" ? detected.columns[i]!.assignedRole : c.assignedRole, manual: true })) };
   });
-  return { files, records, spec, sources, warnings: plan.warnings ?? [] };
+  return { files, records, spec, sources, warnings: plan.warnings ?? [], taskType: plan.task_type?.value ?? null };
 }
 
 /** Translate shared builder choices to IO's native spec; do no joining in JS. */
@@ -173,5 +189,34 @@ export function assembleDraft(draft: DatasetDraft, config: DatasetExportConfig, 
   const spec = builderSpec(draft, config, sources);
   io.validate(JSON.stringify(spec));
   const names = new Set(draft.records.map((r) => r.source));
-  return toEngineInput(io.assembleDataset(draft.files.filter((f) => !names.has(f.name)), draft.records, JSON.stringify(spec)) as AssembledDataset);
+  return toEngineInput(io.assembleDataset(draft.files.filter((f) => !names.has(f.name)), draft.records, JSON.stringify(spec)) as AssembledDataset, spec.sources.map((source) => source.id));
+}
+
+/** How nirs4all-io read one input file. */
+export interface DetectedTable {
+  file: string;
+  role: "x" | "y" | "metadata" | "table";
+  partition: "train" | "test" | "predict" | null;
+}
+
+const fileRole: Record<string, DetectedTable["role"]> = { features: "x", targets: "y", metadata: "metadata" };
+
+/** Files → engine input through Formats and IO only: IO infers roles, headers, partitions and joins. */
+export function importFiles(files: NamedFile[], name: string, io: IoRuntime, formats: FormatsRuntime): { input: EngineInput; tables: DetectedTable[]; skipped: string[] } {
+  // An empty file carries no table; IO would refuse the whole selection for it.
+  const skipped = files.filter((file) => !new TextDecoder().decode(file.bytes.subarray(0, 4096)).trim()).map((file) => file.name);
+  const draft = prepareDataset(files.filter((file) => !skipped.includes(file.name)), io, formats);
+  const input = assembleDraft(draft, buildExportConfig(name, draft.sources), draft.sources, io);
+  if (draft.taskType === "binary" || draft.taskType === "multiclass") {
+    // IO inferred a classification task: numeric codes are class labels, not continuous references.
+    for (const target of input.targets) {
+      if (target.kind === "categorical") continue;
+      target.kind = "categorical";
+      target.values = target.values.map(({ value, ...reference }) => ({ ...reference, category: value === null || value === undefined ? null : String(value) }));
+    }
+  }
+  const tables = draft.spec.sources.flatMap((source) => (Array.isArray(source.input) ? source.input as string[] : [source.input as string]).map((file): DetectedTable => ({
+    file, role: fileRole[source.role] ?? "table", partition: source.partition === "train" || source.partition === "test" || source.partition === "predict" ? source.partition : null,
+  })));
+  return { input, tables, skipped };
 }
