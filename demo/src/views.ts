@@ -17,14 +17,22 @@ export function rowKind(samples: Map<string, InputSample>, sampleId: string): Ro
   return partition === "development" && s.augmentation_parent_id ? "augmented" : partition;
 }
 
-/** Exact reference value of a real development sample for one target (null otherwise). Test Y is never read. */
+/**
+ * Exact reference value of each real development sample for one target, for the samples the engine
+ * keeps as eligible: a sample whose exact references disagree has none. Test Y is never read.
+ */
 export function developmentTargetValues(input: EngineInput, targetId: string): Map<string, number> {
   const samples = sampleIndex(input);
   const target = input.targets.find((t) => t.target_id === targetId);
   const out = new Map<string, number>();
+  const conflicting = new Set<string>();
   for (const v of target?.values ?? []) {
-    if (v.status === "exact" && typeof v.value === "number" && Number.isFinite(v.value) && rowKind(samples, v.sample_id) === "development") out.set(v.sample_id, v.value);
+    if (v.status !== "exact" || typeof v.value !== "number" || !Number.isFinite(v.value) || rowKind(samples, v.sample_id) !== "development") continue;
+    const previous = out.get(v.sample_id);
+    if (previous !== undefined && !Object.is(previous, v.value)) conflicting.add(v.sample_id);
+    out.set(v.sample_id, v.value);
   }
+  for (const id of conflicting) out.delete(id);
   return out;
 }
 
@@ -189,24 +197,33 @@ export function pcaPoints(input: EngineInput, pca: PcaStructure, xi: number, yi:
   return colorBy === "quality" && quality ? [...points.filter((p) => p.group === quality.typical), ...points.filter((p) => p.group !== quality.typical)] : points;
 }
 
-/** Development spectra beyond the engine's 95th percentile of in-sample T² or Q, most atypical first. */
+/**
+ * Development spectra beyond the engine's 95th percentile of in-sample T² or Q, most atypical first.
+ * Each statistic is compared with its own percentile, so a degenerate one (e.g. Q = 0 everywhere) flags nothing alone.
+ */
 export interface AtypicalSpectrum { sampleId: string; observationId: string; t2: number; q: number; ratio: number }
 export function atypicalSpectra(t2: IntrinsicSignal, q: IntrinsicSignal): AtypicalSpectrum[] {
-  if (t2.p95 === null || q.p95 === null || t2.p95 <= 0 || q.p95 <= 0) return [];
+  if (t2.p95 === null || q.p95 === null) return [];
+  const excess = (value: number, p95: number) => (value <= p95 ? 0 : p95 > 0 ? value / p95 : Number.POSITIVE_INFINITY);
   const out: AtypicalSpectrum[] = [];
   t2.values.forEach((value, i) => {
     const residual = q.values[i];
     if (value === null || residual === null || residual === undefined) return;
-    const ratio = Math.max(value / t2.p95!, residual / q.p95!);
-    if (ratio > 1) out.push({ sampleId: t2.sampleIds[i] ?? "", observationId: t2.observationIds[i] ?? "", t2: value, q: residual, ratio });
+    const ratio = Math.max(excess(value, t2.p95!), excess(residual, q.p95!));
+    if (ratio > 0) out.push({ sampleId: t2.sampleIds[i] ?? "", observationId: t2.observationIds[i] ?? "", t2: value, q: residual, ratio });
   });
   return out.sort((a, b) => b.ratio - a.ratio);
 }
 
+/** T²/Q outcome of a source's development scans: the observations evaluated and those flagged. */
+export interface QualityScan { evaluated: ReadonlySet<string>; atypical: AtypicalSpectrum[] }
+
 /** Atypical development scans of a source; null until the report carries computed T² and Q. */
-export function atypicalScans(view: QualificationReportView, sourceId: string): AtypicalSpectrum[] | null {
+export function atypicalScans(view: QualificationReportView, sourceId: string): QualityScan | null {
   const intrinsic = extractIntrinsic(view, sourceId);
   const t2 = intrinsic?.signals["pca.pca_t2"];
   const q = intrinsic?.signals["pca.pca_q"];
-  return t2?.state.status === "computed" && q?.state.status === "computed" ? atypicalSpectra(t2, q) : null;
+  if (t2?.state.status !== "computed" || q?.state.status !== "computed") return null;
+  const evaluated = new Set(t2.observationIds.filter((_, i) => t2.values[i] !== null && q.values[i] !== null && q.values[i] !== undefined));
+  return { evaluated, atypical: atypicalSpectra(t2, q) };
 }

@@ -112,7 +112,8 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
         const metadata = block?.metadata?.columns.find((c) => c.name === name)?.values[0];
         const xcol = block?.feature_headers[sourceIndex]?.indexOf(name) ?? -1;
         const ycol = block?.y_headers.indexOf(name) ?? -1;
-        const rawValue = metadata ?? (xcol >= 0 ? block?.x[sourceIndex]?.data[xcol] : ycol >= 0 ? block?.y?.data[ycol] : null) ?? null;
+        const cell = xcol >= 0 ? block?.x[sourceIndex]?.data[xcol] : ycol >= 0 ? block?.y?.data[ycol] : undefined;
+        const rawValue = metadata ?? (cell === undefined || Number.isNaN(cell) ? null : cell);
         const categories = block?.y_categorical?.[name]?.categories;
         const value = categories && typeof rawValue === "number" ? categories[rawValue] ?? null : rawValue;
         return { id: `${s.id}:${i}`, name, assignedRole, manual: true, detectedType: typeof value === "number" ? "float" as const : typeof value === "string" ? "text" as const : "unknown" as const, previewValue: value };

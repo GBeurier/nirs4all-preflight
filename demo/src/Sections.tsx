@@ -161,7 +161,7 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
   const [yi, setYi] = useState(1);
   const [chosen, setColorBy] = useState<PcaColorBy | null>(null);
   const k = pca?.scores[0]?.length ?? 0;
-  const atypical = useMemo(() => (sourceId ? atypicalScans(view, sourceId) : null), [view, sourceId]);
+  const atypical = useMemo(() => (sourceId ? atypicalScans(view, sourceId)?.atypical ?? null : null), [view, sourceId]);
   const quality = useMemo(() => (atypical ? { flagged: new Set(atypical.map((a) => a.sampleId)), typical: t("qualityTypical"), atypical: t("qualityAtypical") } : undefined), [atypical, t]);
   const fallback: PcaColorBy = atypical?.length ? "quality" : targetId ? "target" : "campaign";
   const colorBy: PcaColorBy = chosen === null || (chosen === "quality" && !quality) ? fallback : chosen;
