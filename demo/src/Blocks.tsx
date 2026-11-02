@@ -627,6 +627,16 @@ export function ProbeSection({ t, locale, view, sourceId, targetId }: Scope) {
 
 const ATYPICAL_MAX = 20;
 
+/** A scan of the demo input (`[source, partition, row, declared id]`): its declared id, else its partition row. */
+function scanLabel(observationId: string): string {
+  try {
+    const [, part, row, declared] = JSON.parse(observationId) as [number, string, number, string | null];
+    return declared ?? `${part} #${row + 1}`;
+  } catch {
+    return observationId;
+  }
+}
+
 export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
   const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
   if (!intrinsic) return null;
@@ -639,8 +649,8 @@ export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
     ? t2.values.flatMap((value, i) => {
       const residual = q.values[i];
       if (value === null || residual === null || residual === undefined) return [];
-      const id = t2.sampleIds[i] ?? "";
-      return [{ id, x: value, y: residual, group: flagged.has(t2.observationIds[i] ?? "") ? t("qualityAtypical") : t("qualityTypical") }];
+      const id = t2.observationIds[i] ?? "";
+      return [{ id: scanLabel(id), details: [t2.sampleIds[i] ?? ""], x: value, y: residual, group: flagged.has(t2.observationIds[i] ?? "") ? t("qualityAtypical") : t("qualityTypical") }];
     })
     : [];
   const g = intrinsic.globals;
@@ -679,8 +689,8 @@ export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
               <ChartDataTable
                 locale={locale}
                 caption={t("qualityList")}
-                columns={[t("unitId"), "T²", "Q"]}
-                rows={atypical.slice(0, ATYPICAL_MAX).map((a) => [a.sampleId, c6(a.t2), c6(a.q)])}
+                columns={[t("sampleCol"), t("scanCol"), "T²", "Q"]}
+                rows={atypical.slice(0, ATYPICAL_MAX).map((a) => [a.sampleId, scanLabel(a.observationId), c6(a.t2), c6(a.q)])}
               />
             ) : <p className="note">{t("qualityNone")}</p>}
             {atypical.length > ATYPICAL_MAX ? <p className="note">{t("tableCap")} {ATYPICAL_MAX} / {atypical.length}</p> : null}

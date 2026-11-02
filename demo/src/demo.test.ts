@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createEngineHost, EngineError } from "./engine";
 import { buildEngineInput, defaultConfig, parseCanonicalInput, parseSeed } from "./input";
 import { syntheticInput } from "./synthetic";
-import { composition, developmentTargetPoints, developmentTargetValues, pcaPoints, sampleRows, spectraPreview } from "./views";
+import { atypicalSpectra, composition, developmentTargetPoints, developmentTargetValues, pcaPoints, sampleRows, spectraPreview } from "./views";
+import type { IntrinsicSignal } from "nirs4all-ui/qualification";
 
 // Field lists of the Rust structs (`#[serde(deny_unknown_fields)]` in nirs4all-preflight-core).
 const RUST_FIELDS = {
@@ -166,6 +167,22 @@ describe("display joins", () => {
     expect(rows.find((r) => r.sampleId === "s25")!.targets.concentration).toBe("hidden");
     expect(rows.find((r) => r.sampleId === "s04")!.targets.concentration).toMatchObject({ status: "censored" });
     expect(rows.find((r) => r.sampleId === "s15")!.incomplete).toBe(1);
+  });
+
+  it("drops a sample whose exact references disagree, as the engine eligibility does", () => {
+    const input = syntheticInput("pitfalls");
+    const target = input.targets.find((t) => t.target_id === "concentration")!;
+    const first = target.values.find((v) => v.status === "exact" && typeof v.value === "number" && developmentTargetValues(input, "concentration").has(v.sample_id))!;
+    target.values.push({ ...first, value: (first.value as number) + 100 });
+    expect(developmentTargetValues(input, "concentration").has(first.sample_id)).toBe(false);
+  });
+
+  it("compares T² and Q each with its own 95th percentile", () => {
+    const signal = (values: number[], p95: number): IntrinsicSignal => ({ id: "x", state: { status: "computed", reasonCode: null } as IntrinsicSignal["state"], unit: null, sampleIds: values.map((_, i) => `s${i}`), observationIds: values.map((_, i) => `o${i}`), values, median: null, p95 });
+    // Q is zero everywhere (one band): the T² tail alone is flagged.
+    expect(atypicalSpectra(signal([1, 2, 3, 4, 5, 100], 50), signal([0, 0, 0, 0, 0, 0], 0)).map((a) => a.observationId)).toEqual(["o5"]);
+    expect(atypicalSpectra(signal([1, 2, 3], 2.9), signal([0, 0, 4], 1)).map((a) => a.observationId)).toEqual(["o2"]);
+    expect(atypicalSpectra(signal([1, 2], 3), signal([0, 0], 0))).toEqual([]);
   });
 
   it("never reads retained-test target values", () => {

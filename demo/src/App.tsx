@@ -153,6 +153,13 @@ export function App() {
     }
   };
 
+  /** Cancels the analysis or the re-import in progress: their pending responses are ignored. */
+  const cancel = () => {
+    job.current += 1;
+    host.current?.cancel();
+    setRun({ state: "cancelled" });
+  };
+
   const reset = () => {
     files.current = null;
     job.current += 1;
@@ -216,7 +223,7 @@ export function App() {
             validation={validation}
             htmlError={htmlError}
             onRun={() => void execute(input, config, origin)}
-            onCancel={() => host.current?.cancel()}
+            onCancel={cancel}
             onDownloadHtml={() => void downloadHtml()}
             {...(files.current ? { onRepetition: (repetition: RepetitionDeclaration | undefined) => void redeclare(repetition) } : {})}
           />

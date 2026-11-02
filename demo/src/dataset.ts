@@ -1,7 +1,8 @@
 import type { DetectedTable } from "./dataset-io";
 import type { EngineInput, InputMetadata, InputOptions, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
 
-export interface IoMatrix { n_rows: number; n_cols: number; data: (number | null)[] }
+/** IO matrix: row-major values, a missing one is NaN. */
+export interface IoMatrix { n_rows: number; n_cols: number; data: Float64Array }
 export interface IoBlock {
   n_samples: number;
   source_ids: string[];
@@ -86,6 +87,8 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
   const identity = full.identity?.provenance;
   const metadataRows: { sampleId: string; block: IoBlock; row: number }[] = [];
   let repetitionFound = false;
+  // Spectral headers of each source: a band-index axis must still describe the same bands everywhere.
+  const sourceHeaders: string[][] = [];
   for (const [part, block] of Object.entries(full.blocks)) {
     if (!block.n_samples) continue;
     const partition = partitionOf(part);
@@ -103,13 +106,18 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
       const repeated = metadata(repetitionColumn, row);
       declared.push(repeated !== undefined);
       const physical = repeated ?? metadata(identity?.sample_id, row);
-      // Separate records preserve a physical sample appearing in both development and test.
-      const sample_id = JSON.stringify([part, physical ?? row]);
+      const instrument = metadata("instrument", row);
+      const campaign = metadata("campaign", row);
+      // Separate records preserve a physical sample appearing in both development and test, or
+      // acquired on several instruments or campaigns; they share its physical_sample_id.
+      const sample_id = JSON.stringify(instrument === undefined && campaign === undefined ? [part, physical ?? row] : [part, physical ?? row, instrument ?? null, campaign ?? null]);
       ids.push(sample_id);
       metadataRows.push({ sampleId: sample_id, block, row });
       const sample: InputSample = { sample_id, partition };
       if (physical !== undefined) sample.physical_sample_id = physical;
-      for (const field of ["instrument", "campaign", "individual_id", "augmentation_parent_id"] as const) {
+      if (instrument !== undefined) sample.instrument = instrument;
+      if (campaign !== undefined) sample.campaign = campaign;
+      for (const field of ["individual_id", "augmentation_parent_id"] as const) {
         const value = metadata(field, row);
         if (value !== undefined) sample[field] = value;
       }
@@ -135,11 +143,13 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
         if (signal) source.signal_type = signal;
         sources[index] = source;
       }
-      if (JSON.stringify(source.axis) !== JSON.stringify(axis) || source.axis_unit !== unit) throw new Error("Spectral axes differ across partitions; align them in nirs4all-io before analysis.");
+      sourceHeaders[index] ??= headers;
+      const sameBands = numericAxis || JSON.stringify(sourceHeaders[index]) === JSON.stringify(headers);
+      if (!sameBands || JSON.stringify(source.axis) !== JSON.stringify(axis) || source.axis_unit !== unit) throw new Error("Spectral axes differ across partitions; align them in nirs4all-io before analysis.");
       for (let row = 0; row < matrix.n_rows; row++) {
         source.sample_ids.push(ids[row]!);
         source.observation_ids.push(JSON.stringify([index, part, row, metadata(identity?.observation_id, row) ?? null]));
-        source.x.push(matrix.data.slice(row * matrix.n_cols, (row + 1) * matrix.n_cols).map(numberOrNull));
+        source.x.push(Array.from(matrix.data.subarray(row * matrix.n_cols, (row + 1) * matrix.n_cols), numberOrNull));
         // A per-row `repetition_type` column wins over the type declared for the repetition column.
         const kind = metadata("repetition_type", row);
         source.repetition_types!.push((["rescan", "repositioning", "repreparation", "biological"] as string[]).includes(kind ?? "") ? kind as RepetitionType : repetition && declared[row] ? repetition.type : "unknown");

@@ -51,7 +51,10 @@ try {
   await page.getByLabel('Colonne de répétition').selectOption('Sample_ID');
   await page.getByRole('button', { name: 'Appliquer et relancer', exact: true }).click();
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
+  // Applying closes the settings; reopened, they show the declaration the rerun used.
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
   assert.equal(await page.getByLabel('Colonne de répétition').inputValue(), 'Sample_ID');
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
   await page.getByRole('button', { name: /Diagnostic/ }).first().click();
   await page.locator('#s-repeat .n4q-repeatability, #s-repeat svg').first().waitFor({ timeout: 10000 });
   assert.equal(await page.locator('#s-repeat .empty').count(), 0, 'Repeatability not measured after declaring the repetition column');

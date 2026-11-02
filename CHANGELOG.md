@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.6 — 2026-11-02
+
+Engine protocols, report schema and numerical results are unchanged; this patch aligns the published packages on the current upstream releases and ships the browser demo work done since 0.1.5.
+
+- Methods 1.3.13 (C ABI 2.20 unchanged, no numerical change): the npm binding depends on `@nirs4all/methods@1.3.13` and CI builds the native library at the v1.3.13 commit. The native intrinsic fixture recaptured with it differs from the 1.3.12 capture only in `backend_version` and the artifact digests; every value is bit-identical.
+- DAG-ML 0.3.44: the engine crate pins `dag-ml-core` `=0.3.44` and the npm binding `dag-ml-wasm` 0.3.44. DAG-ML 0.3.44 adds the required `NestedSelectionRequest::target_missing_sample_ids` field, so earlier releases, which accepted any later `dag-ml-core` 0.3.x (0.1.0 from 0.3.42, 0.1.1 to 0.1.5 from 0.3.43), no longer compile when Cargo resolves 0.3.44; the exact pin keeps a future DAG-ML patch from breaking this release the same way. The validation probe passes an empty set (only samples with an eligible exact reference enter it) and gives the same results: fold sets without target-missing samples keep their bytes and fingerprints.
+- Browser demo:
+  - The diagnosis sections are listed in a sticky side menu.
+  - A metadata column (IO's `repetition`, for example `Sample_ID`) can be declared as the physical sample of repeated scans, with its technical repetition type. The dropped files are reassembled through IO and the analysis reruns, so technical repeatability becomes measurable. A per-row `repetition_type` keeps precedence over the declared type.
+  - Imported datasets request the intrinsic spectral signatures and, when they hold a retained test set, the X-only external-domain audit (test references are never read).
+  - Spectral quality section: the in-sample T² and Q signatures (0.1.4), isolated spikes, jumps and noise of every development spectrum. Scans above the dataset's own 95th percentile of T² or Q (each compared with its own percentile) are listed and drawn in red; this is a within-dataset rank, not a calibrated control limit. Scans the PCA could not use are drawn as "not evaluated".
+  - Control points no longer report a silent "all clear": a missing reference is no reference (each target keeps only its own samples) and development samples without a reference are counted, a refused input shows its validation issues grouped by code, T²/Q unavailability is stated with its reason, and an unevaluated spike or jump count is never read as zero. Extreme y values are marked against the engine's quartiles with Tukey fences, a stated convention, on the engine's eligible samples (a sample whose exact references disagree has no value).
+  - Bands empty on every row are left out of the input, and the import summary says how many; non-monotonic spectral headers fall back to the band index. Readable availability badges, bounded evidence rows and report frames fitted to their content.
+  - A physical sample acquired on several instruments or campaigns keeps one sample record per acquisition context, sharing its `physical_sample_id`. Partitions whose non-monotonic spectral headers name different bands are refused instead of sharing a band-index axis.
+  - Cancel also stops a pending repetition re-import.
+  - `nirs4all-ui` comes from its npm release 0.2.0 instead of a GitHub commit; `@nirs4all/formats-wasm` 0.2.14; `@nirs4all/io-wasm` 0.2.14, whose matrices arrive as `Float64Array` with `NaN` for a missing value (read back as missing cells, never as zero).
+
 ## 0.1.5 — 2026-11-02
 
 - In-sample T²/Q (`intrinsic.pca.*`) is fitted on, and describes, the complete real development spectra; incomplete ones are counted in `n_excluded_incomplete_observations` (population `development_real_complete`) instead of making the whole family unavailable. One missing cell among 912,024 used to suppress T²/Q for a 360-spectrum set. Fewer than three complete spectra give `PCA_REQUIRES_THREE_COMPLETE_OBSERVATIONS`.
