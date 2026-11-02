@@ -152,7 +152,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} /> : null}
           {run.state === "error" ? (
             <div role="alert" className="alert">
-              <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : `${t("engineError")} (${run.code}) : ${run.message}`}</p>
+              <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>
               {validation ? (
                 <>
                   <p>{t("validKo")}</p>

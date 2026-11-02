@@ -132,4 +132,14 @@ describe("native dataset import → shared builder → preflight", () => {
     expect(input.metadata?.columns.map((c) => c.name)).toEqual(["cultivar", "replicate", "site"]);
     expect(input.targets.map((t) => t.target_id)).toEqual(["protein"]);
   });
+
+  it("does not take a shared metadata ID (one per source dataset) as the sample identity", () => {
+    const { input } = importFiles([
+      file("Xtrain.csv", "1000;1100;1200\n0.1;0.2;0.3\n0.4;0.5;0.6\n0.7;0.8;0.9\n0.2;0.3;0.4"),
+      file("Ytrain.csv", "protein\n11\n12\n13\n14"),
+      file("Mtrain.csv", "Dataset ID;site\nd1;north\nd1;south\nd2;north\nd2;south"),
+    ], "shared", io, formats);
+    expect(input.samples).toHaveLength(4);
+    expect(input.samples.every((s) => s.physical_sample_id === undefined)).toBe(true);
+  });
 });

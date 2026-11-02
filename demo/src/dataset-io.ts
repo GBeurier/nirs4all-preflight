@@ -39,7 +39,7 @@ function diagnosticSpec(spec: DatasetSpec): DatasetSpec {
 const roleMap: Record<string, DatasetRole> = { features: "x", targets: "y", metadata: "metadata", id: "id", ignore: "ignored" };
 
 /** Native IO owns inference, table parsing, joins and assembly; UI gets only previews. */
-export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: FormatsRuntime, params: Readonly<Record<string, Record<string, unknown>>> = {}): DatasetDraft {
+export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: FormatsRuntime): DatasetDraft {
   if (new Set(files.map((f) => f.name)).size !== files.length) throw new Error("Duplicate input filenames. Keep their relative folder paths.");
   const records: RecordSet[] = [];
   const sidecars = Object.fromEntries(files.map((f) => [f.name, f.bytes]));
@@ -56,29 +56,18 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
   const plan = io.inferDataset(files, records, {}) as DatasetPlan;
   if (!plan.resolved_spec?.sources.length) throw new Error("nirs4all-io could not infer a dataset from these files.");
   const spec = diagnosticSpec(plan.resolved_spec);
-  // Parsing parameters declared by the host (e.g. decimal commas) override IO's guesses.
-  for (const source of spec.sources) {
-    const declared = typeof source.input === "string" ? params[source.input] : undefined;
-    if (declared) source.params = { ...source.params, ...declared };
-  }
-  // Convention-named X/Y files may receive row-order joins from the global
-  // plan. Ask IO to inspect each table independently so shared IDs are available
-  // in the builder and lookup joins preserve repeated X observations.
-  for (const source of spec.sources) {
+  // IO keys the sources by an identifier of the spectra table. When the
+  // spectra carry none, a target or metadata table may still name the
+  // physical samples: ask IO to inspect such a table alone (small tables) and
+  // keep its identifier only when IO finds it unique per row.
+  if (!spec.sample_index) for (const source of spec.sources) {
+    if ((source.role !== "metadata" && source.role !== "targets") || typeof source.key === "string") continue;
     const input = files.find((file) => file.name === source.input);
     if (!input || !/\.(csv|tsv|txt)$/i.test(input.name)) continue;
-    const extension = input.name.split(".").pop();
-    const local = io.inferDataset([{ ...input, name: `preview.${extension}` }], [], {}) as DatasetPlan;
+    const local = io.inferDataset([{ ...input, name: `preview.${input.name.split(".").pop()}` }], [], {}) as DatasetPlan;
     const key = (local.resolved_spec?.sample_index as { key?: string } | undefined)?.key;
-    if (key) source.key = key;
-  }
-  for (const source of spec.sources) {
-    const join = source.join as { right?: string } | undefined;
-    const anchor = spec.sources.find((candidate) => candidate.id === join?.right);
-    if (typeof source.key === "string" && typeof anchor?.key === "string") {
-      source.join = { left: source.id, right: anchor.id, left_on: source.key, right_on: anchor.key,
-        cardinality: source.role === "targets" || source.role === "metadata" ? "m:1" : "1:1", coverage: "complete" };
-    }
+    // Only a unique column names samples; a shared one (e.g. a dataset ID) does not.
+    if (key && (local.identity as { ambiguous?: boolean } | null | undefined)?.ambiguous === false) source.key = key;
   }
   const decodedNames = new Set(records.map((r) => r.source));
   const raw = files.filter((f) => !decodedNames.has(f.name));
