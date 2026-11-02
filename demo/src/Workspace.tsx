@@ -205,7 +205,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </div>
         </div>
         <div className="container">
-          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} running={running} onRepetition={onRepetition} /> : null}
+          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} onRepetition={onRepetition && ((r) => { setSettingsOpen(false); onRepetition(r); })} /> : null}
           {run.state === "error" ? (
             <div role="alert" className="alert">
               {run.code === "INPUT_REFUSED" ? null : <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>}
@@ -332,14 +332,14 @@ function NextStep({ label, t, onClick }: { label: string; t: T; onClick: () => v
   );
 }
 
-type SettingsProps = { t: T; input: EngineInput; config: AnalysisConfig; onChange: (c: AnalysisConfig) => void; origin: Origin; running: boolean; onRepetition: WorkspaceProps["onRepetition"] };
+type SettingsProps = { t: T; input: EngineInput; config: AnalysisConfig; onChange: (c: AnalysisConfig) => void; origin: Origin; onRepetition: WorkspaceProps["onRepetition"] };
 
-function Settings({ t, input, config, onChange, origin, running, onRepetition }: SettingsProps) {
+function Settings({ t, input, config, onChange, origin, onRepetition }: SettingsProps) {
   const [seedText, setSeedText] = useState(config.seed === null ? "" : String(config.seed));
   const seed = parseSeed(seedText);
   return (
     <form id="settings" className="settings" onSubmit={(e) => e.preventDefault()}>
-      {origin.columns?.length ? <RepetitionSetting key={`${origin.repetition?.column ?? ""}:${origin.repetition?.type ?? ""}`} t={t} columns={origin.columns} current={origin.repetition} running={running} onApply={onRepetition} /> : null}
+      {origin.columns?.length ? <RepetitionSetting key={`${origin.repetition?.column ?? ""}:${origin.repetition?.type ?? ""}`} t={t} columns={origin.columns} current={origin.repetition} onApply={onRepetition} /> : null}
       <label>
         <span>{t("cfgUnit")}</span>
         <select value={config.independenceUnit} onChange={(e) => onChange({ ...config, independenceUnit: e.target.value as IndependenceUnit })} aria-describedby="unit-hint">
@@ -378,7 +378,7 @@ function Settings({ t, input, config, onChange, origin, running, onRepetition }:
 }
 
 /** Declares the metadata column whose equal values are repeated acquisitions of one physical sample. */
-function RepetitionSetting({ t, columns, current, running, onApply }: { t: T; columns: string[]; current: RepetitionDeclaration | undefined; running: boolean; onApply: WorkspaceProps["onRepetition"] }) {
+function RepetitionSetting({ t, columns, current, onApply }: { t: T; columns: string[]; current: RepetitionDeclaration | undefined; onApply: WorkspaceProps["onRepetition"] }) {
   const [column, setColumn] = useState(current?.column ?? "");
   const [type, setType] = useState<RepetitionDeclaration["type"]>(current?.type ?? "rescan");
   const changed = column !== (current?.column ?? "") || (column !== "" && type !== current?.type);
@@ -397,7 +397,7 @@ function RepetitionSetting({ t, columns, current, running, onApply }: { t: T; co
           {DECLARABLE_REPETITIONS.map((k) => <option key={k} value={k}>{t(`repType_${k}` as TextKey)}</option>)}
         </select>
       </label>
-      <button type="button" className="btn btn-outline" disabled={!onApply || !changed || running} onClick={() => onApply?.(column ? { column, type } : undefined)}>{t("cfgRepetitionApply")}</button>
+      <button type="button" className="btn btn-outline" disabled={!onApply || !changed} onClick={() => onApply?.(column ? { column, type } : undefined)}>{t("cfgRepetitionApply")}</button>
       <small id="repetition-hint">{onApply ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
     </fieldset>
   );
