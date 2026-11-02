@@ -41,6 +41,19 @@ describe("canonical input boundary", () => {
     expect(buildEngineInput(input, { ...config, seed: null }).options).not.toHaveProperty("seed");
   });
 
+  it("declares the three heavy computations only when full computation is chosen", () => {
+    const input = syntheticInput("clean");
+    input.options.domain_shift = { external_domain_audit: true };
+    const config = defaultConfig(input);
+    expect(config.fullComputation).toBe(false);
+    expect(buildEngineInput(input, config).options).not.toHaveProperty("clustering");
+    expect(buildEngineInput(input, config).options.domain_shift).toEqual({ external_domain_audit: true });
+    const full = buildEngineInput(input, { ...config, fullComputation: true });
+    expect(full.options.clustering).toEqual({ subsample_refit: true });
+    expect(full.options.domain_shift).toEqual({ external_domain_audit: true, energy_on_spectra: true, monitor_on_spectra: true });
+    expect(defaultConfig(full).fullComputation).toBe(true);
+  });
+
   it("accepts only seeds JS can carry exactly", () => {
     expect(parseSeed("")).toBeNull();
     expect(parseSeed("42")).toBe(42);

@@ -47,7 +47,7 @@ interface WorkspaceProps {
 }
 
 const sameConfig = (a: AnalysisConfig, b: AnalysisConfig) =>
-  a.independenceUnit === b.independenceUnit && a.assumeOneObservationPerSample === b.assumeOneObservationPerSample && a.seed === b.seed;
+  a.independenceUnit === b.independenceUnit && a.assumeOneObservationPerSample === b.assumeOneObservationPerSample && a.seed === b.seed && a.fullComputation === b.fullComputation;
 
 export function Workspace({ t, locale, input, origin, config, onConfig, run, result, validation, htmlError, onRun, onCancel, onDownloadHtml }: WorkspaceProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -307,6 +307,11 @@ function Settings({ t, input, config, onChange }: { t: T; input: EngineInput; co
         <input type="checkbox" checked={config.assumeOneObservationPerSample} onChange={(e) => onChange({ ...config, assumeOneObservationPerSample: e.target.checked })} />
         <span>{t("cfgOneObs")}</span>
       </label>
+      <label className="check">
+        <input type="checkbox" checked={config.fullComputation} aria-describedby="full-hint" onChange={(e) => onChange({ ...config, fullComputation: e.target.checked })} />
+        <span>{t("cfgFull")}</span>
+      </label>
+      <small id="full-hint">{t("cfgFullHint")}</small>
       <p className="note settings-scope">{t("cfgScope")}</p>
     </form>
   );

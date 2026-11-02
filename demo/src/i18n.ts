@@ -25,7 +25,7 @@ const DICT = {
   tryDemo: { fr: "Ou essayez un exemple", en: "Or try an example" },
   realData: { fr: "Réel", en: "Real" },
   beerDesc: { fr: "60 bières × 576 bandes, extrait original (régression), partitions d’origine.", en: "60 beers × 576 bands, original extract (regression), original splits." },
-  anophelesDesc: { fr: "333 moustiques × 2 151 bandes, oocystes (classification). Analyse de plusieurs minutes.", en: "333 mosquitoes × 2,151 bands, oocysts (classification). Takes several minutes." },
+  anophelesDesc: { fr: "333 moustiques × 2 151 bandes, oocystes (classification binaire), partitions d’origine.", en: "333 mosquitoes × 2,151 bands, oocysts (binary classification), original splits." },
   dropTitle: { fr: "Déposez vos fichiers NIRS ici", en: "Drop your NIRS files here" },
   dropOr: { fr: "ou", en: "or" },
   browse: { fr: "parcourez vos fichiers", en: "browse your files" },
@@ -104,6 +104,8 @@ const DICT = {
 
   // settings
   cfgUnit: { fr: "Unité d'indépendance", en: "Independence unit" },
+  cfgFull: { fr: "Calcul complet (lent)", en: "Full computation (slow)" },
+  cfgFullHint: { fr: "Réajuste l'ACP à chaque sous-échantillon du clustering et calcule énergies et moniteur T²/Q sur toutes les bandes, au lieu de l'espace ACP réduit. Plusieurs minutes sur les grands jeux.", en: "Refits the PCA on every clustering subsample and computes energies and the T²/Q monitor on every band instead of the reduced PCA space. Several minutes on large datasets." },
   cfgOneObs: { fr: "Supposer une observation par échantillon", en: "Assume one observation per sample" },
   cfgSeed: { fr: "Graine (optionnelle)", en: "Seed (optional)" },
   unit_unknown: { fr: "inconnue", en: "unknown" },

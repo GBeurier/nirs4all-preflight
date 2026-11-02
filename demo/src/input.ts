@@ -56,6 +56,8 @@ export interface InputOptions {
   seed?: number;
   max_cells?: number;
   max_samples?: number;
+  clustering?: { subsample_refit?: boolean };
+  domain_shift?: { energy_on_spectra?: boolean; monitor_on_spectra?: boolean; [key: string]: unknown };
 }
 
 export interface InputMetadataColumn {
@@ -123,6 +125,8 @@ export interface AnalysisConfig {
   independenceUnit: IndependenceUnit;
   assumeOneObservationPerSample: boolean;
   seed: number | null;
+  /** Restores the heavy computations: PCA refit per clustering subsample, energies and T²/Q monitor on every band. */
+  fullComputation: boolean;
 }
 
 export function defaultConfig(input: EngineInput): AnalysisConfig {
@@ -130,6 +134,7 @@ export function defaultConfig(input: EngineInput): AnalysisConfig {
     independenceUnit: input.options.independence_unit ?? "unknown",
     assumeOneObservationPerSample: input.options.assume_one_observation_per_sample ?? false,
     seed: input.options.seed ?? null,
+    fullComputation: Boolean(input.options.clustering?.subsample_refit || input.options.domain_shift?.energy_on_spectra || input.options.domain_shift?.monitor_on_spectra),
   };
 }
 
@@ -147,6 +152,15 @@ export function buildEngineInput(input: EngineInput, config: AnalysisConfig): En
   delete options.seed;
   if (config.assumeOneObservationPerSample) options.assume_one_observation_per_sample = true;
   if (config.seed !== null) options.seed = config.seed;
+  const domainShift = Object.fromEntries(Object.entries(options.domain_shift ?? {}).filter(([key]) => key !== "energy_on_spectra" && key !== "monitor_on_spectra"));
+  delete options.clustering;
+  delete options.domain_shift;
+  if (config.fullComputation) {
+    options.clustering = { subsample_refit: true };
+    options.domain_shift = { ...domainShift, energy_on_spectra: true, monitor_on_spectra: true };
+  } else if (Object.keys(domainShift).length) {
+    options.domain_shift = domainShift;
+  }
   return { schema_version: 1, ...(input.data_origin ? { data_origin: input.data_origin } : {}), sources: input.sources, samples: input.samples, targets: input.targets, ...(input.metadata ? { metadata: input.metadata } : {}), options };
 }
 
