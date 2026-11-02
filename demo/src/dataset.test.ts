@@ -142,4 +142,39 @@ describe("native dataset import → shared builder → preflight", () => {
     expect(input.samples).toHaveLength(4);
     expect(input.samples.every((s) => s.physical_sample_id === undefined)).toBe(true);
   });
+
+  it("gives each target only its own references: a missing y is no reference, not an empty exact one", () => {
+    const { input } = importFiles([
+      file("Xtrain.csv", "1000;1100;1200\n0.1;0.2;0.3\n0.4;0.5;0.6\n0.7;0.8;0.9\n0.3;0.1;0.2\n0.6;0.4;0.5\n0.9;0.7;0.8"),
+      file("Ytrain.csv", "protein;starch;sugar\n11.2;;\n12.7;30.1;\n;31.4;\n10.9;28.2;\n13.3;;\n12.1;29.6;"),
+    ], "sparse", io, formats);
+    expect(input.targets.map((t) => [t.target_id, t.kind, t.values.length])).toEqual([["protein", "continuous", 5], ["starch", "continuous", 4]]);
+    expect(input.targets.flatMap((t) => t.values).every((v) => typeof v.value === "number")).toBe(true);
+  });
+
+  it("falls back to the band index when the spectral headers are not monotonic", () => {
+    const input = assemble([file("combined.csv", "sample_id;1100;1200;1000;protein\ns1;0.1;0.2;0.3;11\ns2;0.4;0.5;0.6;12")]);
+    expect(input.sources[0]?.axis).toEqual([0, 1, 2]);
+    expect(input.sources[0]?.axis_unit).toBe("index");
+  });
+
+  it("leaves out a band empty on every row and says so", () => {
+    const { input, tables } = importFiles([
+      file("Xtrain.csv", "1000;1100;1200;1300\n0.1;0.2;0.3;\n0.4;0.5;0.6;\n0.7;0.8;0.9;"),
+      file("Ytrain.csv", "protein\n11.2\n12.7\n10.4"),
+    ], "edge", io, formats);
+    expect(input.sources[0]?.axis).toEqual([1000, 1100, 1200]);
+    expect(input.sources[0]?.x.every((row) => row.length === 3 && row.every((v) => v !== null))).toBe(true);
+    expect(tables.find((table) => table.role === "x")?.emptyBands).toBe(1);
+  });
+
+  it("requests the spectral signatures, and the X-only test audit when a test set exists", () => {
+    const train = assemble([file("combined.csv", "sample_id;1000;1100;1200;protein\ns1;0.1;0.2;0.3;11\ns2;0.4;0.5;0.6;12")]);
+    expect(train.options).toEqual({ independence_unit: "unknown", intrinsic_qc: {} });
+    const both = assemble([
+      file("Xtrain.csv", "1000,1100,1200\n0.1,0.2,0.3\n0.4,0.5,0.6"), file("Ytrain.csv", "protein\n11\n12"),
+      file("Xtest.csv", "1000,1100,1200\n0.7,0.8,0.9"), file("Ytest.csv", "protein\n13"),
+    ]);
+    expect(both.options.domain_shift).toEqual({ external_domain_audit: true });
+  });
 });

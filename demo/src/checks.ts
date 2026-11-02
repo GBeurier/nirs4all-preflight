@@ -6,6 +6,7 @@ import {
   extractDomainShift,
   extractDuplicates,
   extractIntegrity,
+  extractIntrinsic,
   extractObservationFlow,
   extractPca,
   extractProbes,
@@ -18,6 +19,7 @@ import {
 import type { T } from "./App";
 import { fill, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
+import { atypicalSpectra, developmentTargetValues } from "./views";
 
 const n = (v: number, locale: Locale) => (Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(3)).toLocaleString(locale));
 
@@ -98,6 +100,53 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
     detail: pca ? f("chkStructureOk", { n: pca.sampleIds.length, d: pca.effectiveDimension === null ? "—" : n(pca.effectiveDimension, locale) }) : t("chkStructureNa"),
     href: "#s-structure",
   });
+
+  const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
+  if (intrinsic) {
+    const t2 = intrinsic.signals["pca.pca_t2"];
+    const q = intrinsic.signals["pca.pca_q"];
+    if (t2 && q) {
+      const ready = t2.state.status === "computed" && q.state.status === "computed";
+      const atypical = ready ? atypicalSpectra(t2, q) : [];
+      items.push({
+        id: "atypical",
+        title: t("chkAtypical"),
+        status: !ready ? "unavailable" : atypical.length ? "attention" : "ok",
+        detail: !ready ? f("chkAtypicalNa", { r: t2.state.reasonCode ?? q.state.reasonCode ?? "—" }) : atypical.length ? f("chkAtypicalKo", { n: atypical.length, ids: atypical.slice(0, 3).map((a) => a.sampleId).join(", ") }) : t("chkAtypicalOk"),
+        href: "#s-quality",
+      });
+    }
+    const spikes = intrinsic.globals["events.global_spike_count"];
+    const jumps = intrinsic.globals["events.global_jump_count"];
+    if (spikes !== undefined || jumps !== undefined) {
+      const total = (spikes ?? 0) + (jumps ?? 0);
+      items.push({
+        id: "events",
+        title: t("chkEvents"),
+        status: total > 0 ? "attention" : "ok",
+        detail: total > 0 ? f("chkEventsKo", { s: spikes ?? 0, j: jumps ?? 0 }) : t("chkEventsOk"),
+        href: "#s-quality",
+      });
+    }
+  }
+
+  if (targetId) {
+    // Tukey fences on the engine's own quartiles: a convention for inspection, not a calibrated threshold.
+    const summary = extractTarget(view, targetId).summary;
+    if (summary) {
+      const iqr = summary.q75 - summary.q25;
+      const lo = summary.q25 - 1.5 * iqr;
+      const hi = summary.q75 + 1.5 * iqr;
+      const outside = [...developmentTargetValues(input, targetId)].filter(([, v]) => v < lo || v > hi);
+      items.push({
+        id: "y-outliers",
+        title: `${t("chkYOutliers")} · ${targetId}`,
+        status: outside.length ? "attention" : "ok",
+        detail: outside.length ? f("chkYOutliersKo", { n: outside.length, lo: n(lo, locale), hi: n(hi, locale) }) : f("chkYOutliersOk", { lo: n(lo, locale), hi: n(hi, locale) }),
+        href: "#s-target",
+      });
+    }
+  }
 
   if (sourceId) items.push(...blockChecks(view, sourceId, targetId, t, locale));
 

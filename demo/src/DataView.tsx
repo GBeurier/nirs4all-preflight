@@ -76,6 +76,7 @@ export function DataView({ t, locale, input, sourceId, targetId }: { t: T; local
                 ))}
               </div>
             </div>
+            {source.axis_unit === "index" ? <p className="note">{t("axisIndexNote")}</p> : null}
             <Measured>{(w) => (
               <SpectraExplorer
                 axis={source.axis}

@@ -186,6 +186,25 @@ export interface DetectedTable {
   file: string;
   role: "x" | "y" | "metadata" | "table";
   partition: "train" | "test" | "predict" | null;
+  /** bands of this spectra file left out because every row is empty there */
+  emptyBands?: number;
+}
+
+/**
+ * Leaves out bands with no value on any row: they carry nothing, and a band empty everywhere
+ * (e.g. a dead detector edge) would make every spectrum incomplete for the PCA-based protocols.
+ */
+function dropEmptyBands(input: EngineInput): number {
+  let dropped = 0;
+  for (const source of input.sources) {
+    const keep = source.axis.map((_, j) => source.x.some((row) => row[j] !== null && row[j] !== undefined));
+    if (keep.every(Boolean)) continue;
+    dropped += keep.filter((k) => !k).length;
+    source.axis = source.axis.filter((_, j) => keep[j]);
+    source.x = source.x.map((row) => row.filter((_, j) => keep[j]));
+    if (source.valid_mask) source.valid_mask = source.valid_mask.map((row) => row.filter((_, j) => keep[j]));
+  }
+  return dropped;
 }
 
 const fileRole: Record<string, DetectedTable["role"]> = { features: "x", targets: "y", metadata: "metadata" };
@@ -201,11 +220,13 @@ export function importFiles(files: NamedFile[], name: string, io: IoRuntime, for
     for (const target of input.targets) {
       if (target.kind === "categorical") continue;
       target.kind = "categorical";
-      target.values = target.values.map(({ value, ...reference }) => ({ ...reference, category: value === null || value === undefined ? null : String(value) }));
+      target.values = target.values.map(({ value, ...reference }) => ({ ...reference, category: String(value) }));
     }
   }
+  const emptyBands = dropEmptyBands(input);
   const tables = draft.spec.sources.flatMap((source) => (Array.isArray(source.input) ? source.input as string[] : [source.input as string]).map((file): DetectedTable => ({
     file, role: fileRole[source.role] ?? "table", partition: source.partition === "train" || source.partition === "test" || source.partition === "predict" ? source.partition : null,
+    ...(emptyBands && fileRole[source.role] === "x" ? { emptyBands } : {}),
   })));
   return { input, tables, skipped };
 }

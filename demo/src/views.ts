@@ -1,6 +1,6 @@
 // Display joins between the canonical input and engine results. No statistics: rows are
 // selected, labelled and coloured; every number shown comes from the input or the engine.
-import type { PcaStructure, ScorePoint, TargetPoint } from "nirs4all-ui/qualification";
+import type { IntrinsicSignal, PcaStructure, ScorePoint, TargetPoint } from "nirs4all-ui/qualification";
 import type { EngineInput, InputSample, InputSource } from "./input";
 
 export type RowKind = "development" | "augmented" | "retained_test" | "prediction" | "undeclared";
@@ -177,4 +177,18 @@ export function pcaPoints(input: EngineInput, pca: PcaStructure, xi: number, yi:
     if (colorBy === "target") point.value = single ? (values.get(id) ?? null) : null;
     return point;
   });
+}
+
+/** Development spectra beyond the engine's 95th percentile of in-sample T² or Q, most atypical first. */
+export interface AtypicalSpectrum { sampleId: string; observationId: string; t2: number; q: number; ratio: number }
+export function atypicalSpectra(t2: IntrinsicSignal, q: IntrinsicSignal): AtypicalSpectrum[] {
+  if (t2.p95 === null || q.p95 === null || t2.p95 <= 0 || q.p95 <= 0) return [];
+  const out: AtypicalSpectrum[] = [];
+  t2.values.forEach((value, i) => {
+    const residual = q.values[i];
+    if (value === null || residual === null || residual === undefined) return;
+    const ratio = Math.max(value / t2.p95!, residual / q.p95!);
+    if (ratio > 1) out.push({ sampleId: t2.sampleIds[i] ?? "", observationId: t2.observationIds[i] ?? "", t2: value, q: residual, ratio });
+  });
+  return out.sort((a, b) => b.ratio - a.ratio);
 }

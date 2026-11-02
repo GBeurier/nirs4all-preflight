@@ -57,7 +57,9 @@ export interface InputOptions {
   max_cells?: number;
   max_samples?: number;
   clustering?: { subsample_refit?: boolean };
-  domain_shift?: { energy_on_spectra?: boolean; monitor_on_spectra?: boolean; [key: string]: unknown };
+  domain_shift?: { energy_on_spectra?: boolean; monitor_on_spectra?: boolean; external_domain_audit?: boolean; [key: string]: unknown };
+  /** Descriptive per-spectrum signatures; `{}` keeps the engine defaults. */
+  intrinsic_qc?: Record<string, unknown>;
 }
 
 export interface InputMetadataColumn {
