@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import { buildQualificationReportView, evidenceCsv, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
 import { baseName, type Origin, type Result, type Run, type T } from "./App";
@@ -31,6 +31,47 @@ function issueGroups(validation: EngineValidation) {
     groups.set(issue.code, group);
   }
   return [...groups.values()].sort((a, b) => Number(b.blocking) - Number(a.blocking));
+}
+
+/** Diagnosis sections in display order; the menu lists those present in the report. */
+const DIAG_ORDER = ["s-overview", "s-populations", "s-quality", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-repeat", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
+const diagMenu = (scope: Scope): { id: string; label: TextKey }[] =>
+  [{ id: "s-overview", label: "diagTitle" as TextKey }, ...DIAG_LINKS, ...presentSections(scope)].sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
+
+/** Sticky left menu of the diagnosis sections; the section in view is highlighted. */
+function DiagnosisMenu({ t, items }: { t: T; items: { id: string; label: TextKey }[] }) {
+  const [active, setActive] = useState(items[0]?.id ?? "");
+  const side = useRef<HTMLElement>(null);
+  const ids = items.map((i) => i.id).join(" ");
+  useEffect(() => {
+    // Horizontal bar on narrow screens: keep the current section's link in view.
+    const bar = side.current;
+    const link = bar?.querySelector<HTMLElement>(`a[href="#${active}"]`);
+    if (bar && link && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = link.offsetLeft - 16;
+  }, [active]);
+  useEffect(() => {
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (visible) setActive(visible.target.id);
+    }, { rootMargin: "-25% 0px -65% 0px" });
+    for (const id of ids.split(" ")) {
+      const el = document.getElementById(id);
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, [ids]);
+  return (
+    <aside className="diag-side" ref={side}>
+      <nav aria-label={t("diagCharts")}>
+        <p className="diag-side-title">{t("diagCharts")}</p>
+        <ol>
+          {items.map((item) => (
+            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}</a></li>
+          ))}
+        </ol>
+      </nav>
+    </aside>
+  );
 }
 
 /** Which journey step owns an in-page anchor. */
@@ -223,11 +264,10 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
         ) : null}
 
         {view === "diagnosis" && scope ? (
-          <>
+          <div className="diag-layout">
+            <DiagnosisMenu t={t} items={diagMenu(scope)} />
+            <div className="diag-main">
             <DiagnosisSummary {...scope} checks={checks} />
-            <nav className="chip-nav" aria-label={t("diagCharts")}>
-              {[...DIAG_LINKS, ...presentSections(scope)].map((l) => <a key={l.id} href={`#${l.id}`} className="chip-link">{t(l.label)}</a>)}
-            </nav>
             <PopulationsSection {...scope} />
             <SpectralQualitySection {...scope} />
             <DuplicatesSection {...scope} />
@@ -241,7 +281,8 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
             <DomainShiftSection {...scope} />
             <ProbeSection {...scope} />
             <NextStep label={t("stepEvidence")} t={t} onClick={() => go("evidence")} />
-          </>
+            </div>
+          </div>
         ) : null}
 
         {view === "evidence" && scope ? (
