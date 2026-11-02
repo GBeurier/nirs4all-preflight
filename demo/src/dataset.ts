@@ -65,14 +65,27 @@ function sampleMetadata(rows: { sampleId: string; block: IoBlock; row: number }[
   return columns.length ? { columns, values } : undefined;
 }
 
+/** Technical repetition types a user can declare for a whole repetition column. */
+export const DECLARABLE_REPETITIONS = ["rescan", "repositioning", "repreparation"] as const satisfies readonly RepetitionType[];
+
+/**
+ * A metadata column naming the physical sample of each row (IO's `repetition` column, e.g.
+ * `Sample_ID`): rows sharing a value are repeated acquisitions of the declared type.
+ */
+export interface RepetitionDeclaration {
+  column: string;
+  type: (typeof DECLARABLE_REPETITIONS)[number];
+}
+
 /** Contract adapter only. IO already decoded, aligned and partitioned every row. */
-export function toEngineInput(full: AssembledDataset, sourceIds: readonly string[] = []): EngineInput {
+export function toEngineInput(full: AssembledDataset, sourceIds: readonly string[] = [], repetition?: RepetitionDeclaration): EngineInput {
   if (full.assembled_schema_version !== 2) throw new Error("Expected nirs4all-io assembled dataset v2.");
   const sources: InputSource[] = [];
   const samples = new Map<string, InputSample>();
   const targets = new Map<string, InputTarget>();
   const identity = full.identity?.provenance;
   const metadataRows: { sampleId: string; block: IoBlock; row: number }[] = [];
+  let repetitionFound = false;
   for (const [part, block] of Object.entries(full.blocks)) {
     if (!block.n_samples) continue;
     const partition = partitionOf(part);
@@ -81,9 +94,15 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
       const value = block.metadata?.columns.find((c) => c.name === name)?.values[row];
       return value === null || value === undefined || value === "" ? undefined : String(value);
     };
+    // IO prefixes a metadata column with its source id when the name collides ("train_m__Sample_ID").
+    const repetitionColumn = repetition && block.metadata?.columns.find((c) => c.name === repetition.column || sourceIds.some((id) => c.name === `${id}__${repetition.column}`))?.name;
+    if (repetitionColumn) repetitionFound = true;
     const ids: string[] = [];
+    const declared: boolean[] = [];
     for (let row = 0; row < block.n_samples; row++) {
-      const physical = metadata(identity?.sample_id, row);
+      const repeated = metadata(repetitionColumn, row);
+      declared.push(repeated !== undefined);
+      const physical = repeated ?? metadata(identity?.sample_id, row);
       // Separate records preserve a physical sample appearing in both development and test.
       const sample_id = JSON.stringify([part, physical ?? row]);
       ids.push(sample_id);
@@ -121,8 +140,9 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
         source.sample_ids.push(ids[row]!);
         source.observation_ids.push(JSON.stringify([index, part, row, metadata(identity?.observation_id, row) ?? null]));
         source.x.push(matrix.data.slice(row * matrix.n_cols, (row + 1) * matrix.n_cols).map(numberOrNull));
-        const repetition = metadata("repetition_type", row);
-        source.repetition_types!.push((["rescan", "repositioning", "repreparation", "biological"] as string[]).includes(repetition ?? "") ? repetition as RepetitionType : "unknown");
+        // A per-row `repetition_type` column wins over the type declared for the repetition column.
+        const kind = metadata("repetition_type", row);
+        source.repetition_types!.push((["rescan", "repositioning", "repreparation", "biological"] as string[]).includes(kind ?? "") ? kind as RepetitionType : repetition && declared[row] ? repetition.type : "unknown");
       }
     });
     if (block.y) {
@@ -145,7 +165,8 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
     }
   }
   if (!sources.length || !samples.size) throw new Error("No spectra found in the dataset.");
-  const reserved = new Set([identity?.sample_id, identity?.observation_id, identity?.group_id].filter((name): name is string => typeof name === "string"));
+  if (repetition && !repetitionFound) throw new Error(`Repetition column not found in the dataset metadata: ${repetition.column}`);
+  const reserved = new Set([identity?.sample_id, identity?.observation_id, identity?.group_id, repetition?.column].filter((name): name is string => typeof name === "string"));
   const metadata = sampleMetadata(metadataRows, reserved, sourceIds);
   // Spectral signatures (T²/Q, distance to the mean spectrum, spikes, jumps, noise) on the development
   // spectra, and the X-only audit of a retained test set against development (test Y is never read).
@@ -161,4 +182,8 @@ export interface SavedDataset {
   input: EngineInput;
   /** How nirs4all-io read each file. */
   tables?: DetectedTable[];
+  /** Metadata columns IO carried, offered as repetition columns. */
+  columns?: string[];
+  /** Repetition column the input was assembled with. */
+  repetition?: RepetitionDeclaration;
 }

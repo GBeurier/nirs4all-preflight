@@ -9,6 +9,7 @@ import type { EngineValidation } from "./engine";
 import { fill, type TextKey } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { countIndependenceGroups, defaultConfig, parseSeed, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
+import { DECLARABLE_REPETITIONS, type RepetitionDeclaration } from "./dataset";
 import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
@@ -97,12 +98,14 @@ interface WorkspaceProps {
   onRun: () => void;
   onCancel: () => void;
   onDownloadHtml: () => void;
+  /** Re-imports the dropped files with this repetition column; absent when the files are not in memory. */
+  onRepetition?: (repetition: RepetitionDeclaration | undefined) => void;
 }
 
 const sameConfig = (a: AnalysisConfig, b: AnalysisConfig) =>
   a.independenceUnit === b.independenceUnit && a.assumeOneObservationPerSample === b.assumeOneObservationPerSample && a.seed === b.seed && a.fullComputation === b.fullComputation;
 
-export function Workspace({ t, locale, input, origin, config, onConfig, run, result, validation, htmlError, onRun, onCancel, onDownloadHtml }: WorkspaceProps) {
+export function Workspace({ t, locale, input, origin, config, onConfig, run, result, validation, htmlError, onRun, onCancel, onDownloadHtml, onRepetition }: WorkspaceProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setView] = useState<View>("data");
   const [scrollTo, setScrollTo] = useState<string | null>(null);
@@ -202,7 +205,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </div>
         </div>
         <div className="container">
-          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} /> : null}
+          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} running={running} onRepetition={onRepetition} /> : null}
           {run.state === "error" ? (
             <div role="alert" className="alert">
               {run.code === "INPUT_REFUSED" ? null : <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>}
@@ -329,11 +332,14 @@ function NextStep({ label, t, onClick }: { label: string; t: T; onClick: () => v
   );
 }
 
-function Settings({ t, input, config, onChange }: { t: T; input: EngineInput; config: AnalysisConfig; onChange: (c: AnalysisConfig) => void }) {
+type SettingsProps = { t: T; input: EngineInput; config: AnalysisConfig; onChange: (c: AnalysisConfig) => void; origin: Origin; running: boolean; onRepetition: WorkspaceProps["onRepetition"] };
+
+function Settings({ t, input, config, onChange, origin, running, onRepetition }: SettingsProps) {
   const [seedText, setSeedText] = useState(config.seed === null ? "" : String(config.seed));
   const seed = parseSeed(seedText);
   return (
     <form id="settings" className="settings" onSubmit={(e) => e.preventDefault()}>
+      {origin.columns?.length ? <RepetitionSetting key={`${origin.repetition?.column ?? ""}:${origin.repetition?.type ?? ""}`} t={t} columns={origin.columns} current={origin.repetition} running={running} onApply={onRepetition} /> : null}
       <label>
         <span>{t("cfgUnit")}</span>
         <select value={config.independenceUnit} onChange={(e) => onChange({ ...config, independenceUnit: e.target.value as IndependenceUnit })} aria-describedby="unit-hint">
@@ -368,5 +374,31 @@ function Settings({ t, input, config, onChange }: { t: T; input: EngineInput; co
       <small id="full-hint">{t("cfgFullHint")}</small>
       <p className="note settings-scope">{t("cfgScope")}</p>
     </form>
+  );
+}
+
+/** Declares the metadata column whose equal values are repeated acquisitions of one physical sample. */
+function RepetitionSetting({ t, columns, current, running, onApply }: { t: T; columns: string[]; current: RepetitionDeclaration | undefined; running: boolean; onApply: WorkspaceProps["onRepetition"] }) {
+  const [column, setColumn] = useState(current?.column ?? "");
+  const [type, setType] = useState<RepetitionDeclaration["type"]>(current?.type ?? "rescan");
+  const changed = column !== (current?.column ?? "") || (column !== "" && type !== current?.type);
+  return (
+    <fieldset className="settings-repetition">
+      <label>
+        <span>{t("cfgRepetition")}</span>
+        <select value={column} disabled={!onApply} onChange={(e) => setColumn(e.target.value)} aria-describedby="repetition-hint">
+          <option value="">{t("cfgRepetitionNone")}</option>
+          {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>{t("cfgRepetitionType")}</span>
+        <select value={type} disabled={!onApply || column === ""} onChange={(e) => setType(e.target.value as RepetitionDeclaration["type"])}>
+          {DECLARABLE_REPETITIONS.map((k) => <option key={k} value={k}>{t(`repType_${k}` as TextKey)}</option>)}
+        </select>
+      </label>
+      <button type="button" className="btn btn-outline" disabled={!onApply || !changed || running} onClick={() => onApply?.(column ? { column, type } : undefined)}>{t("cfgRepetitionApply")}</button>
+      <small id="repetition-hint">{onApply ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
+    </fieldset>
   );
 }

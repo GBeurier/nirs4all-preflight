@@ -340,3 +340,5 @@ code{font-size:.85em}
 .n4q-check-body{min-width:0;overflow-wrap:anywhere}
 .n4q-badge{max-width:100%;white-space:normal}
 .n4q-reason{overflow-wrap:anywhere}
+.settings-repetition{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px 20px;align-items:end;margin:0;padding:0 0 14px;border:0;border-bottom:1px solid var(--border)}
+.settings-repetition small{grid-column:1/-1}

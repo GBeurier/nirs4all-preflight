@@ -2,16 +2,17 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { importFiles, type FormatsRuntime, type IoRuntime } from "./dataset-io";
+import type { RepetitionDeclaration } from "./dataset";
 
 // Real datasets from the sibling nirs4all-data checkout; skipped where it is absent (CI).
 const root = new URL("../../../nirs4all-data/", import.meta.url);
 const require = createRequire(import.meta.url);
 const io = require("@nirs4all/io-wasm") as IoRuntime;
 const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
-const load = (dir: string) => {
+const load = (dir: string, repetition?: RepetitionDeclaration) => {
   const path = new URL(`${dir}/`, root);
   const files = readdirSync(path).filter((name) => name.endsWith(".csv")).map((name) => ({ name, bytes: new Uint8Array(readFileSync(new URL(name, path))) }));
-  return importFiles(files, dir, io, formats);
+  return importFiles(files, dir, io, formats, repetition);
 };
 
 describe.skipIf(!existsSync(root))("nirs4all-data folders dropped as they are", { timeout: 60000 }, () => {
@@ -36,5 +37,13 @@ describe.skipIf(!existsSync(root))("nirs4all-data folders dropped as they are", 
     const { input } = load("regression/PLUMS/Brix_spxy70");
     expect(input.metadata?.columns).toEqual([{ name: "N", kind: "continuous" }]);
     expect(input.targets[0]?.kind).toBe("continuous");
+  });
+
+  it("groups the BERRY scans of each Sample_ID once the repetition column is declared", () => {
+    const { input, columns } = load("regression/BERRY/brix_groupSampleID_stratDateVar_balRows", { column: "Sample_ID", type: "rescan" });
+    expect(columns).toContain("Sample_ID");
+    expect(input.samples.filter((s) => s.partition === "development")).toHaveLength(372);
+    expect(input.sources[0]?.x).toHaveLength(2133);
+    expect(input.sources[0]?.repetition_types?.every((type) => type === "rescan")).toBe(true);
   });
 });

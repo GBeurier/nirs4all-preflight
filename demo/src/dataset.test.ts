@@ -152,6 +152,43 @@ describe("native dataset import → shared builder → preflight", () => {
     expect(input.targets.flatMap((t) => t.values).every((v) => typeof v.value === "number")).toBe(true);
   });
 
+  describe("declared repetition column", () => {
+    const tables = (m: string) => [
+      file("Xtrain.csv", "1000;1100;1200\n0.1;0.2;0.3\n0.11;0.21;0.31\n0.4;0.5;0.6\n0.41;0.52;0.6\n0.7;0.8;0.9"),
+      file("Ytrain.csv", "protein\n11\n11\n12\n12\n13"),
+      file("Mtrain.csv", m),
+    ];
+    const meta = "Sample_ID;scan;site\ns1;1;north\ns1;2;north\ns2;1;south\ns2;2;south\ns3;1;north";
+
+    it("keeps one sample per row when no column is declared", () => {
+      const { input, columns } = importFiles(tables(meta), "rep", io, formats);
+      expect(columns).toEqual(["Sample_ID", "scan", "site"]);
+      expect(input.samples).toHaveLength(5);
+      expect(input.sources[0]?.repetition_types).toEqual(["unknown", "unknown", "unknown", "unknown", "unknown"]);
+    });
+
+    it("groups the rows of one physical sample under the declared technical type", () => {
+      const { input } = importFiles(tables(meta), "rep", io, formats, { column: "Sample_ID", type: "repositioning" });
+      const source = input.sources[0]!;
+      expect(input.samples.map((s) => s.physical_sample_id)).toEqual(["s1", "s2", "s3"]);
+      expect(new Set(source.sample_ids).size).toBe(3);
+      expect(new Set(source.observation_ids).size).toBe(5);
+      expect(source.repetition_types).toEqual(Array(5).fill("repositioning"));
+      // The identity column is not a factor; a column varying across the scans of a sample is left out.
+      expect(input.metadata?.columns.map((c) => c.name)).toEqual(["site"]);
+      expect(input.targets[0]?.values.map((v) => v.sample_id)).toEqual([source.sample_ids[0], source.sample_ids[1], source.sample_ids[2], source.sample_ids[3], source.sample_ids[4]]);
+    });
+
+    it("keeps a per-row repetition_type over the declared type", () => {
+      const { input } = importFiles(tables("Sample_ID;repetition_type\ns1;rescan\ns1;rescan\ns2;biological\ns2;biological\ns3;"), "rep", io, formats, { column: "Sample_ID", type: "repreparation" });
+      expect(input.sources[0]?.repetition_types).toEqual(["rescan", "rescan", "biological", "biological", "repreparation"]);
+    });
+
+    it("refuses a column the dataset does not carry", () => {
+      expect(() => importFiles(tables(meta), "rep", io, formats, { column: "missing", type: "rescan" })).toThrow("Repetition column not found");
+    });
+  });
+
   it("falls back to the band index when the spectral headers are not monotonic", () => {
     const input = assemble([file("combined.csv", "sample_id;1100;1200;1000;protein\ns1;0.1;0.2;0.3;11\ns2;0.4;0.5;0.6;12")]);
     expect(input.sources[0]?.axis).toEqual([0, 1, 2]);
