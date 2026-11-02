@@ -27,6 +27,8 @@ const FAMILY_ALPHA: f64 = 0.05;
 const COVERAGE_ALPHA: f64 = 0.05;
 const MAX_FOLDS: usize = 10;
 const MAX_COMPONENTS: usize = 10;
+/// Components of the leading PCA space of the energy and the T²/Q monitor.
+const MONITOR_SPACE_COMPONENTS: usize = 50;
 /// Declared tie rule: draws with T_perm - T >= -sqrt(f64::EPSILON) |T| count.
 const TIE_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 const VIEW: &str = "canonical:centered";
@@ -201,6 +203,9 @@ fn unavailable_metric(
     metric
 }
 
+/// Borrowed unit rows of one side of a comparison.
+type Rows<'a> = Vec<&'a Vec<f64>>;
+
 /// One comparison: a target domain against the reference domain, in a space
 /// learned on the reference only.
 struct Comparison<'a> {
@@ -211,6 +216,12 @@ struct Comparison<'a> {
     reference_levels: Vec<String>,
     reference: Vec<&'a Vec<f64>>,
     target: Vec<&'a Vec<f64>>,
+    /// The same rows (reference, target) in the leading PCA space of the
+    /// development units, used by the energy and the monitor unless their
+    /// complete-spectra option is declared; `None` when that space is absent.
+    reduced: Option<(Rows<'a>, Rows<'a>)>,
+    /// Description of that space, or the reason it is absent.
+    reduced_space: Value,
     /// Unit counts and samples per unit on each side.
     composition: Value,
     /// Crossing of the compared units with the other declared factors.
@@ -291,6 +302,7 @@ fn units(source: &SpectralSource) -> (Option<String>, Option<String>, Option<Str
 fn compare(
     source: &SpectralSource,
     comparison: &Comparison,
+    options: &DomainShiftOptions,
     provider: &impl MethodsProvider,
     report: &mut QualificationReport,
 ) {
@@ -306,13 +318,28 @@ fn compare(
         }
         return;
     }
-    let p = source.axis.len();
     let (unit, squared, root) = units(source);
+    // Rows of one computation: the leading PCA space unless the complete
+    // spectra are declared for it (or the space is absent).
+    let pick = |on_spectra: bool, option: &str| match (&comparison.reduced, on_spectra) {
+        (Some((r, t)), false) => ((r, t), comparison.reduced_space.clone()),
+        (_, true) => (
+            (&comparison.reference, &comparison.target),
+            json!({"space": "complete_canonical_spectra", "reason": option}),
+        ),
+        (None, false) => (
+            (&comparison.reference, &comparison.target),
+            comparison.reduced_space.clone(),
+        ),
+    };
+    let ((energy_reference, energy_target), space) = pick(
+        options.energy_on_spectra,
+        "options.domain_shift.energy_on_spectra",
+    );
     let energy_request = EnergyDistanceRequest {
-        matrix: comparison
-            .reference
+        matrix: energy_reference
             .iter()
-            .chain(&comparison.target)
+            .chain(energy_target)
             .map(|row| (*row).clone())
             .collect(),
         group_codes: (0..n_r + comparison.target.len())
@@ -347,10 +374,7 @@ fn compare(
                     "mean_within_target_distance": unit,
                 }),
             );
-            m.parameters.insert(
-                "space".into(),
-                json!("complete_canonical_spectra_euclidean_equal_to_all_reference_components_plus_residual"),
-            );
+            m.parameters.insert("space".into(), space);
             m.parameters.insert(
                 "definition".into(),
                 json!("energy_e = 2 E|X-Y| - E|X-X'| - E|Y-Y'| over unit means (V-statistic, self-pairs included; unit of the signal), from local pairwise differences with double-double sums; energy_e_error_bound = (8u + 2^-80)(2 E|X-Y| + E|X-X'| + E|Y-Y'|) bounds the rounding, and a computed value in [-bound, 0) is published as 0; scipy_energy_distance = sqrt(energy_e), as scipy.stats.energy_distance in one dimension"),
@@ -366,10 +390,17 @@ fn compare(
             source,
         )),
     }
-    let (folds, k) = monitor_shape(n_r, p);
+    let ((monitor_reference, monitor_target), monitor_space) = pick(
+        options.monitor_on_spectra,
+        "options.domain_shift.monitor_on_spectra",
+    );
+    let width = monitor_reference
+        .first()
+        .map_or(source.axis.len(), |row| row.len());
+    let (folds, k) = monitor_shape(n_r, width);
     let request = PcaMonitorRequest {
-        reference: comparison.reference.iter().map(|r| (*r).clone()).collect(),
-        monitored: comparison.target.iter().map(|r| (*r).clone()).collect(),
+        reference: monitor_reference.iter().map(|r| (*r).clone()).collect(),
+        monitored: monitor_target.iter().map(|r| (*r).clone()).collect(),
         max_components: k,
         n_folds: folds,
         alpha: COVERAGE_ALPHA,
@@ -394,6 +425,8 @@ fn compare(
             "space".into(),
             json!("pca_fitted_on_reference_units_only_then_applied_to_target_units"),
         );
+        m.parameters
+            .insert("input_space".into(), monitor_space.clone());
         m.parameters
             .insert("n_components_requested".into(), json!(k));
         m.parameters
@@ -456,7 +489,7 @@ fn compare(
     };
     dispersion.parameters.insert(
         "definition".into(),
-        json!("trace of each domain's covariance of unit means about its own double-double centroid, from the input values, ddof 1, complete canonical spectra; ratio target / reference"),
+        json!("trace of each domain's covariance of unit means about its own double-double centroid, from the input values, ddof 1, in the monitor input space (input_space); ratio target / reference"),
     );
     dispersion.parameters.insert(
         "value_units".into(),
@@ -526,6 +559,64 @@ fn compare(
         }),
     );
     report.metrics.push(coverage);
+}
+
+/// Leading PCA space shared by the energy and the T²/Q monitor: the
+/// resolved scores of a Methods PCA (min(50, n - 2, p) components) of all
+/// development units, fitted without labels, so permuted labellings stay
+/// exchangeable and the monitor's Q measures the residual inside that space.
+/// `None` (complete spectra) when that PCA would keep every band (a
+/// rotation) or is unavailable (reason published).
+fn leading_space(
+    provider: &impl MethodsProvider,
+    source_id: &str,
+    units: &[Vec<f64>],
+) -> (Option<Vec<Vec<f64>>>, Value) {
+    let full = |reason: &str| {
+        (
+            None,
+            json!({"space": "complete_canonical_spectra", "reason": reason}),
+        )
+    };
+    let (n, p) = (units.len(), units.first().map_or(0, Vec::len));
+    let k = MONITOR_SPACE_COMPONENTS.min(n.saturating_sub(2)).min(p);
+    if k == 0 || k == p {
+        return full("PCA_SPACE_WOULD_KEEP_EVERY_BAND");
+    }
+    let request = PcaRequest {
+        source_id: source_id.into(),
+        sample_ids: (0..n).map(|i| i.to_string()).collect(),
+        matrix: units.to_vec(),
+        n_components: k,
+    };
+    match provider.pca(&request) {
+        Ok(result)
+            if result.scores.len() == n
+                && result.unresolved.len() == k
+                && result
+                    .scores
+                    .iter()
+                    .all(|s| s.len() == k && s.iter().all(|v| v.is_finite())) =>
+        {
+            let resolved = result.resolved();
+            if resolved.eigenvalues.is_empty() {
+                return full("ZERO_NUMERICAL_RANK");
+            }
+            let description = json!({
+                "space": "leading_pca_scores_of_development_units",
+                "pca": "methods canonical centered PCA of every development unit of the source, fitted without labels",
+                "n_components_requested": k,
+                "n_components_resolved": resolved.eigenvalues.len(),
+                "component_rule": "min(50, n_development_units - 2, n_bands); unresolved components dropped",
+                "residual_scope": "the monitor's Q and residual distances are measured inside this space",
+                "full_spectra_options": ["options.domain_shift.energy_on_spectra", "options.domain_shift.monitor_on_spectra"],
+                "backend_version": result.backend_version,
+            });
+            (Some(resolved.scores), description)
+        }
+        Ok(_) => full("INVALID_PROVIDER_RESULT"),
+        Err(e) => full(&e.reason),
+    }
 }
 
 /// Energy result checked for shape, finiteness and sign: Methods returns
@@ -917,6 +1008,7 @@ fn test_candidate(
     source: &SpectralSource,
     factor: &str,
     matrix: Vec<Vec<f64>>,
+    space: Value,
     codes: Vec<i64>,
     n_groups: usize,
     blocked: Option<&str>,
@@ -975,10 +1067,10 @@ fn test_candidate(
     metric
         .parameters
         .insert("backend_version".into(), json!(descriptive.backend_version));
-    metric.parameters.insert(
-        "space".into(),
-        json!("complete_canonical_spectra_euclidean_one_row_per_independence_unit"),
-    );
+    metric.parameters.insert("space".into(), space);
+    metric
+        .parameters
+        .insert("rows".into(), json!("one_row_per_independence_unit"));
     if blocked.is_some() {
         metric
             .parameters
@@ -1222,6 +1314,15 @@ fn analyze_source(
         ),
     ]);
     let factors = domain_factors(input);
+    let options = &input.options.domain_shift;
+    let (reduced, reduced_space) = if options.energy_on_spectra && options.monitor_on_spectra {
+        (
+            None,
+            json!({"space": "complete_canonical_spectra", "reason": "both_complete_spectra_options_declared"}),
+        )
+    } else {
+        leading_space(provider, source_id, &dev.coordinates)
+    };
     let levels: Vec<(Vec<Option<&str>>, usize, usize)> = factors
         .iter()
         .map(|f| unit_levels(&dev, input, samples, f))
@@ -1342,13 +1443,20 @@ fn analyze_source(
                     .map(|&u| &dev.coordinates[u])
                     .collect(),
                 target: target_units.iter().map(|&u| &dev.coordinates[u]).collect(),
+                reduced: reduced.as_ref().map(|rows| {
+                    (
+                        reference_units.iter().map(|&u| &rows[u]).collect(),
+                        target_units.iter().map(|&u| &rows[u]).collect(),
+                    )
+                }),
+                reduced_space: reduced_space.clone(),
                 composition: json!({
                     "reference": composition(&dev, &reference_units),
                     "target": composition(&dev, &target_units),
                 }),
                 crossing: Value::Object(cross),
             };
-            compare(source, &comparison, provider, report);
+            compare(source, &comparison, options, provider, report);
             for (target, labels) in input.targets.iter().zip(&unit_labels) {
                 target_change(
                     source,
@@ -1373,8 +1481,16 @@ fn analyze_source(
             name,
             analyzed
                 .iter()
-                .map(|&u| dev.coordinates[u].clone())
+                .map(|&u| match (&reduced, options.energy_on_spectra) {
+                    (Some(rows), false) => rows[u].clone(),
+                    _ => dev.coordinates[u].clone(),
+                })
                 .collect(),
+            if options.energy_on_spectra {
+                json!({"space": "complete_canonical_spectra", "reason": "options.domain_shift.energy_on_spectra"})
+            } else {
+                reduced_space.clone()
+            },
             analyzed.iter().map(|&u| code(u) as i64).collect(),
             names.len(),
             blocked,
@@ -1533,6 +1649,11 @@ fn analyze_audit(
         reference_levels: vec!["development".into()],
         reference: dev.coordinates.iter().collect(),
         target: test.coordinates.iter().collect(),
+        reduced: None,
+        reduced_space: json!({
+            "space": "complete_canonical_spectra",
+            "reason": "retained_test_rows_are_never_fitted",
+        }),
         composition: json!({
             "reference": composition(dev, &dev_units),
             "target": composition(&test, &test_units),
@@ -1540,7 +1661,13 @@ fn analyze_audit(
         crossing: Value::Null,
     };
     let start = report.metrics.len();
-    compare(source, &comparison, provider, report);
+    compare(
+        source,
+        &comparison,
+        &input.options.domain_shift,
+        provider,
+        report,
+    );
     for target in &input.targets {
         let mut m = comparison.unavailable(
             "domain_shift.target_change",
@@ -1583,6 +1710,7 @@ fn analyze_audit(
         source,
         PARTITION,
         matrix,
+        json!({"space": "complete_canonical_spectra", "reason": "retained_test_rows_are_never_fitted"}),
         codes,
         2,
         blocked,

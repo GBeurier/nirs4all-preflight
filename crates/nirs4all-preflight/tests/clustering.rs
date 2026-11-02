@@ -7,6 +7,7 @@ use std::cell::Cell;
 /// alternate the sign of the first column.
 struct Mock {
     hdbscan_calls: Cell<usize>,
+    pca_calls: Cell<usize>,
     permutation_seeds: std::cell::RefCell<Vec<u64>>,
     /// Refuse HDBSCAN as Methods does outside its numerical domain.
     outside_domain: bool,
@@ -14,6 +15,7 @@ struct Mock {
 fn mock() -> Mock {
     Mock {
         hdbscan_calls: Cell::new(0),
+        pca_calls: Cell::new(0),
         permutation_seeds: Default::default(),
         outside_domain: false,
     }
@@ -23,6 +25,7 @@ impl MethodsProvider for Mock {
         vec![]
     }
     fn pca(&self, r: &PcaRequest) -> Result<PcaDiagnostics, ProviderError> {
+        self.pca_calls.set(self.pca_calls.get() + 1);
         Ok(PcaDiagnostics {
             eigenvalues: vec![1.0; r.n_components],
             scores: r
@@ -257,7 +260,7 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     let mut x = input(40);
     x.options.independence_unit = IndependenceUnit::Sample;
     let report = analyze(&x, &mock);
-    // Full partition, 2 x 50 refit subsamples, 50 observed frozen-projection
+    // Full partition, 2 x 50 frozen-projection subsamples, 50 observed frozen-projection
     // subsamples, 99 null replicates x (1 + 50).
     assert_eq!(mock.hdbscan_calls.get(), 1 + 2 * 50 + 50 + 99 * 51);
     let partition = metric(&report, "clustering.partition");
@@ -267,7 +270,7 @@ fn candidate_partition_reports_stability_matching_null_and_assessment() {
     assert_eq!(value["sample_ids"][0], "s000");
     assert_eq!(value["labels"].as_array().unwrap().len(), 40);
     assert_eq!(partition.parameters["min_cluster_size"], 5);
-    assert_eq!(partition.parameters["protocol"], "clustering.v3");
+    assert_eq!(partition.parameters["protocol"], "clustering.v4");
     assert_eq!(
         partition.parameters["membership_semantics"],
         "relative_strength_not_probability"
@@ -372,7 +375,7 @@ fn subsampling_is_seeded_and_respects_independence_groups() {
     let seeds = mock.permutation_seeds.borrow().clone();
     assert_eq!(seeds.len(), 1);
     // splitmix64_finalizer(7 XOR fnv1a64(domain)), recomputed independently.
-    let domain = "nirs4all-preflight\0methods\0clustering.v3\0subsample_plans\0x";
+    let domain = "nirs4all-preflight\0methods\0clustering.v4\0subsample_plans\0x";
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in domain.bytes() {
         hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
@@ -555,4 +558,33 @@ fn numerical_domain_refusal_is_reported() {
         DIFFERENCE_NUMERICAL_DOMAIN
     );
     assert!(partition.value.is_none());
+}
+
+#[test]
+fn subsample_refit_option_refits_each_subsample_once() {
+    let frozen = mock();
+    let mut x = input(40);
+    x.options.independence_unit = IndependenceUnit::Sample;
+    let report = analyze(&x, &frozen);
+    let stability = metric(&report, "clustering.subsample_stability");
+    assert!(stability.parameters["subsample_projection"]
+        .as_str()
+        .unwrap()
+        .starts_with("frozen"));
+
+    let refit = mock();
+    x.options.clustering.subsample_refit = true;
+    let report = analyze(&x, &refit);
+    // One PCA per subsample, shared by both parameter variants.
+    assert_eq!(refit.pca_calls.get(), frozen.pca_calls.get() + 50);
+    assert_eq!(refit.hdbscan_calls.get(), frozen.hdbscan_calls.get());
+    for id in [
+        "clustering.subsample_stability",
+        "clustering.subsample_stability_constant_parameters",
+    ] {
+        assert!(metric(&report, id).parameters["subsample_projection"]
+            .as_str()
+            .unwrap()
+            .starts_with("refit"));
+    }
 }

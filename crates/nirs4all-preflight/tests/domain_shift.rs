@@ -663,6 +663,11 @@ fn external_audit_reads_retained_test_x_only() {
     );
     let test = find(&report, "domain_shift.energy_test", "partition", None);
     assert_eq!(test.parameters["family"], "external_domain_audit");
+    // No PCA is fitted on retained-test rows: the audit stays on the spectra.
+    assert_eq!(
+        test.parameters["space"]["reason"],
+        "retained_test_rows_are_never_fitted"
+    );
     assert!(provider.summaries.borrow().iter().all(|y| *y != 999.0));
     // The audit never shrinks the development family.
     let family = family(&report, "domain_factors");
@@ -1228,4 +1233,89 @@ fn q_tolerance_max_is_the_largest_per_unit_tolerance() {
         .unwrap()
         .get("q_tolerance")
         .is_none());
+}
+
+#[test]
+fn energy_uses_leading_pca_scores_unless_spectra_are_declared() {
+    let Some(provider) = native() else {
+        return;
+    };
+    // Twenty constant bands make p exceed the 10 PCA components without
+    // adding any distance: both spaces give the NumPy golden energy.
+    let mut input = dataset(0);
+    let source = &mut input.sources[0];
+    let p = source.axis.len();
+    let last = *source.axis.last().unwrap();
+    source.axis.extend((1..=20).map(|j| last + j as f64));
+    for row in &mut source.x {
+        row.extend(std::iter::repeat_n(Some(1.0), 20));
+    }
+    let report = analyze(&input, &provider);
+    let distance = find(
+        &report,
+        "domain_shift.distribution_distance",
+        "instrument",
+        Some("A"),
+    );
+    let space = &distance.parameters["space"];
+    assert_eq!(space["space"], "leading_pca_scores_of_development_units");
+    assert!(space["n_components_resolved"].as_u64().unwrap() <= p as u64);
+    close(value(distance, "energy_e"), 0.8622817622694797);
+    let test = find(&report, "domain_shift.energy_test", "instrument", None);
+    assert_eq!(
+        test.parameters["space"]["space"],
+        "leading_pca_scores_of_development_units"
+    );
+    // The T²/Q monitor runs in the leading PCA space of the development units.
+    let center = find(
+        &report,
+        "domain_shift.center_shift",
+        "instrument",
+        Some("A"),
+    );
+    assert_eq!(
+        center.parameters["input_space"]["space"],
+        "leading_pca_scores_of_development_units"
+    );
+    let reduced_centroid = value(center, "centroid_distance").as_f64().unwrap();
+    let coverage = find(&report, "domain_shift.coverage", "instrument", Some("A"));
+    let reduced_beyond = value(coverage, "n_target_beyond_either_limit").clone();
+
+    input.options.domain_shift.monitor_on_spectra = true;
+    let report = analyze(&input, &provider);
+    let center = find(
+        &report,
+        "domain_shift.center_shift",
+        "instrument",
+        Some("A"),
+    );
+    assert_eq!(
+        center.parameters["input_space"]["reason"],
+        "options.domain_shift.monitor_on_spectra"
+    );
+    // Constant bands add nothing: both spaces give the same monitor.
+    close(value(center, "centroid_distance"), reduced_centroid);
+    let coverage = find(&report, "domain_shift.coverage", "instrument", Some("A"));
+    assert_eq!(
+        value(coverage, "n_target_beyond_either_limit"),
+        &reduced_beyond
+    );
+
+    input.options.domain_shift.energy_on_spectra = true;
+    let report = analyze(&input, &provider);
+    let distance = find(
+        &report,
+        "domain_shift.distribution_distance",
+        "instrument",
+        Some("A"),
+    );
+    assert_eq!(
+        distance.parameters["space"]["space"],
+        "complete_canonical_spectra"
+    );
+    assert_eq!(
+        distance.parameters["space"]["reason"],
+        "options.domain_shift.energy_on_spectra"
+    );
+    close(value(distance, "energy_e"), 0.8622817622694797);
 }

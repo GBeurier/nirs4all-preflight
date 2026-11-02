@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-2.1 OR AGPL-3.0-or-later
-"""Generate crates/nirs4all-preflight/tests/fixtures/clustering_v3_golden.json.
+"""Generate crates/nirs4all-preflight/tests/fixtures/clustering_v4_golden.json.
 
-Test-only, independent Python implementation of the Preflight `clustering.v3`
-protocol `clustering.v3`, used as the full-chain golden for the native and WASM engines. It
+Test-only, independent Python implementation of the Preflight `clustering.v4`
+protocol, used as the full-chain golden for the native and WASM engines. It
 pins numpy==2.4.6, scipy==1.18.1 and scikit-learn==1.9.1 (BSD-3-Clause); none
 of them is a runtime dependency.
 
@@ -11,7 +11,9 @@ centered PCA by numpy SVD (min(10, n-2, p) components, eigenvalues ddof 1) ->
 score grid 2^(e-24) (half away from zero) -> scikit-learn 1.9.1 HDBSCAN with
 the stable MST edge order of Methods (`stable_single_linkage`) -> 50 subsample
 plans from numpy default_rng(seed).permutation(U) with the Preflight seed
-derivation -> refit, ARI (scikit-learn adjusted_rand_score), Jaccard matching
+derivation -> HDBSCAN of the subsample rows of the frozen canonical scores
+(no PCA refit; the `_subsample_refit` cases declare
+options.clustering.subsample_refit and refit the PCA on each subsample), ARI (scikit-learn adjusted_rand_score), Jaccard matching
 with scipy linear_sum_assignment -> 99 Gaussian null replicates drawn by
 numpy multivariate_normal(method="cholesky") in the frozen canonical score
 space, compared with the observed frozen-projection subsamples through the
@@ -37,7 +39,7 @@ from sklearn.cluster import HDBSCAN
 from sklearn.metrics import adjusted_rand_score
 
 PINNED = {"numpy": "2.4.6", "scipy": "1.18.1", "scikit-learn": "1.9.1"}
-PROTOCOL = "clustering.v3"
+PROTOCOL = "clustering.v4"
 MASK = (1 << 64) - 1
 N_SUBSAMPLES, N_NULL, MIN_ARI, GRID_BITS = 50, 99, 10, 24
 
@@ -83,6 +85,10 @@ def hdbscan(scores: np.ndarray, mcs: int, ms: int) -> np.ndarray:
 def refit(matrix: np.ndarray, rows: list[int]) -> np.ndarray:
     sub = matrix[rows]
     return pca(sub, min(10, len(rows) - 2, sub.shape[1]))[0]
+
+
+# Cases also generated with options.clustering.subsample_refit.
+REFIT_CASES = ("gaussian_continuum", "blobs_in_fifteen_bands")
 
 
 def summary(values: list[float]):
@@ -151,7 +157,7 @@ def appearance(full: np.ndarray, k: int, plans, partitions) -> list[dict]:
              "matched_jaccard": summary(matched[i])} for i in range(k)]
 
 
-def protocol(x: np.ndarray, spec: dict, root: int, source_id: str) -> dict:
+def protocol(x: np.ndarray, spec: dict, root: int, source_id: str, subsample_refit: bool) -> dict:
     n = len(x)
     mcs = max(5, math.ceil(n / 20))
     scores, eig = pca(x, min(10, n - 2, x.shape[1]))
@@ -166,7 +172,7 @@ def protocol(x: np.ndarray, spec: dict, root: int, source_id: str) -> dict:
            "n_resampling_units": len(units), "plan_seed": str(plan_seed), "unit_plans": unit_plans, "variants": {}}
     scaled = (max(2, (4 * mcs + 4) // 5), max(1, (4 * mcs + 4) // 5))
     for name, params in (("scaled", scaled), ("constant", (mcs, mcs))):
-        partitions = [hdbscan(refit(x, rows), *params) for rows in plans]
+        partitions = [hdbscan(refit(x, rows) if subsample_refit else scores[rows], *params) for rows in plans]
         comparisons = [compare(full, rows, sub) for rows, sub in zip(plans, partitions)]
         aris = [c["ari"] for c in comparisons if c["ari"] is not None]
         out["variants"][name] = {
@@ -204,7 +210,7 @@ def protocol(x: np.ndarray, spec: dict, root: int, source_id: str) -> dict:
     return out
 
 
-def source_input(source_id: str, x: np.ndarray, spec: dict, root: int) -> dict:
+def source_input(source_id: str, x: np.ndarray, spec: dict, root: int, subsample_refit: bool) -> dict:
     n = len(x)
     ids = [f"s{i:03d}" for i in range(n)]
     samples = []
@@ -222,7 +228,8 @@ def source_input(source_id: str, x: np.ndarray, spec: dict, root: int) -> dict:
             "sources": [{"source_id": source_id, "observation_ids": [f"o{sid}" for sid in ids],
                          "sample_ids": ids, "x": x.tolist(), "axis": list(range(1, x.shape[1] + 1))}],
             "samples": samples, "targets": targets,
-            "options": {"independence_unit": spec["unit"], "seed": root}}
+            "options": {"independence_unit": spec["unit"], "seed": root,
+                        **({"clustering": {"subsample_refit": True}} if subsample_refit else {})}}
 
 
 def datasets() -> list[tuple[str, np.ndarray, dict, int]]:
@@ -272,19 +279,22 @@ def main() -> None:
         raise SystemExit(f"pinned reference versions required: {PINNED}, found {versions}")
     warnings.filterwarnings("ignore", category=FutureWarning)
     cases = []
-    for name, x, spec, root in datasets():
-        cases.append({"name": name, "input": source_input(name, x, spec, root),
-                      "expected": protocol(x, spec, root, name)})
+    runs = [(name, x, spec, root, False) for name, x, spec, root in datasets()]
+    runs += [(f"{name}_subsample_refit", x, spec, root, True)
+             for name, x, spec, root in datasets() if name in REFIT_CASES]
+    for name, x, spec, root, subsample_refit in runs:
+        cases.append({"name": name, "input": source_input(name, x, spec, root, subsample_refit),
+                      "expected": protocol(x, spec, root, name, subsample_refit)})
         e = cases[-1]["expected"]
         print(f"{name}: clusters={e['cluster_count']} noise={e['noise']} stock_ari={e['stock_sklearn_ari']:.3f}"
               f" scaled_median_ari={(e['variants']['scaled']['ari_assigned_in_both'] or {}).get('median')}"
               f" T={e['null']['observed_statistic']:.3f} tail={e['null']['tail_fraction']} decisional={e['null']['decisional']}")
-    body = {"format": "n4pf_clustering_v3_golden", "protocol": PROTOCOL,
+    body = {"format": "n4pf_clustering_v4_golden", "protocol": PROTOCOL,
             "reference": {**versions, "python": sys.version.split()[0],
                           "hdbscan": "scikit-learn 1.9.1 internals with a stable MST edge sort (Methods tie rule)"},
             "cases": cases}
     out = (Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-           / "crates" / "nirs4all-preflight" / "tests" / "fixtures" / "clustering_v3_golden.json")
+           / "crates" / "nirs4all-preflight" / "tests" / "fixtures" / "clustering_v4_golden.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(body, separators=(",", ":")) + "\n")
 

@@ -1,19 +1,19 @@
 //! Exploratory HDBSCAN partition, subsample stability, cluster matching and a
-//! unimodal Gaussian null model on the canonical PCA scores (`clustering.v3`).
+//! unimodal Gaussian null model on the canonical PCA scores (`clustering.v4`).
 //! Methods owns PCA, HDBSCAN, ARI, Jaccard, assignment, PCG64 draws and
 //! summaries; this module owns eligibility, resampling units, plans, seed
 //! derivation, the score-grid policy, comparisons, statuses and rules.
 use crate::*;
 use serde_json::{json, Value};
 
-pub(crate) const PROTOCOL: &str = "clustering.v3";
+pub(crate) const PROTOCOL: &str = "clustering.v4";
 const MATCHING_PROTOCOL: &str = "cluster_matching.v1";
 const N_SUBSAMPLES: usize = 50;
 const N_NULL_REPLICATES: usize = 99;
 const MIN_ASSIGNED_FOR_ARI: usize = 10;
 const MIN_INDEPENDENT_UNITS: usize = 5;
-/// Products of rows^2 x (columns + 20) over the refits of one stability variant
-/// or of the whole Gaussian null.
+/// Products of rows^2 x (score columns + 20) over the subsample partitions of
+/// one stability variant or of the whole Gaussian null.
 const WORK_BUDGET: f64 = 2.5e10;
 /// Scores are rounded to 2^(e - 24) where max|score| lies in [2^(e-1), 2^e).
 const SCORE_GRID_BITS: i32 = 24;
@@ -40,7 +40,8 @@ const METRIC_IDS: [&str; 7] = [
 
 /// Canonical structure geometry shared with `structure.*`.
 pub(crate) struct Geometry<'a> {
-    /// Aggregated spectra, re-centered and re-projected in each subsample.
+    /// Aggregated spectra, re-centered and re-projected in each subsample
+    /// when `options.clustering.subsample_refit` is set.
     pub matrix: &'a [Vec<f64>],
     pub sample_ids: &'a [String],
     pub aggregation_keys: &'a [String],
@@ -70,12 +71,12 @@ fn min_cluster_size(n: usize) -> usize {
 }
 
 /// ceil(0.8 x) in integers.
-fn four_fifths(x: usize) -> usize {
-    (4 * x).div_ceil(5)
-}
-
 fn n_components(rows: usize, columns: usize) -> usize {
     10.min(rows.saturating_sub(2)).min(columns)
+}
+
+fn four_fifths(x: usize) -> usize {
+    (4 * x).div_ceil(5)
 }
 
 fn pow2(k: i32) -> f64 {
@@ -378,30 +379,50 @@ fn subsample_plans(
         .unzip())
 }
 
-/// Subsample partitions of one data block (spectra or simulated scores).
-struct Block<'a> {
-    matrix: &'a [Vec<f64>],
-    sample_ids: &'a [String],
-}
-
-fn subsample_partitions(
+/// Scores of every subsample, shared by both parameter variants: the
+/// subsample rows of the frozen full-sample canonical scores, or (with
+/// `subsample_refit`) a canonical PCA refitted on the subsample spectra.
+fn subsample_scores(
     provider: &impl MethodsProvider,
     source_id: &str,
-    block: &Block,
+    geometry: &Geometry,
     plans: &[Vec<usize>],
-    params: (usize, usize),
-) -> Result<Vec<Vec<i64>>, Failure> {
+    refit: bool,
+) -> Result<Vec<Vec<Vec<f64>>>, Failure> {
     plans
         .iter()
         .map(|rows| {
-            if rows.len() < 2 * params.0 {
+            if refit {
+                refit_scores(
+                    provider,
+                    source_id,
+                    geometry.matrix,
+                    geometry.sample_ids,
+                    rows,
+                )
+            } else {
+                Ok(rows.iter().map(|&r| geometry.scores[r].clone()).collect())
+            }
+        })
+        .collect()
+}
+
+/// HDBSCAN partitions (score grid) of the subsample scores.
+fn subsample_partitions(
+    provider: &impl MethodsProvider,
+    subsamples: &[Vec<Vec<f64>>],
+    params: (usize, usize),
+) -> Result<Vec<Vec<i64>>, Failure> {
+    subsamples
+        .iter()
+        .map(|scores| {
+            if scores.len() < 2 * params.0 {
                 return Err(failure(
                     Availability::InsufficientData,
                     "SUBSAMPLE_TOO_SMALL",
                 ));
             }
-            let scores = refit_scores(provider, source_id, block.matrix, block.sample_ids, rows)?;
-            Ok(hdbscan(provider, &scores, params.0, params.1)?.labels)
+            Ok(hdbscan(provider, scores, params.0, params.1)?.labels)
         })
         .collect()
 }
@@ -714,6 +735,7 @@ pub(crate) fn analyze(
     let noise = full.labels.iter().filter(|&&l| l < 0).count();
     push_partition(report, source_id, geometry, &full, &params);
 
+    let refit = input.options.clustering.subsample_refit;
     let spectral_columns = geometry.matrix.first().map_or(0, Vec::len);
     let resampling = build_units(input, samples, geometry).and_then(|units| {
         if units.members.len() < MIN_INDEPENDENT_UNITS {
@@ -722,7 +744,8 @@ pub(crate) fn analyze(
                 "FEWER_THAN_FIVE_RESAMPLING_UNITS",
             ));
         }
-        let work = N_SUBSAMPLES as f64 * (n as f64).powi(2) * (spectral_columns + 20) as f64;
+        let width = if refit { spectral_columns } else { columns };
+        let work = N_SUBSAMPLES as f64 * (n as f64).powi(2) * (width + 20) as f64;
         if work > WORK_BUDGET {
             return Err(failure(
                 Availability::Unsupported,
@@ -739,10 +762,10 @@ pub(crate) fn analyze(
         })
     });
 
-    let block = Block {
-        matrix: geometry.matrix,
-        sample_ids: geometry.sample_ids,
-    };
+    let subsamples = resampling
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|r| subsample_scores(provider, source_id, geometry, &r.plans, refit));
     let mut variants = Vec::new();
     let mut metric_note = None;
     for constant in [false, true] {
@@ -763,8 +786,11 @@ pub(crate) fn analyze(
             (2.max(four_fifths(min_size)), 1.max(four_fifths(min_size)))
         };
         let outcome = resampling.as_ref().map_err(Clone::clone).and_then(|r| {
-            let partitions =
-                subsample_partitions(provider, source_id, &block, &r.plans, sub_params)?;
+            let partitions = subsample_partitions(
+                provider,
+                subsamples.as_ref().map_err(Clone::clone)?,
+                sub_params,
+            )?;
             let comparisons = r
                 .plans
                 .iter()
@@ -796,7 +822,14 @@ pub(crate) fn analyze(
                 if let Some(note) = metric_note.take() {
                     metric.parameters.insert("unit_plans".into(), json!(note));
                 }
-                resampling_metadata(&mut metric, r, input.options.seed, sub_params, constant);
+                resampling_metadata(
+                    &mut metric,
+                    r,
+                    input.options.seed,
+                    sub_params,
+                    constant,
+                    refit,
+                );
                 metric.denominators.insert(
                     "n_ari_evaluable_subsamples".into(),
                     stability
@@ -830,6 +863,7 @@ pub(crate) fn analyze(
                             input.options.seed,
                             sub_params,
                             constant,
+                            refit,
                         );
                         matching_parameters(&mut metric);
                         report.metrics.push(metric);
@@ -979,6 +1013,7 @@ fn resampling_metadata(
     root: u64,
     sub_params: (usize, usize),
     constant: bool,
+    refit: bool,
 ) {
     let units = r.units.members.len();
     metric
@@ -1022,8 +1057,12 @@ fn resampling_metadata(
             )),
         ),
         (
-            "refit_per_subsample",
-            json!("centering, pca (min(10, m-2, p) components), score grid, hdbscan on aggregated spectra"),
+            "subsample_projection",
+            json!(if refit {
+                "refit (options.clustering.subsample_refit): centering, pca (min(10, m-2, p) components) of the subsample aggregated spectra, score grid, hdbscan"
+            } else {
+                "frozen full-sample projection: the subsample rows of the canonical PCA scores (no refit), score grid, hdbscan"
+            }),
         ),
         ("min_cluster_size", json!(sub_params.0)),
         ("min_samples", json!(sub_params.1)),
@@ -1321,7 +1360,7 @@ fn gaussian_null(
         ),
         (
             "comparison_protocol",
-            json!("frozen projection on both sides: observed canonical scores and simulated scores are subsampled with the same 50 plans without PCA refit, score grid, hdbscan with scaled parameters; full partitions use the full-sample parameters. The refit stability metrics are not compared with this null."),
+            json!("frozen projection on both sides: observed canonical scores and simulated scores are subsampled with the same 50 plans without PCA refit, score grid, hdbscan with scaled parameters; full partitions use the full-sample parameters. clustering.subsample_stability uses the same frozen projection unless options.clustering.subsample_refit is set."),
         ),
         (
             "statistic",

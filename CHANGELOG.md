@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2 — 2026-11-02
+
+Browser analyses of wide datasets become about 26 times faster: a 424 × 2,151 dataset with eight metadata columns (one with 94 levels) goes from 8 min 47 s to 20 s in WebAssembly. Each simplification below has an option that restores the heavier computation.
+
+- Methods 1.3.11 (C ABI 2.20 unchanged): the preflight PCA no longer accumulates in `long double`, which WebAssembly emulates in software (54 % of the former run time). One 360 × 2,151 PCA drops from 5.7 s to 0.63 s; the Gram error bound is now the same on every platform.
+- Clustering stability, protocol `clustering.v4`: each subsample takes its rows of the frozen full-sample canonical PCA scores instead of refitting a PCA on the subsample spectra, the same projection as the Gaussian null it is compared with. Both parameter variants share the subsample scores. `options.clustering.subsample_refit` restores the refit (computed once per subsample). Stability metrics publish `subsample_projection`. New golden `clustering_v4_golden.json` (seven frozen cases, two refit cases) from the updated independent NumPy/SciPy/scikit-learn generator; the protocol name changes the plan and null seeds.
+- Domain shift: the development energy comparisons and K-sample tests, and the T²/Q monitor, run in one shared leading PCA space per source (min(50, n_units − 2, n_bands) components of a Methods PCA of all development unit means, fitted without labels, so permutations stay exchangeable; the monitor's Q is measured inside that space). Before, every comparison fitted 11 PCAs of the complete spectra and every energy spanned all bands. The retained-test audit stays on the complete spectra (no fit on test rows). `options.domain_shift.energy_on_spectra` and `options.domain_shift.monitor_on_spectra` restore the complete spectra. Every metric publishes its `space` / `input_space`. The protocol label stays `domain_shift.v2`, so the permutation seeds are unchanged; low-dimensional inputs, where the PCA keeps every band, give the same values as before.
+- Input schema version 1 gains only the three optional boolean options above.
+- Methods 1.3.11 also adds bandwise noise-proxy summaries (`bandwise_min`, `bandwise_median`, `worst_band_index` and their statuses) to the intrinsic outputs; the native intrinsic fixture is recaptured with it, and the WASM conformance gate passes on the published `@nirs4all/methods@1.3.11`.
+
 ## 0.1.1 — 2026-10-29
 
 Add the optional schema-v1 `Assessment` and findings adapter for cross-consumer reports. Preserve the original report losslessly, including unavailable metrics and unknown confidence. Add CLI assessment/findings export, contract examples and 25 adapter/CLI checks. Existing report and numerical protocols remain compatible; this patch makes no new confidence or coverage claim.
