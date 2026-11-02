@@ -81,11 +81,16 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
     const d = target.denominators;
     const excluded = (d.n_excluded_censored ?? 0) + (d.n_excluded_composite ?? 0);
     const inconsistent = d.n_inconsistent_samples ?? 0;
+    const unreferenced = d.n_unreferenced_development_samples ?? 0;
+    const usable = target.eligible ?? 0;
     items.push({
       id: "target",
       title: `${t("chkTarget")} · ${targetId}`,
-      status: target.eligible === null ? "unavailable" : inconsistent > 0 ? "critical" : excluded > 0 ? "attention" : "ok",
-      detail: inconsistent > 0 ? f("chkTargetKo", { x: inconsistent }) : excluded > 0 ? f("chkTargetWarn", { n: target.eligible ?? 0, x: excluded }) : f("chkTargetOk", { n: target.eligible ?? 0 }),
+      status: target.eligible === null ? "unavailable" : inconsistent > 0 ? "critical" : usable === 0 || excluded > 0 || unreferenced > 0 ? "attention" : "ok",
+      detail: inconsistent > 0 ? f("chkTargetKo", { x: inconsistent })
+        : usable === 0 ? t("chkTargetNone")
+        : excluded > 0 || unreferenced > 0 ? f("chkTargetWarn", { n: usable, x: excluded, u: unreferenced, d: d.n_development_real_samples ?? "—" })
+        : f("chkTargetOk", { n: usable }),
       href: "#s-target",
     });
   } else {
@@ -116,15 +121,17 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
         href: "#s-quality",
       });
     }
+    // A count is reported only when the engine computed it; an unevaluated one is never read as zero.
     const spikes = intrinsic.globals["events.global_spike_count"];
     const jumps = intrinsic.globals["events.global_jump_count"];
     if (spikes !== undefined || jumps !== undefined) {
       const total = (spikes ?? 0) + (jumps ?? 0);
+      const both = spikes !== undefined && jumps !== undefined;
       items.push({
         id: "events",
         title: t("chkEvents"),
-        status: total > 0 ? "attention" : "ok",
-        detail: total > 0 ? f("chkEventsKo", { s: spikes ?? 0, j: jumps ?? 0 }) : t("chkEventsOk"),
+        status: total > 0 ? "attention" : both ? "ok" : "unavailable",
+        detail: total > 0 || !both ? f("chkEventsKo", { s: spikes ?? "—", j: jumps ?? "—" }) : t("chkEventsOk"),
         href: "#s-quality",
       });
     }
