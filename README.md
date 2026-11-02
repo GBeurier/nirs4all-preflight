@@ -10,7 +10,7 @@ the differences from historical Datasets calculations. Shared assessment and
 findings exports retain parameter-specific identities; an observation or
 signature never becomes validated causal confidence.
 
-**nirs4all-preflight 0.1.4 (engine, crates and npm binding), exploratory profile.** This release computes integrity and linked-identity checks, exact and declared-tolerance quasi-duplicate suspicions including development/test overlap, spectral duplicates with incompatible references, a smoothing-residual noise proxy, an SNV sensitivity view, per-band technical repeatability with REML ICC and exact or cluster-bootstrap intervals, centered PCA with full variance moments and its resolution bound, target distributions, metadata–target associations with group-level permutation tests and Holm adjustment, an exploratory HDBSCAN partition with subsample stability, cluster matching and a fitted Gaussian null, PERMANOVA/PERMDISP confounding diagnostics, domain-shift distances, tests and PCA monitoring, a grouped PLS/PCR validation probe, and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
+**nirs4all-preflight 0.1.5 (engine, crates and npm binding), exploratory profile.** This release computes integrity and linked-identity checks, exact and declared-tolerance quasi-duplicate suspicions including development/test overlap, spectral duplicates with incompatible references, a smoothing-residual noise proxy, an SNV sensitivity view, per-band technical repeatability with REML ICC and exact or cluster-bootstrap intervals, centered PCA with full variance moments and its resolution bound, target distributions, metadata–target associations with group-level permutation tests and Holm adjustment, an exploratory HDBSCAN partition with subsample stability, cluster matching and a fitted Gaussian null, PERMANOVA/PERMDISP confounding diagnostics, domain-shift distances, tests and PCA monitoring, a grouped PLS/PCR validation probe, and group-excluding local descriptive contrasts. It produces JSON and accessible HTML, with explicit availability, population, denominator, context and provenance. Synthetic data are labelled in the exported artifact. It has no global qualification score.
 
 [Browser demo](https://gbeurier.github.io/nirs4all-preflight/) · [npm binding](https://www.npmjs.com/package/@nirs4all/preflight) · [Scientific and integration specification](docs/SPECIFICATION.md)
 
@@ -20,7 +20,7 @@ adapter preserves original reports, source/population/view identities, explicit
 unavailability and qualitative-confidence limits without recomputing diagnostics.
 
 ```sh
-cargo install nirs4all-preflight-cli --version 0.1.4
+cargo install nirs4all-preflight-cli --version 0.1.5
 n4pf validate dataset.json
 n4pf analyze dataset.json --methods-library /path/to/libn4m.so.2 --html report.html
 ```
