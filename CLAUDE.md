@@ -68,4 +68,4 @@ Goldens live in `crates/nirs4all-preflight/tests/fixtures/` (`clustering_v4_gold
 
 ## Releases
 
-Versions are plain `X.Y.Z`, aligned across crates, npm and the Python wheel. Upstream pins (dag-ml 0.3.43, Methods 1.3.13 / ABI 2.20) appear in `Cargo.toml`s, `bindings/wasm/package.json`, `ci.yml` and the README — change them together. Release evidence goes in `docs/implementation/` (`RELEASE_MANIFEST.json`, `VALIDATION_*.md`). `docs/` design documents (SPECIFICATION, ROADMAP, SYNTHESE, DECISIONS_REVUES, reviews) are the preserved design record; `docs/SPECIFICATION.md` is the scientific and integration reference.
+Versions are plain `X.Y.Z`, aligned across crates, npm and the Python wheel. Upstream pins (dag-ml 0.3.44, Methods 1.3.13 / ABI 2.20) appear in `Cargo.toml`s, `bindings/wasm/package.json`, `ci.yml` and the README — change them together. Release evidence goes in `docs/implementation/` (`RELEASE_MANIFEST.json`, `VALIDATION_*.md`). `docs/` design documents (SPECIFICATION, ROADMAP, SYNTHESE, DECISIONS_REVUES, reviews) are the preserved design record; `docs/SPECIFICATION.md` is the scientific and integration reference.

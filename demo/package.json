@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@nirs4all/formats-wasm": "0.2.14",
-    "@nirs4all/io-wasm": "0.2.13",
+    "@nirs4all/io-wasm": "0.2.14",
     "@nirs4all/preflight": "0.1.5",
     "idb-keyval": "6.2.2",
     "nirs4all-ui": "0.2.0",
