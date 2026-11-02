@@ -42,7 +42,7 @@ describe("real engine on the demo synthetic sets", () => {
   const { report, scope } = analyze("clean");
 
   it("is the 0.1.3 engine and labels the synthetic origin", () => {
-    expect(report.engine_version).toBe("0.1.5");
+    expect(report.engine_version).toBe("0.1.6");
     expect(report.data_origin).toBe("synthetic");
     expect(presentSections(scope).map((s) => s.id)).toEqual(["s-sensitivity", "s-duplicates", "s-clustering", "s-confounding", "s-shift", "s-association", "s-probe"]);
   });
