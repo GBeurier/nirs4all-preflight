@@ -19,6 +19,7 @@ const EVENTS: &[&str] = &[
     "declared_clip_count",
     "declared_clip_fraction",
 ];
+const PCA: &[&str] = &["pca_t2", "pca_q"];
 const NOISE: &[&str] = &[
     "noise_sigma",
     "signal_mean_abs",
@@ -139,10 +140,10 @@ fn decorate(
         .insert("methods_procedure".into(), json!(protocol.method));
     metric.parameters.insert(
         "reference_definition".into(),
-        json!(if protocol.family == "reference" {
-            "development_real_dataset_mean_per_valid_feature"
-        } else {
-            "none"
+        json!(match protocol.family {
+            "reference" => "development_real_dataset_mean_per_valid_feature",
+            "pca" => "pca_fitted_on_the_same_development_real_observations_in_sample",
+            _ => "none",
         }),
     );
     metric
@@ -175,6 +176,7 @@ fn unit(signal: &str, source: &SpectralSource) -> String {
         | "signal_mean_abs" => source.signal_unit.clone(),
         s if s.ends_with("_count") || s.ends_with("_eligible") => "count".into(),
         "signal_noise_db" => "dB_descriptive_ratio".into(),
+        "pca_q" => format!("({})^2", source.signal_unit),
         _ => "1".into(),
     }
 }
@@ -274,6 +276,17 @@ fn publish(
             .is_some_and(|p| matches!(p, ProcedureParameter::IntArray(mask) if mask.contains(&0)))
     {
         Err(ProviderError::unsupported("LOF_REQUIRES_COMPLETE_SPECTRA"))
+    } else if protocol.family == "pca"
+        && request
+            .parameters
+            .get("valid_mask")
+            .is_some_and(|p| matches!(p, ProcedureParameter::IntArray(mask) if mask.contains(&0)))
+    {
+        Err(ProviderError::unsupported("PCA_REQUIRES_COMPLETE_SPECTRA"))
+    } else if protocol.family == "pca" && rows.len() < 3 {
+        Err(ProviderError::unsupported(
+            "PCA_REQUIRES_THREE_OBSERVATIONS",
+        ))
     } else if protocol.family == "local_density"
         && (rows.len() as u128) * (rows.len() as u128) * (source.axis.len() as u128) > 2_500_000_000
     {
@@ -599,6 +612,28 @@ pub(super) fn analyze(
                 signals: NOISE,
             },
             base.clone(),
+            report,
+        );
+    }
+    if options.pca {
+        let mut request = base.clone();
+        request.reference = Some(request.matrix.clone());
+        let components = options
+            .pca_components
+            .min(rows.len().saturating_sub(1))
+            .min(source.axis.len());
+        request.parameters.insert(
+            "n_components".into(),
+            ProcedureParameter::Int(components as i64),
+        );
+        run(
+            Protocol {
+                family: "pca",
+                method: "diagnostics.pca_reference_qc",
+                version: "pca-in-sample-t2-q.v1",
+                signals: PCA,
+            },
+            request,
             report,
         );
     }

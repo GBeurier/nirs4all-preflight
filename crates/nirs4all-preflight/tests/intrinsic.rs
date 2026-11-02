@@ -291,3 +291,57 @@ fn native_zero_noise_is_observed_but_zero_norm_and_ratios_are_undefined() {
         assert!(metric.reason_code.is_some());
     }
 }
+
+#[test]
+fn in_sample_t2_q_fits_the_development_spectra_on_themselves() {
+    let provider = RecordingProvider::default();
+    let mut value = fixture();
+    value["options"]["intrinsic_qc"] = json!({"reference": false, "events": false, "noise": false});
+    let input: QualificationInput = serde_json::from_value(value).unwrap();
+    let report = analyze(&input, &provider);
+    let calls = provider.0.borrow();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.method_id, "diagnostics.pca_reference_qc");
+    assert_eq!(call.reference.as_ref(), Some(&call.matrix));
+    // Five requested components, capped at n - 1 = 4 development rows minus one.
+    let n = call.matrix.len();
+    assert!(
+        matches!(call.parameters.get("n_components"), Some(ProcedureParameter::Int(k)) if *k == 5.min(n as i64 - 1).min(call.matrix[0].len() as i64))
+    );
+    let metric = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "intrinsic.pca.pca_t2")
+        .unwrap();
+    assert_eq!(metric.protocol_version, "pca-in-sample-t2-q.v1");
+    assert_eq!(
+        metric.parameters["reference_definition"],
+        "pca_fitted_on_the_same_development_real_observations_in_sample"
+    );
+}
+
+#[test]
+fn native_in_sample_t2_averages_k_times_n_minus_one_over_n() {
+    let case = legacy_case("complete");
+    let mut input = case["input"].clone();
+    input["options"]["intrinsic_qc"]["pca_components"] = json!(2);
+    let Some(report) = native_report(&json!({ "input": input })) else {
+        return;
+    };
+    let t2 = native_metric(&report, "intrinsic.pca.pca_t2");
+    assert!(matches!(t2.status, Availability::Computed), "{t2:?}");
+    let values: Vec<f64> = t2.value.as_ref().unwrap()["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let n = values.len() as f64;
+    // With ddof-1 eigenvalues, the in-sample mean of T² over k resolved
+    // components is exactly k (n - 1) / n.
+    let mean = values.iter().sum::<f64>() / n;
+    assert!((mean - 2. * (n - 1.) / n).abs() < 1e-9, "{mean}");
+    let q = native_metric(&report, "intrinsic.pca.pca_q");
+    assert!(matches!(q.status, Availability::Computed));
+}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 — 2026-11-02
+
+- Intrinsic spectral signatures (`options.intrinsic_qc`) gain the `pca` family (`pca: true`, `pca_components: 5` by default): Hotelling T² and Q (squared residual) of every real development spectrum in the PCA fitted on those same spectra (in-sample), through the existing Methods procedure `diagnostics.pca_reference_qc`. Metrics `intrinsic.pca.pca_t2` and `intrinsic.pca.pca_q` carry per-observation values with their native median and 95th percentile, protocol `pca-in-sample-t2-q.v1`. The components are capped at n − 1 and the band count; incomplete spectra are refused with `PCA_REQUIRES_COMPLETE_SPECTRA` before any kernel call. In-sample T² averages exactly k (n − 1) / n, checked against the native kernel. These are descriptive ranks, not calibrated control limits; the retained-test audit keeps its out-of-fold monitor.
+- Methods 1.3.12 (ABI 2.20 unchanged): the preflight PCA work budget rises from 2.4e9 to 4e10, so structure, clustering, SNV sensitivity and the T²/Q monitor run on calibration sets of up to about 1,650 samples on 2,150 bands (before: about 600 samples). The native intrinsic fixture is recaptured with the `pca` family.
+
 ## 0.1.3 — 2026-11-02
 
 Large datasets are no longer refused by the transport. The CLI, C ABI and WASM bindings read JSON inputs and reports up to 384 MiB (`MAX_JSON_BYTES`, was 64 MiB), enough for the default `max_cells` of 10 million spectral cells; an input of about 3.2 to 10 million cells used to fail with `JSON_MEMORY_BUDGET_EXCEEDED` although the engine accepts it. Above `options.max_cells`, the npm binding now refuses the input before serializing it, whose JSON can exceed the longest JavaScript string: `analyze` throws and `validate` returns the engine's own `CELL_BUDGET_EXCEEDED` issue. Engine protocols and reports are unchanged.

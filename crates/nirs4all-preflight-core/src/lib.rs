@@ -468,6 +468,11 @@ pub struct IntrinsicQcOptions {
     pub reference: bool,
     pub events: bool,
     pub noise: bool,
+    /// Hotelling T² and Q (squared residual) of every development spectrum in
+    /// the PCA fitted on the development spectra themselves (in-sample).
+    pub pca: bool,
+    /// Components of that PCA (capped at n - 1 and the band count).
+    pub pca_components: usize,
     /// True native LOF in the declared native spectral view. Never the legacy
     /// ratio of mean neighbour distances; optional because its cost is quadratic.
     pub local_density: bool,
@@ -484,6 +489,8 @@ impl Default for IntrinsicQcOptions {
             reference: true,
             events: true,
             noise: true,
+            pca: true,
+            pca_components: 5,
             local_density: false,
             axis_basis: IntrinsicAxisBasis::Index,
             outlier_threshold: 8.,
@@ -743,11 +750,13 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             || matches!((qc.clip_lower, qc.clip_upper), (Some(lo), Some(hi)) if lo >= hi)
             || qc.n_neighbors == 0
             || qc.n_neighbors > 100
+            || qc.pca_components == 0
+            || qc.pca_components > 50
         {
             out.add(
                 "INVALID_INTRINSIC_QC_OPTIONS",
                 "options.intrinsic_qc",
-                "Declare finite thresholds, ordered sensor bounds, and 1..100 neighbours",
+                "Declare finite thresholds, ordered sensor bounds, 1..100 neighbours and 1..50 PCA components",
                 true,
             );
         }
