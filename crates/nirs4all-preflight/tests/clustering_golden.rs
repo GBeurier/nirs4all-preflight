@@ -44,8 +44,8 @@ fn native_clustering_matches_the_independent_python_golden() {
     };
     let provider = NativeMethodsProvider::load(path).expect("compatible Methods ABI");
     let golden: Value =
-        serde_json::from_str(include_str!("fixtures/clustering_v3_golden.json")).unwrap();
-    assert_eq!(golden["protocol"], "clustering.v3");
+        serde_json::from_str(include_str!("fixtures/clustering_v4_golden.json")).unwrap();
+    assert_eq!(golden["protocol"], "clustering.v4");
     let mut assessments = Vec::new();
     for case in golden["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -219,6 +219,9 @@ fn native_clustering_matches_the_independent_python_golden() {
             "uncertain_partition",
             "no_density_separated_groups",
             "stable_candidate_versus_fitted_gaussian",
+            // The same continuum and blobs with options.clustering.subsample_refit.
+            "compatible_with_fitted_gaussian",
+            "stable_candidate_versus_fitted_gaussian",
         ]
     );
 }
@@ -236,7 +239,7 @@ fn native_clustering_magnitude_sweep() {
     };
     let provider = NativeMethodsProvider::load(path).expect("compatible Methods ABI");
     let golden: Value =
-        serde_json::from_str(include_str!("fixtures/clustering_v3_golden.json")).unwrap();
+        serde_json::from_str(include_str!("fixtures/clustering_v4_golden.json")).unwrap();
     let case = &golden["cases"][2];
     assert_eq!(case["name"], "separated_blobs");
     let base: QualificationInput = serde_json::from_value(case["input"].clone()).unwrap();

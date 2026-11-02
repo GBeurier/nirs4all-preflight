@@ -219,7 +219,7 @@ test('WASM clustering uses Methods HDBSCAN on canonical PCA scores',()=>{
 // match the independent NumPy/SciPy/scikit-learn golden that the native test
 // also checks (crates/nirs4all-preflight/tests/clustering_golden.rs).
 test('WASM clustering matches the full-chain Python golden',async()=>{
- const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/clustering_v3_golden.json',import.meta.url),'utf8'));
+ const golden=JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/clustering_v4_golden.json',import.meta.url),'utf8'));
  const near=(a,b)=>a===null||b===null?a===b:Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(b));
  const assessments=[];
  for(const c of golden.cases){
@@ -257,7 +257,7 @@ test('WASM clustering matches the full-chain Python golden',async()=>{
   assert.equal(nullModel.fitted_null_tail.decisional,e.null.decisional,c.name);
   assessments.push(m['clustering.partition_assessment'].value.assessment);
  }
- assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_versus_fitted_gaussian','compatible_with_fitted_gaussian','uncertain_partition','no_density_separated_groups','stable_candidate_versus_fitted_gaussian']);
+ assert.deepEqual(assessments,['uncertain_partition','uncertain_partition','stable_candidate_versus_fitted_gaussian','compatible_with_fitted_gaussian','uncertain_partition','no_density_separated_groups','stable_candidate_versus_fitted_gaussian','compatible_with_fitted_gaussian','stable_candidate_versus_fitted_gaussian']);
 });
 test('WASM noise proxy and declared quasi-duplicates match hand values',()=>{
  // SG window 5 / quadratic: weights (-3,12,17,12,-3)/35, white-noise gain^2 = 18/35.

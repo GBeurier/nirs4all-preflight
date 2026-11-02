@@ -417,6 +417,9 @@ pub struct Options {
     pub quasi_duplicates: Option<QuasiDuplicateOptions>,
     #[serde(default)]
     pub domain_shift: DomainShiftOptions,
+    /// Subsample resampling of the clustering stability.
+    #[serde(default)]
+    pub clustering: ClusteringOptions,
     /// Grouped PLS/PCR predictability probe executed by the validation provider.
     #[serde(default)]
     pub validation_probe: ValidationProbeOptions,
@@ -444,6 +447,7 @@ impl Default for Options {
             snv_sensitivity: true,
             quasi_duplicates: None,
             domain_shift: DomainShiftOptions::default(),
+            clustering: ClusteringOptions::default(),
             validation_probe: ValidationProbeOptions::default(),
             reference_contradiction_tolerances: BTreeMap::new(),
             intrinsic_qc: None,
@@ -503,6 +507,26 @@ pub struct DomainShiftOptions {
     /// Declared intended use of the calibration across domain factors.
     #[serde(default)]
     pub intended_use: Option<IntendedUse>,
+    /// Energy distances and tests on the complete spectra (heavy: every
+    /// pairwise distance spans all bands) instead of the leading PCA scores.
+    #[serde(default)]
+    pub energy_on_spectra: bool,
+    /// T²/Q monitor of the level-versus-rest comparisons on the complete
+    /// spectra (heavy: K + 1 PCA fits of the spectra per comparison) instead
+    /// of the leading PCA space of the development units.
+    #[serde(default)]
+    pub monitor_on_spectra: bool,
+}
+
+/// Clustering stability options.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusteringOptions {
+    /// Refit the canonical PCA on every subsample (heavy: one PCA of the
+    /// spectra per subsample and variant) instead of resampling the frozen
+    /// full-sample scores.
+    #[serde(default)]
+    pub subsample_refit: bool,
 }
 
 /// Categorical domain factors whose unseen levels the calibration must
