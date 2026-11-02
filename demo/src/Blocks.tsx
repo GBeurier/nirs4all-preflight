@@ -214,7 +214,7 @@ export function DuplicatesSection({ t, locale, view, sourceId }: Scope) {
   const computed = all.filter((d) => d.state.status === "computed");
   return (
     <Section id="s-duplicates" icon="evidence" accent="rose" title={t("dupTitle")} lead={t("dupLead")}>
-      <div className="stats">
+      {computed.length ? <div className="stats">
         {computed.map((d) => (
           <StatTile
             key={`${d.id}${d.targetId ?? ""}`}
@@ -226,7 +226,7 @@ export function DuplicatesSection({ t, locale, view, sourceId }: Scope) {
             href={`#ev-${d.id}`}
           />
         ))}
-      </div>
+      </div> : null}
       <div className="grid-2">
         {computed.filter((d) => d.listed.length).map((d) => (
           <div className="card" key={`list-${d.id}${d.targetId ?? ""}`}>
@@ -297,11 +297,11 @@ export function ClusteringSection({ t, locale, view, sourceId }: Scope) {
                 rows={c.partition.sampleIds.map((id, i) => [id, label(c.partition!.labels[i] ?? -1), c6(c.partition!.membership[i]), c6(c.partition!.outlierScores[i])])}
               />
             </div>
-            <div className="stack">
+            <div className="fit-row">
               {c.assessment ? (
                 <div className="card">
                   <CardTitle id="clustering.partition_assessment" locale={locale} />
-                  <CheckList
+                  <div className="scroll-body"><CheckList
                     locale={locale}
                     items={c.assessment.criteria.map((k) => ({
                       id: k.id,
@@ -309,7 +309,7 @@ export function ClusteringSection({ t, locale, view, sourceId }: Scope) {
                       title: isTextKey(`crit_${k.id}`) ? t(`crit_${k.id}` as TextKey) : k.id,
                       detail: typeof k.value === "boolean" ? (k.value ? t("yes") : t("no")) : `${n(k.value, locale)}${k.threshold !== null ? ` · ${t("threshold")} ${n(k.threshold, locale)}` : ""}`,
                     }))}
-                  />
+                  /></div>
                 </div>
               ) : null}
             </div>

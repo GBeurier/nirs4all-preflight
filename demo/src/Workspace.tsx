@@ -262,7 +262,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
                 <span className="ready-text"><strong>{t("running")}</strong><span>{t("runningDetail")}</span></span>
               </div>
             ) : null}
-            <DataView key={source ?? ""} t={t} locale={locale} input={result?.input ?? input} sourceId={source} targetId={target} />
+            <DataView key={source ?? ""} t={t} locale={locale} input={result?.input ?? input} sourceId={source} targetId={target} report={report} />
           </>
         ) : null}
 
