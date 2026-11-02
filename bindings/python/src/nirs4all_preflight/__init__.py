@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 __all__ = ["analyze", "validate", "report_html", "__version__"]
 
 class _Buffer(ctypes.Structure):
