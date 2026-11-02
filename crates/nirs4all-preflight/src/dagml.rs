@@ -199,6 +199,8 @@ pub fn nested_probe(
                 })
                 .collect(),
             sample_groups,
+            // Only samples with an eligible exact reference enter the probe.
+            target_missing_sample_ids: BTreeSet::new(),
             outer: GroupKFoldSpec {
                 n_splits: request.outer_splits,
             },

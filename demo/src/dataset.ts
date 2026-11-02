@@ -1,7 +1,8 @@
 import type { DetectedTable } from "./dataset-io";
 import type { EngineInput, InputMetadata, InputOptions, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
 
-export interface IoMatrix { n_rows: number; n_cols: number; data: (number | null)[] }
+/** IO matrix: row-major values, a missing one is NaN. */
+export interface IoMatrix { n_rows: number; n_cols: number; data: Float64Array }
 export interface IoBlock {
   n_samples: number;
   source_ids: string[];
@@ -148,7 +149,7 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
       for (let row = 0; row < matrix.n_rows; row++) {
         source.sample_ids.push(ids[row]!);
         source.observation_ids.push(JSON.stringify([index, part, row, metadata(identity?.observation_id, row) ?? null]));
-        source.x.push(matrix.data.slice(row * matrix.n_cols, (row + 1) * matrix.n_cols).map(numberOrNull));
+        source.x.push(Array.from(matrix.data.subarray(row * matrix.n_cols, (row + 1) * matrix.n_cols), numberOrNull));
         // A per-row `repetition_type` column wins over the type declared for the repetition column.
         const kind = metadata("repetition_type", row);
         source.repetition_types!.push((["rescan", "repositioning", "repreparation", "biological"] as string[]).includes(kind ?? "") ? kind as RepetitionType : repetition && declared[row] ? repetition.type : "unknown");
