@@ -338,8 +338,9 @@ code{font-size:.85em}
 /* control points shrink with the column: long sample ids wrap instead of widening the page */
 .n4q-checks{grid-template-columns:minmax(0,1fr)}
 .n4q-check-body{min-width:0;overflow-wrap:anywhere}
-.n4q-badge{max-width:100%;white-space:normal}
-.n4q-reason{overflow-wrap:anywhere}
+/* a long reason code drops below the status label inside a rounded box, never a stretched pill */
+.n4q-badge{max-width:100%;flex-wrap:wrap;row-gap:.1em;border-radius:11px}
+.n4q-reason{min-width:0;white-space:normal;overflow-wrap:anywhere}
 .settings-repetition{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px 20px;align-items:end;margin:0;padding:0 0 14px;border:0;border-bottom:1px solid var(--border)}
 .settings-repetition small{grid-column:1/-1}
 
@@ -368,3 +369,5 @@ code{font-size:.85em}
   .fit-row,.fit-row.fit-tall{contain:none;min-height:0}
   .scroll-body{max-height:480px}
 }
+/* evidence rows: long parameter lists scroll inside their cell instead of stretching the row */
+#s-evidence td .n4q-sub{display:block;max-height:7.5em;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}

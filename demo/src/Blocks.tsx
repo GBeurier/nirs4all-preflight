@@ -191,7 +191,7 @@ export function NoiseProxyCard({ t, locale, view, sourceId, axis }: Scope & { ax
     <div className="card">
       <CardTitle id="measurement.noise_proxy" locale={locale} />
       <div className="stats">
-        {contexts.map((c) => <StatTile key={c.id} label={`${metricLabel("measurement.noise_proxy_pooled", locale)} · ${c.id}`} value={n(c.pooled, locale)} suffix={c.unit ?? undefined} hint={fill(t("noiseHint"), { w: c.windowBands ?? "—", p: c.polyorder ?? "—", n: c.nEvaluableBands ?? "—" })} />)}
+        {contexts.map((c) => <StatTile key={c.id} label={`${metricLabel("measurement.noise_proxy_pooled", locale)}${c.id.replace(/[·\s]/g, "") ? ` · ${c.id}` : ""}`} value={n(c.pooled, locale)} suffix={c.unit ?? undefined} hint={fill(t("noiseHint"), { w: c.windowBands ?? "—", p: c.polyorder ?? "—", n: c.nEvaluableBands ?? "—" })} />)}
       </div>
       {contexts.length ? (
         <ChartDataTable
