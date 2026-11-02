@@ -1,16 +1,16 @@
 import { useMemo, useState } from "react";
 import type { Locale } from "nirs4all-ui/lab";
-import { ClassCountBars, PopulationFlow, SCORE_SEQUENTIAL, SpectraExplorer, StatTile, TargetDistribution, type FlowSegment } from "nirs4all-ui/qualification";
+import { ClassCountBars, PopulationFlow, SCORE_SEQUENTIAL, SpectraExplorer, StatTile, TargetDistribution, type FlowSegment, type QualificationReportView } from "nirs4all-ui/qualification";
 import { categoricalColor, rampAt } from "nirs4all-ui/viz";
 import type { T } from "./App";
 import { fill, type TextKey } from "./i18n";
 import { Icon } from "./icons";
 import type { EngineInput } from "./input";
 import { Measured } from "./Measured";
-import { Section } from "./Sections";
-import { ROW_KINDS, composition, developmentTargetPoints, developmentTargetValues, rowKind, sampleIndex, sampleRows, spectraPreview, type CountRow, type RowKind } from "./views";
+import { ATYPICAL_RED, Section, TYPICAL_GREY } from "./Sections";
+import { ROW_KINDS, atypicalScans, composition, developmentTargetPoints, developmentTargetValues, rowKind, sampleIndex, sampleRows, spectraPreview, type CountRow, type RowKind } from "./views";
 
-type ColorBy = "target" | "campaign" | "instrument" | "none";
+type ColorBy = "target" | "campaign" | "instrument" | "quality" | "none";
 const EXPLORER_MAX = 200;
 const TABLE_PAGE = 40;
 const KIND_COLOR: Record<RowKind, string> = { development: "#0d9488", retained_test: "#0891b2", prediction: "#4f46e5", augmented: "#94a3b8", undeclared: "#e11d48" };
@@ -18,11 +18,17 @@ const NONE = "#0d9488";
 
 const num = (v: number, locale: Locale) => (Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(4)).toLocaleString(locale));
 
-export function DataView({ t, locale, input, sourceId, targetId }: { t: T; locale: Locale; input: EngineInput; sourceId: string | null; targetId: string | null }) {
+/** `report` is the engine report once an analysis has run: it enables the quality colouring (atypical T²/Q scans in red). */
+export function DataView({ t, locale, input, sourceId, targetId, report }: { t: T; locale: Locale; input: EngineInput; sourceId: string | null; targetId: string | null; report: QualificationReportView | null }) {
   const source = input.sources.find((s) => s.source_id === sourceId) ?? input.sources[0];
-  const [colorBy, setColorBy] = useState<ColorBy>(targetId ? "target" : "campaign");
+  const [colorBy, setColorBy] = useState<ColorBy | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const preview = useMemo(() => (source ? spectraPreview(input, source, EXPLORER_MAX) : null), [input, source]);
+  const atypical = useMemo(() => (report && source ? atypicalScans(report, source.source_id) : null), [report, source]);
+  const flagged = useMemo(() => new Set(atypical?.map((a) => a.observationId)), [atypical]);
+  const preview = useMemo(() => (source ? spectraPreview(input, source, EXPLORER_MAX, flagged) : null), [input, source, flagged]);
+  // atypical scans in red by default once the report flags any; otherwise the reader's choice
+  const fallback: ColorBy = atypical?.length ? "quality" : targetId ? "target" : "campaign";
+  const mode: ColorBy = colorBy === null || (colorBy === "quality" && !atypical) ? fallback : colorBy;
   const comp = useMemo(() => composition(input, source), [input, source]);
   const values = useMemo(() => (targetId ? developmentTargetValues(input, targetId) : new Map<string, number>()), [input, targetId]);
   const samples = useMemo(() => sampleIndex(input), [input]);
@@ -31,11 +37,12 @@ export function DataView({ t, locale, input, sourceId, targetId }: { t: T; local
   const known = [...values.values()];
   const lo = known.length ? Math.min(...known) : 0;
   const hi = known.length ? Math.max(...known) : 1;
-  const groupKey = (sampleId: string) => (colorBy === "campaign" ? samples.get(sampleId)?.campaign : colorBy === "instrument" ? samples.get(sampleId)?.instrument : undefined) ?? "—";
+  const groupKey = (sampleId: string) => (mode === "campaign" ? samples.get(sampleId)?.campaign : mode === "instrument" ? samples.get(sampleId)?.instrument : undefined) ?? "—";
   const groups = [...new Set((preview?.rows ?? []).map((r) => groupKey(r.sampleId)))].sort((a, b) => a.localeCompare(b));
-  const colorOf = (sampleId: string) => {
-    if (colorBy === "none") return NONE;
-    if (colorBy === "target") {
+  const colorOf = (sampleId: string, observationId: string) => {
+    if (mode === "none") return NONE;
+    if (mode === "quality") return flagged.has(observationId) ? ATYPICAL_RED : TYPICAL_GREY;
+    if (mode === "target") {
       const v = values.get(sampleId);
       return v === undefined ? "#94a3b8" : rampAt(SCORE_SEQUENTIAL, (v - lo) / (hi - lo || 1));
     }
@@ -71,8 +78,8 @@ export function DataView({ t, locale, input, sourceId, targetId }: { t: T; local
             <div className="card-head">
               <h3 className="card-title"><span className="card-icon" data-accent="cyan"><Icon name="spectra" size={18} /></span>{t("explorerTitle")}</h3>
               <div className="seg" role="group" aria-label={t("colorBy")}>
-                {(["target", "campaign", "instrument", "none"] as const).filter((m) => m !== "target" || targetId).map((m) => (
-                  <button key={m} aria-pressed={colorBy === m} onClick={() => setColorBy(m)}>{t(`color_${m}` as TextKey)}</button>
+                {(["target", "campaign", "instrument", "quality", "none"] as const).filter((m) => (m !== "target" || targetId) && (m !== "quality" || atypical)).map((m) => (
+                  <button key={m} aria-pressed={mode === m} onClick={() => setColorBy(m)}>{t(`color_${m}` as TextKey)}</button>
                 ))}
               </div>
             </div>
@@ -82,7 +89,7 @@ export function DataView({ t, locale, input, sourceId, targetId }: { t: T; local
                 axis={source.axis}
                 axisUnit={source.axis_unit ?? ""}
                 yLabel={source.signal_unit ?? ""}
-                series={preview.rows.map((r) => ({ id: r.observationId, values: r.values, color: colorOf(r.sampleId), label: `${r.sampleId}${targetId && values.has(r.sampleId) ? ` · ${targetId} ${num(values.get(r.sampleId) as number, locale)}` : ""}` }))}
+                series={(mode === "quality" ? [...preview.rows.filter((r) => !flagged.has(r.observationId)), ...preview.rows.filter((r) => flagged.has(r.observationId))] : preview.rows).map((r) => ({ id: r.observationId, values: r.values, color: colorOf(r.sampleId, r.observationId), label: `${r.sampleId}${targetId && values.has(r.sampleId) ? ` · ${targetId} ${num(values.get(r.sampleId) as number, locale)}` : ""}` }))}
                 selected={selectedObs}
                 onSelect={(obs) => setSelected(sampleOfObs(obs))}
                 title={`${t("explorerTitle")} — ${source.source_id}`}
@@ -92,7 +99,7 @@ export function DataView({ t, locale, input, sourceId, targetId }: { t: T; local
               />
             )}</Measured>
             <div className="explorer-foot">
-              {colorBy === "target" && known.length ? (
+              {mode === "target" && known.length ? (
                 <div className="n4q-colorbar">
                   <span className="n4q-legend-title">{targetId}</span>
                   <span>{num(lo, locale)}</span>
@@ -100,14 +107,20 @@ export function DataView({ t, locale, input, sourceId, targetId }: { t: T; local
                   <span>{num(hi, locale)}</span>
                 </div>
               ) : null}
-              {colorBy === "campaign" || colorBy === "instrument" ? (
+              {mode === "quality" ? (
+                <ul className="n4q-legend">
+                  <li><span className="n4q-key-line" style={{ background: TYPICAL_GREY }} aria-hidden="true" />{t("qualityTypical")}</li>
+                  <li><span className="n4q-key-line" style={{ background: ATYPICAL_RED }} aria-hidden="true" />{t("qualityAtypical")} <strong>{atypical?.length ?? 0}</strong></li>
+                </ul>
+              ) : null}
+              {mode === "campaign" || mode === "instrument" ? (
                 <ul className="n4q-legend">{groups.map((g, i) => <li key={g}><span className="n4q-key-line" style={{ background: categoricalColor(i) }} aria-hidden="true" />{g}</li>)}</ul>
               ) : null}
               {selected ? (
                 <span className="pill-selected">{t("selected")} : <strong>{selected}</strong> <button onClick={() => setSelected(null)}>{t("clear")}</button></span>
               ) : null}
             </div>
-            <p className="hint">{t("explorerHint")} {fill(t("explorerScope"), { n: preview.rows.length, total: source.x.length })}</p>
+            <p className="hint">{t("explorerHint")} {fill(t("explorerScope"), { n: preview.rows.length, total: source.x.length })}{mode === "quality" ? ` ${t("qualityColorHint")}` : ""}</p>
           </div>
 
           <div className="card">

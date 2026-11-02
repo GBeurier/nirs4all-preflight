@@ -1,6 +1,6 @@
 // Display joins between the canonical input and engine results. No statistics: rows are
 // selected, labelled and coloured; every number shown comes from the input or the engine.
-import type { IntrinsicSignal, PcaStructure, ScorePoint, TargetPoint } from "nirs4all-ui/qualification";
+import { extractIntrinsic, type IntrinsicSignal, type PcaStructure, type QualificationReportView, type ScorePoint, type TargetPoint } from "nirs4all-ui/qualification";
 import type { EngineInput, InputSample, InputSource } from "./input";
 
 export type RowKind = "development" | "augmented" | "retained_test" | "prediction" | "undeclared";
@@ -47,7 +47,8 @@ export interface SpectraPreview {
   counts: Record<RowKind, number>;
 }
 
-export function spectraPreview(input: EngineInput, source: InputSource, max: number): SpectraPreview {
+/** Development rows in input order, at most `max` plus every row listed in `keep` (atypical scans stay drawn). */
+export function spectraPreview(input: EngineInput, source: InputSource, max: number, keep?: ReadonlySet<string>): SpectraPreview {
   const samples = sampleIndex(input);
   const counts = Object.fromEntries(ROW_KINDS.map((k) => [k, 0])) as Record<RowKind, number>;
   const rows: SpectraPreview["rows"] = [];
@@ -61,7 +62,8 @@ export function spectraPreview(input: EngineInput, source: InputSource, max: num
     const values = row.map((v, j) => (v !== null && Number.isFinite(v) && (mask?.[j] ?? true) ? v : null));
     const complete = values.every((v) => v !== null);
     if (!complete) incompleteDevelopment += 1;
-    if (rows.length < max) rows.push({ index: i, observationId: source.observation_ids[i] ?? String(i), sampleId, values, complete });
+    const observationId = source.observation_ids[i] ?? String(i);
+    if (rows.length < max || keep?.has(observationId)) rows.push({ index: i, observationId, sampleId, values, complete });
   });
   return { rows, drawable: counts.development, incompleteDevelopment, counts };
 }
@@ -150,19 +152,24 @@ export function sampleRows(input: EngineInput, source: InputSource | undefined):
   });
 }
 
-export type PcaColorBy = "none" | "target" | "campaign" | "instrument";
+export type PcaColorBy = "none" | "target" | "campaign" | "instrument" | "quality";
+
+/** Group labels of the quality colouring and the sample ids holding at least one atypical scan. */
+export interface QualityColoring { flagged: ReadonlySet<string>; typical: string; atypical: string }
 
 /**
  * Score points joined to declared metadata. A unit is coloured by a target value only when its
  * representative sample is the single development sample of its physical × instrument × campaign key.
  */
-export function pcaPoints(input: EngineInput, pca: PcaStructure, xi: number, yi: number, colorBy: PcaColorBy, targetId: string | null): ScorePoint[] {
+export function pcaPoints(input: EngineInput, pca: PcaStructure, xi: number, yi: number, colorBy: PcaColorBy, targetId: string | null, quality?: QualityColoring): ScorePoint[] {
   const samples = sampleIndex(input);
   const values = targetId ? developmentTargetValues(input, targetId) : new Map<string, number>();
   const keyOf = (s: InputSample) => `${s.physical_sample_id ?? s.sample_id}|${s.instrument ?? ""}|${s.campaign ?? ""}`;
   const members = new Map<string, number>();
   for (const s of input.samples) if (rowKind(samples, s.sample_id) === "development") members.set(keyOf(s), (members.get(keyOf(s)) ?? 0) + 1);
-  return pca.sampleIds.map((id, i) => {
+  // a unit is atypical when any sample aggregated into it holds an atypical scan
+  const flaggedKeys = new Set(input.samples.filter((s) => quality?.flagged.has(s.sample_id)).map(keyOf));
+  const points = pca.sampleIds.map((id, i) => {
     const s = samples.get(id);
     const row = pca.scores[i] ?? [];
     const single = s ? members.get(keyOf(s)) === 1 : false;
@@ -175,8 +182,11 @@ export function pcaPoints(input: EngineInput, pca: PcaStructure, xi: number, yi:
     if (colorBy === "campaign") point.group = s?.campaign ?? null;
     if (colorBy === "instrument") point.group = s?.instrument ?? null;
     if (colorBy === "target") point.value = single ? (values.get(id) ?? null) : null;
+    if (colorBy === "quality" && quality) point.group = s && flaggedKeys.has(keyOf(s)) ? quality.atypical : quality.typical;
     return point;
   });
+  // atypical units drawn last, on top
+  return colorBy === "quality" && quality ? [...points.filter((p) => p.group === quality.typical), ...points.filter((p) => p.group !== quality.typical)] : points;
 }
 
 /** Development spectra beyond the engine's 95th percentile of in-sample T² or Q, most atypical first. */
@@ -191,4 +201,12 @@ export function atypicalSpectra(t2: IntrinsicSignal, q: IntrinsicSignal): Atypic
     if (ratio > 1) out.push({ sampleId: t2.sampleIds[i] ?? "", observationId: t2.observationIds[i] ?? "", t2: value, q: residual, ratio });
   });
   return out.sort((a, b) => b.ratio - a.ratio);
+}
+
+/** Atypical development scans of a source; null until the report carries computed T² and Q. */
+export function atypicalScans(view: QualificationReportView, sourceId: string): AtypicalSpectrum[] | null {
+  const intrinsic = extractIntrinsic(view, sourceId);
+  const t2 = intrinsic?.signals["pca.pca_t2"];
+  const q = intrinsic?.signals["pca.pca_q"];
+  return t2?.state.status === "computed" && q?.state.status === "computed" ? atypicalSpectra(t2, q) : null;
 }

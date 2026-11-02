@@ -34,14 +34,14 @@ import {
   type QualificationReportView,
   withRepeatabilityUncertainty,
 } from "nirs4all-ui/qualification";
-import { NoiseProxyCard } from "./Blocks";
+import { NoiseProxyCard, presentSections } from "./Blocks";
 import { downloadText } from "./download";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
 import { Measured } from "./Measured";
 import { fill, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
-import { developmentTargetPoints, pcaPoints, type PcaColorBy } from "./views";
+import { atypicalScans, developmentTargetPoints, pcaPoints, type PcaColorBy } from "./views";
 
 export interface Scope {
   t: T;
@@ -86,9 +86,10 @@ export function DiagnosisSummary({ t, locale, view, checks }: Scope & { checks: 
         <div className="card card-feature">
           <CheckList items={checks} locale={locale} />
         </div>
-        <div className="stack">
+        <div className="fit-row fit-tall">
           <div className="card">
             <h3 className="card-title">{t("findings")} <span className="count">{view.findings.length}</span></h3>
+            <div className="scroll-body">
             {view.findings.length ? <FindingList findings={view.findings} locale={locale} evidenceHref={(id) => `#ev-${id}`} /> : <p className="empty-ok">{t("noFindings")}</p>}
             {view.issues.length ? (
               <div className="issues">
@@ -96,8 +97,9 @@ export function DiagnosisSummary({ t, locale, view, checks }: Scope & { checks: 
                 <ul>{view.issues.map((i, k) => <li key={`${i.code}${k}`}><code>{i.code}</code> {i.path} — {i.message}{i.blocking ? ` (${t("blocking")})` : ""}</li>)}</ul>
               </div>
             ) : null}
+            </div>
           </div>
-          <div className="card">
+          <div className="card fixed">
             <h3 className="card-title">{t("availability")}</h3>
             <div className="profile-line"><ProfileStatusBadge status={view.profileStatus} locale={locale} />{view.completion ? <code>{view.completion}</code> : null}</div>
             <AvailabilitySummary counts={view.availabilityCounts} locale={locale} hideEmpty className="compact-summary" />
@@ -148,16 +150,22 @@ export function PopulationsSection({ t, locale, view, sourceId }: Scope) {
 
 // --- 04 structure -----------------------------------------------------------------------------
 
-const COLOR_MODES: readonly PcaColorBy[] = ["none", "campaign", "instrument", "target"];
+const COLOR_MODES: readonly PcaColorBy[] = ["none", "campaign", "instrument", "target", "quality"];
+export const ATYPICAL_RED = "#e11d48";
+export const TYPICAL_GREY = "#94a3b8";
 const SCORE_TABLE_MAX = 500;
 
 export function StructureSection({ t, locale, view, input, sourceId, targetId }: Scope) {
   const pca = sourceId ? extractPca(view, sourceId) : null;
   const [xi, setXi] = useState(0);
   const [yi, setYi] = useState(1);
-  const [colorBy, setColorBy] = useState<PcaColorBy>("target");
+  const [chosen, setColorBy] = useState<PcaColorBy | null>(null);
   const k = pca?.scores[0]?.length ?? 0;
-  const points = useMemo(() => (pca ? pcaPoints(input, pca, xi, Math.min(yi, k - 1), colorBy, targetId) : []), [input, pca, xi, yi, k, colorBy, targetId]);
+  const atypical = useMemo(() => (sourceId ? atypicalScans(view, sourceId) : null), [view, sourceId]);
+  const quality = useMemo(() => (atypical ? { flagged: new Set(atypical.map((a) => a.sampleId)), typical: t("qualityTypical"), atypical: t("qualityAtypical") } : undefined), [atypical, t]);
+  const fallback: PcaColorBy = atypical?.length ? "quality" : targetId ? "target" : "campaign";
+  const colorBy: PcaColorBy = chosen === null || (chosen === "quality" && !quality) ? fallback : chosen;
+  const points = useMemo(() => (pca ? pcaPoints(input, pca, xi, Math.min(yi, k - 1), colorBy, targetId, quality) : []), [input, pca, xi, yi, k, colorBy, targetId, quality]);
   const unavailable = view.metrics.filter((m) => m.sourceId === sourceId && (m.id === "structure.pca" || m.id === "structure.pca_scores") && m.status !== "computed");
   const pcs = Array.from({ length: k }, (_, i) => i);
   const share = (i: number) => (pca?.eigenvalues && pca.totalVariance ? ` (${num(((pca.eigenvalues[i] ?? 0) / pca.totalVariance) * 100, locale, 3)} %)` : "");
@@ -172,12 +180,17 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
             <label>{t("axisY")}<select value={yi} onChange={(e) => setYi(Number(e.target.value))}>{pcs.map((i) => <option key={i} value={i}>PC{i + 1}</option>)}</select></label>
             <div className="seg" role="group" aria-label={t("colorBy")}>
               <span className="seg-label">{t("colorBy")}</span>
-              {COLOR_MODES.filter((m) => m !== "target" || targetId).map((m) => (
+              {COLOR_MODES.filter((m) => (m !== "target" || targetId) && (m !== "quality" || quality)).map((m) => (
                 <button key={m} aria-pressed={colorBy === m} onClick={() => setColorBy(m)}>{t(`color_${m}` as TextKey)}</button>
               ))}
             </div>
           </div>
-          <div className="grid-3-2">
+          <div className="stats">
+            <StatTile label={t("scoreUnits")} value={num(pca.sampleIds.length, locale)} />
+            <StatTile label={t("retained")} value={pca.retainedFraction !== null ? `${num(pca.retainedFraction * 100, locale, 4)} %` : "—"} hint={`${k} ${t("components")}`} />
+            <StatTile label={t("kpiDim")} value={num(pca.effectiveDimension, locale)} hint={t("kpiDimHint")} />
+          </div>
+          <div className={pca.eigenvalues ? "grid-3-2" : undefined}>
             <div className="card">
               {k >= 2 ? (
                 <Measured>{(w) => <ScoreMap
@@ -185,6 +198,7 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
                   height={Math.min(460, Math.max(300, w * 0.72))}
                   points={points}
                   colorBy={colorBy === "none" ? "none" : colorBy === "target" ? "value" : "group"}
+                  groupColors={colorBy === "quality" && quality ? { [quality.typical]: TYPICAL_GREY, [quality.atypical]: ATYPICAL_RED } : undefined}
                   xLabel={`PC${xi + 1}${share(xi)}`}
                   yLabel={`PC${Math.min(yi, k - 1) + 1}${share(Math.min(yi, k - 1))}`}
                   colorLabel={colorBy === "target" ? targetId ?? "" : t(`color_${colorBy}` as TextKey)}
@@ -192,21 +206,14 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
                   locale={locale}
                 />}</Measured>
               ) : <p className="note">PC1</p>}
-              <p className="hint">{t("hoverHint")}</p>
+              <p className="hint">{t("hoverHint")}{colorBy === "quality" ? ` ${t("qualityColorHint")}` : ""}</p>
             </div>
-            <div className="stack">
-              <div className="stats stats-2">
-                <StatTile label={t("scoreUnits")} value={num(pca.sampleIds.length, locale)} />
-                <StatTile label={t("retained")} value={pca.retainedFraction !== null ? `${num(pca.retainedFraction * 100, locale, 4)} %` : "—"} hint={`${k} ${t("components")}`} />
-                <StatTile label={t("kpiDim")} value={num(pca.effectiveDimension, locale)} hint={t("kpiDimHint")} />
+            {pca.eigenvalues ? (
+              <div className="card">
+                <h3 className="card-title">{t("scree")}</h3>
+                <Measured>{(w) => <EigenvalueScree eigenvalues={pca.eigenvalues!} totalVariance={pca.totalVariance} title={t("scree")} locale={locale} width={w} height={Math.min(300, Math.max(220, w * 0.7))} />}</Measured>
               </div>
-              {pca.eigenvalues ? (
-                <div className="card">
-                  <h3 className="card-title">{t("scree")}</h3>
-                  <Measured>{(w) => <EigenvalueScree eigenvalues={pca.eigenvalues!} totalVariance={pca.totalVariance} title={t("scree")} locale={locale} width={w} height={Math.min(260, Math.max(200, w * 0.6))} />}</Measured>
-                </div>
-              ) : null}
-            </div>
+            ) : null}
           </div>
           {pca.sampleIds.length > SCORE_TABLE_MAX ? <p className="note">{t("tableCap")} {SCORE_TABLE_MAX} / {pca.sampleIds.length}</p> : null}
           <ChartDataTable
@@ -243,7 +250,7 @@ export function RepeatSection(scope: Scope) {
             <p>{t("repeatNone")}</p>
           </div>
         )}
-        {reasons.length ? <ul className="plain small">{reasons.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul> : null}
+        {reasons.length ? <ul className="plain small unavailable">{reasons.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul> : null}
       </div>
       {counts.length || source ? (
         <div className="grid-2 flow-gap-sm">
@@ -267,7 +274,8 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
   const target = extractTarget(view, targetId);
   const d = target.denominators;
   const points = developmentTargetPoints(input, targetId);
-  const unavailable = view.metrics.filter((m) => m.targetId === targetId && m.status !== "computed");
+  const owned = presentSections({ t, locale, view, input, sourceId: null, targetId }).flatMap((b) => b.prefixes);
+  const unavailable = view.metrics.filter((m) => m.targetId === targetId && m.status !== "computed" && !owned.some((p) => m.id.startsWith(p)));
   return (
     <Section id="s-target" icon="target" accent="amber" title={t("targetTitle")} lead={t("targetLead")}>
       <div className="stats">
@@ -287,7 +295,7 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
           <Measured>{(w) => <TargetDistribution summary={target.summary} points={points} unit={target.unit} title={`${t("targetTitle")} — ${targetId}`} locale={locale} width={w} />}</Measured>
         )}
         {unavailable.length ? (
-          <ul className="plain small">{unavailable.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul>
+          <ul className="plain small unavailable">{unavailable.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul>
         ) : null}
       </div>
     </Section>

@@ -342,3 +342,29 @@ code{font-size:.85em}
 .n4q-reason{overflow-wrap:anywhere}
 .settings-repetition{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px 20px;align-items:end;margin:0;padding:0 0 14px;border:0;border-bottom:1px solid var(--border)}
 .settings-repetition small{grid-column:1/-1}
+
+/* ── frames: cards keep their own height; long lists scroll inside their card ── */
+.grid-2,.grid-2-1,.grid-3-2{align-items:start}
+.grid-2 > :last-child:nth-child(odd){grid-column:1/-1}
+.stats-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.stats-2 > :last-child:nth-child(odd){grid-column:1/-1}
+.n4q-stat{min-width:0}
+.n4q-stat-value{overflow-wrap:anywhere}
+.n4q-stat-suffix{display:inline-block}
+/* A column that matches its neighbour's height: its scroll body absorbs the overflow. */
+.fit-row{align-self:stretch;contain:size;display:flex;flex-direction:column;gap:16px;min-height:380px}
+.fit-row.fit-tall{min-height:620px}
+.fit-row > .card{display:flex;flex-direction:column;flex:0 1 auto;min-height:0}
+.fit-row > .card.fixed{flex:none}
+.scroll-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-right:-12px;padding-right:12px}
+.unavailable{max-height:13.5rem;overflow-y:auto;overscroll-behavior:contain}
+.section > .unavailable{margin-top:18px;padding:12px 16px 12px 32px;border:1px dashed var(--border);border-radius:var(--radius-sm);background:color-mix(in srgb,var(--card) 55%,transparent)}
+.n4q-datatable .n4q-table-wrap{max-height:360px;overflow:auto}
+.n4q-datatable .n4q-table thead th{position:sticky;top:0;z-index:1;background:var(--card)}
+.scroll-body,.unavailable,.table-wrap,.n4q-table-wrap{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--text-3) 45%,transparent) transparent}
+.scroll-body::-webkit-scrollbar,.unavailable::-webkit-scrollbar,.table-wrap::-webkit-scrollbar,.n4q-table-wrap::-webkit-scrollbar{width:8px;height:8px}
+.scroll-body::-webkit-scrollbar-thumb,.unavailable::-webkit-scrollbar-thumb,.table-wrap::-webkit-scrollbar-thumb,.n4q-table-wrap::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--text-3) 45%,transparent);border-radius:999px}
+@media (max-width:900px){
+  .fit-row,.fit-row.fit-tall{contain:none;min-height:0}
+  .scroll-body{max-height:480px}
+}

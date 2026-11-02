@@ -199,6 +199,8 @@ const DICT = {
   color_campaign: { fr: "campagne", en: "campaign" },
   color_instrument: { fr: "instrument", en: "instrument" },
   color_target: { fr: "cible", en: "target" },
+  color_quality: { fr: "qualité", en: "quality" },
+  qualityColorHint: { fr: "En rouge : au moins un scan au-delà du 95e centile de T² ou de Q (ACP du développement, section Qualité spectrale). Repère descriptif, pas un seuil calibré.", en: "Red: at least one scan beyond the 95th percentile of T² or Q (development PCA, Spectral quality section). A descriptive mark, not a calibrated threshold." },
   scoreUnits: { fr: "unités agrégées", en: "aggregated units" },
   retained: { fr: "variance retenue", en: "retained variance" },
   components: { fr: "composantes", en: "components" },
