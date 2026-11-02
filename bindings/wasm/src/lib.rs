@@ -255,7 +255,7 @@ impl ValidationProvider for CallbackProvider<'_> {
     }
 }
 fn parse<T: DeserializeOwned>(input: &str) -> Result<T, JsValue> {
-    if input.len() > 64 * 1024 * 1024 {
+    if input.len() > MAX_JSON_BYTES {
         return Err(JsValue::from_str("JSON_MEMORY_BUDGET_EXCEEDED"));
     }
     serde_json::from_str(input).map_err(|e| JsValue::from_str(&e.to_string()))

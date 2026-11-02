@@ -11,7 +11,7 @@ extern "C" {
  * library exactly once. Never edit pointer/length or share the allocation.
  * Inputs are borrowed for the duration of the call only. Callers guarantee
  * readable input ranges, writable out descriptor, and no overlap.
- * JSON is limited to 64 MiB. Status 0 success, 1 invalid input/provider failure,
+ * JSON is limited to 384 MiB (MAX_JSON_BYTES). Status 0 success, 1 invalid input/provider failure,
  * 2 contained panic. On failure an error JSON may be returned in out. */
 typedef struct { uint8_t* data; size_t len; } n4pf_buffer_t;
 uint32_t n4pf_abi_version(void);

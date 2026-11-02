@@ -1,7 +1,7 @@
 use nirs4all_preflight::{
     analyze, analyze_with_validation, capabilities, capabilities_with_validation,
     dagml::DagMlValidationProvider, report_html, validate_input, QualificationInput,
-    UnavailableMethodsProvider,
+    UnavailableMethodsProvider, MAX_JSON_BYTES,
 };
 use std::{
     env, fs,
@@ -27,7 +27,7 @@ fn run() -> Result<(), String> {
             return Err("usage: n4pf extract-assessment report.json context.json".into());
         }
         let report: serde_json::Value =
-            serde_json::from_str(&read_bounded(&report_path, 64 * 1024 * 1024)?)
+            serde_json::from_str(&read_bounded(&report_path, MAX_JSON_BYTES as u64)?)
                 .map_err(|e| e.to_string())?;
         let context: nirs4all_preflight::assessment::AssessmentContext =
             serde_json::from_str(&read_bounded(&context_path, 1024 * 1024)?)
@@ -82,17 +82,17 @@ fn run() -> Result<(), String> {
     let input_json = if input_path == "-" {
         let mut s = String::new();
         io::stdin()
-            .take(64 * 1024 * 1024 + 1)
+            .take(MAX_JSON_BYTES as u64 + 1)
             .read_to_string(&mut s)
             .map_err(|e| e.to_string())?;
         s
     } else {
-        if fs::metadata(&input_path).map_err(|e| e.to_string())?.len() > 64 * 1024 * 1024 {
+        if fs::metadata(&input_path).map_err(|e| e.to_string())?.len() > MAX_JSON_BYTES as u64 {
             return Err("JSON_MEMORY_BUDGET_EXCEEDED".into());
         }
         fs::read_to_string(&input_path).map_err(|e| e.to_string())?
     };
-    if input_json.len() > 64 * 1024 * 1024 {
+    if input_json.len() > MAX_JSON_BYTES {
         return Err("JSON_MEMORY_BUDGET_EXCEEDED".into());
     }
     let input: QualificationInput = serde_json::from_str(&input_json).map_err(|e| e.to_string())?;

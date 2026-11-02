@@ -10,6 +10,12 @@ pub mod assessment;
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_BUNDLE_VERSION: &str = "0.1.0";
+/// Largest JSON input or report read by the CLI, C ABI and WASM bindings.
+/// It covers the default `max_cells` (10 million spectral cells at about 20
+/// bytes each, plus identifiers) so the explicit `CELL_BUDGET_EXCEEDED` and
+/// `SAMPLE_BUDGET_EXCEEDED` validation, not the transport, refuses large
+/// inputs; it stays below the longest JavaScript string (about 512 MiB).
+pub const MAX_JSON_BYTES: usize = 384 * 1024 * 1024;
 /// Supported numerical domains of the Methods kernels behind each metric,
 /// published in the `numerical_domain` parameter on success and on refusal
 /// (inputs outside are refused with NUMERICAL_DOMAIN_EXCEEDED).
