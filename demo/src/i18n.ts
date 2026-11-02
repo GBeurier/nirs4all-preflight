@@ -117,6 +117,15 @@ const DICT = {
   groupHint: { fr: "Échantillons déclarant samples[].independence_group :", en: "Samples declaring samples[].independence_group:" },
   seedHint: { fr: "Entier ≥ 0 (au plus 2^53−1 depuis le navigateur).", en: "Integer ≥ 0 (at most 2^53−1 from the browser)." },
   seedInvalid: { fr: "Graine invalide : la valeur précédente est conservée.", en: "Invalid seed: the previous value is kept." },
+  cfgRepetition: { fr: "Colonne de répétition", en: "Repetition column" },
+  cfgRepetitionNone: { fr: "Aucune déclarée", en: "None declared" },
+  cfgRepetitionType: { fr: "Type de répétition", en: "Repetition type" },
+  cfgRepetitionApply: { fr: "Appliquer et relancer", en: "Apply and rerun" },
+  cfgRepetitionHint: { fr: "Les lignes qui partagent une valeur de cette colonne de métadonnées sont des acquisitions répétées d'un même échantillon physique, du type déclaré. Le jeu est réassemblé par nirs4all-io ; rien n'est deviné.", en: "Rows sharing a value of this metadata column are repeated acquisitions of one physical sample, of the declared type. nirs4all-io reassembles the dataset; nothing is guessed." },
+  cfgRepetitionNoFiles: { fr: "Déposez à nouveau les fichiers pour changer la colonne de répétition.", en: "Drop the files again to change the repetition column." },
+  repType_rescan: { fr: "Rescan (même présentation)", en: "Rescan (same presentation)" },
+  repType_repositioning: { fr: "Repositionnement", en: "Repositioning" },
+  repType_repreparation: { fr: "Re-préparation", en: "Re-preparation" },
   cfgScope: { fr: "Toutes les sources et cibles du fichier sont envoyées au moteur.", en: "All sources and targets of the file are sent to the engine." },
 
   // nav
@@ -202,7 +211,7 @@ const DICT = {
     fr: "Écart-type poolé et ICC(1,1) des rescans/repositionnements déclarés, par contexte instrument × campagne. Les répétitions de type inconnu ne sont jamais moyennées.",
     en: "Pooled SD and ICC(1,1) of declared rescans/repositionings, per instrument × campaign context. Repeats of unknown type are never averaged.",
   },
-  repeatNone: { fr: "Aucune répétition technique déclarée : la répétabilité n'est pas calculable.", en: "No declared technical repeats: repeatability cannot be computed." },
+  repeatNone: { fr: "Aucune répétition technique déclarée : la répétabilité n'est pas calculable. Pour un jeu importé, déclarez une colonne de répétition dans les paramètres.", en: "No declared technical repeats: repeatability cannot be computed. For an imported dataset, declare a repetition column in the settings." },
   hoverHint: { fr: "Survolez ou parcourez au clavier (←/→) pour lire les valeurs.", en: "Hover or use the keyboard (←/→) to read values." },
   targetTitle: { fr: "Couverture et distribution de la cible", en: "Target coverage and distribution" },
   targetLead: {
@@ -318,7 +327,7 @@ const DICT = {
   chkRepeatsKo: { fr: "{n} observation(s) répétée(s) sans type déclaré, exclues de la structure.", en: "{n} repeated observation(s) without a declared type, excluded from the structure." },
   chkRepeat: { fr: "Répétabilité technique", en: "Technical repeatability" },
   chkRepeatOk: { fr: "{n} contexte(s) instrument × campagne mesuré(s).", en: "{n} instrument × campaign context(s) measured." },
-  chkRepeatNa: { fr: "Aucune répétition technique déclarée : non mesurable.", en: "No declared technical repeat: not measurable." },
+  chkRepeatNa: { fr: "Aucune répétition technique déclarée : non mesurable. Pour un jeu importé, déclarez une colonne de répétition dans les paramètres.", en: "No declared technical repeat: not measurable. For an imported dataset, declare a repetition column in the settings." },
   chkTarget: { fr: "Références de la cible", en: "Target references" },
   chkTargetOk: { fr: "{n} références exactes utilisables, aucune exclusion.", en: "{n} usable exact references, no exclusion." },
   chkTargetWarn: { fr: "{n} références exactes utilisables ; {x} censurée(s) ou composite(s) exclue(s).", en: "{n} usable exact references; {x} censored or composite excluded." },

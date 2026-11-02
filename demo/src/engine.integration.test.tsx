@@ -88,10 +88,11 @@ describe("real engine on the demo synthetic sets", () => {
 });
 
 describe("real engine on dropped X/y/metadata files", () => {
+  const require = createRequire(import.meta.url);
+  const io = require("@nirs4all/io-wasm") as IoRuntime;
+  const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
+
   it("accepts the IO metadata table and analyses its associations", () => {
-    const require = createRequire(import.meta.url);
-    const io = require("@nirs4all/io-wasm") as IoRuntime;
-    const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
     const n = 24;
     const axis = Array.from({ length: 16 }, (_, b) => 1000 + 20 * b).join(";");
     const rows = Array.from({ length: n }, (_, r) => Array.from({ length: 16 }, (_, b) => (0.5 + 0.2 * Math.sin(b / 3 + r / 5) + 0.01 * ((r * 7 + b * 3) % 11)).toFixed(4)).join(";"));
@@ -107,4 +108,22 @@ describe("real engine on dropped X/y/metadata files", () => {
     expect(input.metadata?.columns.map((c) => c.name)).toEqual(["site", "moisture"]);
     expect(report.metrics.some((m) => m.metric_id === "association.metadata_target" && m.status === "computed")).toBe(true);
   });
+
+  it("measures technical repeatability once the repetition column is declared", () => {
+    const n = 8, scans = 3;
+    const axis = Array.from({ length: 16 }, (_, b) => 1000 + 20 * b).join(";");
+    const rows = Array.from({ length: n * scans }, (_, r) => Array.from({ length: 16 }, (_, b) => (0.5 + 0.2 * Math.sin(b / 3 + Math.floor(r / scans) / 2) + 0.004 * (((r % scans) * 5 + b * 3) % 7)).toFixed(4)).join(";"));
+    const encode = (name: string, text: string) => ({ name, bytes: new TextEncoder().encode(text) });
+    const files = [
+      encode("X_train.csv", `${axis}\n${rows.join("\n")}`),
+      encode("y_train.csv", `protein\n${Array.from({ length: n * scans }, (_, r) => (10 + Math.floor(r / scans) * 0.7).toFixed(2)).join("\n")}`),
+      encode("metadata_train.csv", `Sample_ID;site\n${Array.from({ length: n * scans }, (_, r) => `p${Math.floor(r / scans)};${Math.floor(r / scans) % 2 ? "north" : "south"}`).join("\n")}`),
+    ];
+    const status = (input: ReturnType<typeof importFiles>["input"]) => (runtime.analyze(input) as EngineReport & { metrics: Metric[] }).metrics.find((m) => m.metric_id === "measurement.repeatability_sd");
+    expect(status(importFiles(files, "rows", io, formats).input)?.reason_code).toBe("NO_DECLARED_TECHNICAL_REPEATS");
+    const { input } = importFiles(files, "repeats", io, formats, { column: "Sample_ID", type: "rescan" });
+    expect(input.samples).toHaveLength(n);
+    expect(status(input)?.status).toBe("computed");
+  });
 });
+

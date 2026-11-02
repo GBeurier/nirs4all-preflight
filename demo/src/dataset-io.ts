@@ -1,6 +1,6 @@
 import { autoDetectSource, buildExportConfig, type DatasetExportConfig, type DatasetRole, type DatasetSource } from "nirs4all-ui/datasetBuilder";
 import type { DatasetPlan, DatasetSpec, NamedFile, RecordSet, SourceSpec } from "@nirs4all/io-wasm/types";
-import { toEngineInput, type AssembledDataset } from "./dataset";
+import { toEngineInput, type AssembledDataset, type RepetitionDeclaration } from "./dataset";
 import type { EngineInput } from "./input";
 
 export interface IoRuntime {
@@ -126,9 +126,11 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
 }
 
 /** Translate shared builder choices to IO's native spec; do no joining in JS. */
-export function builderSpec(draft: DatasetDraft, config: DatasetExportConfig, sources: DatasetSource[]): DatasetSpec {
+export function builderSpec(draft: DatasetDraft, config: DatasetExportConfig, sources: DatasetSource[], repetition?: RepetitionDeclaration): DatasetSpec {
   const spec = diagnosticSpec(draft.spec);
   spec.name = config.name;
+  // IO's `repetition` names the column whose equal values are repeated measurements of one sample.
+  if (repetition) spec.repetition = repetition.column;
   const identity: Record<string, unknown> = {};
   const idColumn = sources.flatMap((source) => source.columns).find((column) => column.assignedRole === "id");
   if (idColumn) { identity.by = "id"; identity.key = idColumn.name; }
@@ -174,11 +176,17 @@ export function builderSpec(draft: DatasetDraft, config: DatasetExportConfig, so
   return spec;
 }
 
-export function assembleDraft(draft: DatasetDraft, config: DatasetExportConfig, sources: DatasetSource[], io: IoRuntime) {
-  const spec = builderSpec(draft, config, sources);
+export function assembleDraft(draft: DatasetDraft, config: DatasetExportConfig, sources: DatasetSource[], io: IoRuntime, repetition?: RepetitionDeclaration) {
+  const spec = builderSpec(draft, config, sources, repetition);
   io.validate(JSON.stringify(spec));
   const names = new Set(draft.records.map((r) => r.source));
-  return toEngineInput(io.assembleDataset(draft.files.filter((f) => !names.has(f.name)), draft.records, JSON.stringify(spec)) as AssembledDataset, spec.sources.map((source) => source.id));
+  return toEngineInput(io.assembleDataset(draft.files.filter((f) => !names.has(f.name)), draft.records, JSON.stringify(spec)) as AssembledDataset, spec.sources.map((source) => source.id), repetition);
+}
+
+/** Metadata columns IO carries per row: the candidates for a repetition column. */
+export function metadataColumns(sources: DatasetSource[]): string[] {
+  const roles = new Set<DatasetRole>(["metadata", "id", "replicate", "group"]);
+  return [...new Set(sources.flatMap((source) => source.columns.filter((c) => roles.has(c.assignedRole) && c.name !== "repetition_type").map((c) => c.name)))];
 }
 
 /** How nirs4all-io read one input file. */
@@ -210,11 +218,11 @@ function dropEmptyBands(input: EngineInput): number {
 const fileRole: Record<string, DetectedTable["role"]> = { features: "x", targets: "y", metadata: "metadata" };
 
 /** Files → engine input through Formats and IO only: IO infers roles, headers, partitions and joins. */
-export function importFiles(files: NamedFile[], name: string, io: IoRuntime, formats: FormatsRuntime): { input: EngineInput; tables: DetectedTable[]; skipped: string[] } {
+export function importFiles(files: NamedFile[], name: string, io: IoRuntime, formats: FormatsRuntime, repetition?: RepetitionDeclaration): { input: EngineInput; tables: DetectedTable[]; skipped: string[]; columns: string[] } {
   // An empty file carries no table; IO would refuse the whole selection for it.
   const skipped = files.filter((file) => !new TextDecoder().decode(file.bytes.subarray(0, 4096)).trim()).map((file) => file.name);
   const draft = prepareDataset(files.filter((file) => !skipped.includes(file.name)), io, formats);
-  const input = assembleDraft(draft, buildExportConfig(name, draft.sources), draft.sources, io);
+  const input = assembleDraft(draft, buildExportConfig(name, draft.sources), draft.sources, io, repetition);
   if (draft.taskType === "binary" || draft.taskType === "multiclass") {
     // IO inferred a classification task: numeric codes are class labels, not continuous references.
     for (const target of input.targets) {
@@ -228,5 +236,5 @@ export function importFiles(files: NamedFile[], name: string, io: IoRuntime, for
     file, role: fileRole[source.role] ?? "table", partition: source.partition === "train" || source.partition === "test" || source.partition === "predict" ? source.partition : null,
     ...(emptyBands && fileRole[source.role] === "x" ? { emptyBands } : {}),
   })));
-  return { input, tables, skipped };
+  return { input, tables, skipped, columns: metadataColumns(draft.sources) };
 }

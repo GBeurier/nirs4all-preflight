@@ -39,6 +39,23 @@ try {
   assert.match(await page.locator('.ws-files').innerText(), /X_train\.csv → spectres X/);
   assert.equal(await page.locator('.drop-overlay').count(), 0);
   await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
+  // Declaring a repetition column re-imports the dropped files through IO and groups the scans.
+  const scans = Array.from({ length: 12 }, (_, r) => Array.from({ length: 8 }, (_, b) => (.5 + .2 * Math.sin(b / 3 + Math.floor(r / 3) / 2) + .004 * ((r % 3 * 5 + b * 3) % 7)).toFixed(4)).join(';'));
+  await page.locator('input[type=file]').first().setInputFiles([
+    { name: 'X_train.csv', mimeType: 'text/csv', buffer: Buffer.from([Array.from({ length: 8 }, (_, b) => 1000 + 20 * b).join(';'), ...scans].join('\n')) },
+    { name: 'y_train.csv', mimeType: 'text/csv', buffer: Buffer.from(['protein', ...scans.map((_, r) => (10 + Math.floor(r / 3) * .7).toFixed(2))].join('\n')) },
+    { name: 'metadata_train.csv', mimeType: 'text/csv', buffer: Buffer.from(['Sample_ID;site', ...scans.map((_, r) => `p${Math.floor(r / 3)};${Math.floor(r / 3) % 2 ? 'north' : 'south'}`)].join('\n')) },
+  ]);
+  await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await page.getByLabel('Colonne de répétition').selectOption('Sample_ID');
+  await page.getByRole('button', { name: 'Appliquer et relancer', exact: true }).click();
+  await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 30000 });
+  assert.equal(await page.getByLabel('Colonne de répétition').inputValue(), 'Sample_ID');
+  await page.getByRole('button', { name: /Diagnostic/ }).first().click();
+  await page.locator('#s-repeat .n4q-repeatability, #s-repeat svg').first().waitFor({ timeout: 10000 });
+  assert.equal(await page.locator('#s-repeat .empty').count(), 0, 'Repeatability not measured after declaring the repetition column');
+  await page.getByRole('button', { name: 'Nouveau jeu', exact: true }).click();
   await page.setViewportSize({ width: 375, height: 812 });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Mobile overflow');
   await page.screenshot({ path: '/tmp/preflight-dataset-mobile.png', fullPage: true });
@@ -54,5 +71,5 @@ try {
   await page.getByText('Analyse terminée', { exact: true }).waitFor({ timeout: 600000 });
   assert.equal(await page.locator('.ws-title').innerText(), 'Anopheles — oocyst presence');
   assert.deepEqual(errors, []);
-  console.log('Dataset smoke passed: drop-to-analyse IO import (zone and page-wide drop), WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
+  console.log('Dataset smoke passed: drop-to-analyse IO import (zone and page-wide drop), declared repetition column, WASM analysis, persisted reuse, removal, mobile layout and both real demos (Beer and Anopheles).');
 } finally { await browser.close(); }

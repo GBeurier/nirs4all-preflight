@@ -8,10 +8,23 @@ import { buildEngineInput, defaultConfig, type AnalysisConfig, type EngineInput 
 import { Landing } from "./Landing";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
 import { Workspace } from "./Workspace";
+import { importFiles, loadDatasetRuntime, type DetectedTable } from "./dataset-io";
+import type { RepetitionDeclaration } from "./dataset";
+import { nextPaint, type LoadContext } from "./DatasetPicker";
+import { saveDataset } from "./dataset-store";
+import type { NamedFile } from "@nirs4all/io-wasm/types";
 
 export type Run = { state: "idle" } | { state: "running" } | { state: "cancelled" } | { state: "error"; code: string; message: string };
-import type { DetectedTable } from "./dataset-io";
-export type Origin = { kind: "file" | "synthetic"; name: string; tables?: DetectedTable[] };
+export type Origin = {
+  kind: "file" | "synthetic";
+  name: string;
+  tables?: DetectedTable[];
+  /** Library record of a dropped dataset. */
+  datasetId?: string;
+  /** Metadata columns IO carried, offered as repetition columns. */
+  columns?: string[];
+  repetition?: RepetitionDeclaration;
+};
 /** A report is only ever shown with the exact input that produced it. */
 export type Result = { report: EngineReport; input: EngineInput; origin: Origin };
 export type T = (k: TextKey) => string;
@@ -42,6 +55,8 @@ export function App() {
   const [validation, setValidation] = useState<EngineValidation | null>(null);
   const [htmlError, setHtmlError] = useState<string | null>(null);
   const host = useRef<EngineHost | null>(null);
+  /** Files of the dataset dropped in this session: a repetition declaration re-imports them through IO. */
+  const files = useRef<NamedFile[] | null>(null);
   /** Job generation: responses of a superseded or cancelled job are ignored. */
   const job = useRef(0);
 
@@ -112,7 +127,33 @@ export function App() {
     void execute(next, cfg, from);
   };
 
+  /** Re-assembles the dropped files with IO under a new repetition declaration, then reruns. */
+  const redeclare = async (repetition: RepetitionDeclaration | undefined) => {
+    const dropped = files.current;
+    if (!dropped || !origin || run.state === "running") return;
+    const generation = ++job.current;
+    setRun({ state: "running" });
+    setValidation(null);
+    try {
+      const { io, formats } = await loadDatasetRuntime();
+      await nextPaint();
+      if (generation !== job.current) return;
+      const { input: next, tables } = importFiles(dropped, origin.name, io, formats, repetition);
+      const { repetition: _previous, ...rest } = origin;
+      const from: Origin = { ...rest, ...(tables.length ? { tables } : {}), ...(repetition ? { repetition } : {}) };
+      if (from.datasetId) {
+        // The library keeps the latest declaration; a storage failure never blocks the analysis.
+        void saveDataset({ id: from.datasetId, name: from.name, savedAt: new Date().toISOString(), input: next, ...(tables.length ? { tables } : {}), ...(from.columns?.length ? { columns: from.columns } : {}), ...(repetition ? { repetition } : {}) }).catch(() => undefined);
+      }
+      load(next, from);
+    } catch (error) {
+      if (generation !== job.current) return;
+      setRun({ state: "error", code: "IMPORT_ERROR", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const reset = () => {
+    files.current = null;
     job.current += 1;
     host.current?.cancel();
     setInput(null);
@@ -176,9 +217,13 @@ export function App() {
             onRun={() => void execute(input, config, origin)}
             onCancel={() => host.current?.cancel()}
             onDownloadHtml={() => void downloadHtml()}
+            {...(files.current ? { onRepetition: (repetition: RepetitionDeclaration | undefined) => void redeclare(repetition) } : {})}
           />
         ) : (
-          <Landing t={t} locale={locale} onDataset={(data, name, tables) => load(data, { kind: "file", name, ...(tables?.length ? { tables } : {}) })} onSynthetic={(sc: SyntheticScenario) => load(syntheticInput(sc), { kind: "synthetic", name: sc })} />
+          <Landing t={t} locale={locale} onDataset={(data, name, tables, context?: LoadContext) => {
+            files.current = context?.files ?? null;
+            load(data, { kind: "file", name, ...(tables?.length ? { tables } : {}), ...(context?.datasetId ? { datasetId: context.datasetId } : {}), ...(context?.columns?.length ? { columns: context.columns } : {}), ...(context?.repetition ? { repetition: context.repetition } : {}) });
+          }} onSynthetic={(sc: SyntheticScenario) => { files.current = null; load(syntheticInput(sc), { kind: "synthetic", name: sc }); }} />
         )}
       </main>
       <footer className="footer">

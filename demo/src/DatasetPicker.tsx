@@ -3,14 +3,18 @@ import { DatasetDropzone, droppedFiles, type DroppedFile } from "nirs4all-ui/com
 import type { Locale } from "nirs4all-ui/lab";
 import type { T } from "./App";
 import { fill, type TextKey } from "./i18n";
-import type { SavedDataset } from "./dataset";
+import type { RepetitionDeclaration, SavedDataset } from "./dataset";
 import { DEMO_DATASETS, readDemoFiles, assembleDemoDataset, type DemoDataset } from "./demo-datasets";
 import { importFiles, loadDatasetRuntime, type DetectedTable } from "./dataset-io";
 import { listDatasets, removeDataset, saveDataset } from "./dataset-store";
 import { parseCanonicalInput, type EngineInput } from "./input";
+import type { NamedFile } from "@nirs4all/io-wasm/types";
 import type { SyntheticScenario } from "./synthetic";
 
-export type LoadDataset = (input: EngineInput, name: string, tables?: DetectedTable[]) => void;
+/** What a re-import needs: the library record, IO's metadata columns and, in this session only, the files. */
+export interface LoadContext { datasetId?: string; columns?: string[]; repetition?: RepetitionDeclaration; files?: NamedFile[] }
+export type LoadDataset = (input: EngineInput, name: string, tables?: DetectedTable[], context?: LoadContext) => void;
+const contextOf = (dataset: SavedDataset, files?: NamedFile[]): LoadContext => ({ datasetId: dataset.id, ...(dataset.columns?.length ? { columns: dataset.columns } : {}), ...(dataset.repetition ? { repetition: dataset.repetition } : {}), ...(files ? { files } : {}) });
 
 /** Decorative NIR-like curve (not data) for the example cards. */
 export function heroCurve(k: number, w = 1200, h = 320, n = 120): string {
@@ -41,7 +45,7 @@ const errorText = (cause: unknown, t: T) => `${t("dropFailed")} ${cause instance
 type Stage = "runtime" | "reading" | "assembling";
 
 /** Lets the browser paint the progress state before the synchronous IO assembly. */
-const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+export const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 
 export function DatasetPicker({ locale, t, onLoad, onSynthetic }: { locale: Locale; t: T; onLoad: LoadDataset; onSynthetic: (sc: SyntheticScenario) => void }) {
   const [datasets, setDatasets] = useState<SavedDataset[]>([]);
@@ -50,7 +54,7 @@ export function DatasetPicker({ locale, t, onLoad, onSynthetic }: { locale: Loca
   const [over, setOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
-  const [unsaved, setUnsaved] = useState<SavedDataset | null>(null);
+  const [unsaved, setUnsaved] = useState<{ dataset: SavedDataset; files?: NamedFile[] } | null>(null);
   const generation = useRef(0);
   useEffect(() => {
     let active = true;
@@ -59,14 +63,14 @@ export function DatasetPicker({ locale, t, onLoad, onSynthetic }: { locale: Loca
   }, []);
 
   /** Saves for later reuse, then analyses; a storage failure never blocks the analysis. */
-  const keep = async (input: EngineInput, name: string, tables: DetectedTable[] | undefined, current: number) => {
-    const dataset: SavedDataset = { id: crypto.randomUUID(), name, savedAt: new Date().toISOString(), input, ...(tables?.length ? { tables } : {}) };
+  const keep = async (input: EngineInput, name: string, tables: DetectedTable[] | undefined, current: number, columns?: string[], files?: NamedFile[]) => {
+    const dataset: SavedDataset = { id: crypto.randomUUID(), name, savedAt: new Date().toISOString(), input, ...(tables?.length ? { tables } : {}), ...(columns?.length ? { columns } : {}) };
     try {
       await saveDataset(dataset);
-      if (current === generation.current) onLoad(input, name, tables);
+      if (current === generation.current) onLoad(input, name, tables, contextOf(dataset, files));
     } catch {
       if (current !== generation.current) return;
-      setUnsaved(dataset);
+      setUnsaved({ dataset, ...(files ? { files } : {}) });
       setStorageError(t("datasetStorageError"));
     }
   };
@@ -103,11 +107,11 @@ export function DatasetPicker({ locale, t, onLoad, onSynthetic }: { locale: Loca
     const { io, formats } = await loadDatasetRuntime();
     setStage({ step: "assembling", files: files.length });
     await nextPaint();
-    const { input, tables } = importFiles(incoming, name, io, formats);
+    const { input, tables, columns } = importFiles(incoming, name, io, formats);
     // A dataset of separate tables is named after its folder or its spectra file.
     const spectra = tables.find((table) => table.role === "x" && table.partition !== "test")?.file;
     const title = folder ?? (spectra && files.length > 1 ? fill(t("filesName"), { first: spectra, n: files.length - 1 }) : name);
-    if (current === generation.current) await keep(input, title, tables, current);
+    if (current === generation.current) await keep(input, title, tables, current, columns, incoming);
   });
 
   const openDemo = (sample: DemoDataset) => run(async (current) => {
@@ -166,7 +170,7 @@ export function DatasetPicker({ locale, t, onLoad, onSynthetic }: { locale: Loca
       error={error ? <><p>{error}</p><p>{t("dropFailedHint")}</p></> : null}
     />
     {storageError ? <p role="alert" className="alert drop-alert">{storageError}</p> : null}
-    {unsaved ? <button className="btn btn-primary" onClick={() => onLoad(unsaved.input, unsaved.name, unsaved.tables)}>{t("datasetContinue")}</button> : null}
+    {unsaved ? <button className="btn btn-primary" onClick={() => onLoad(unsaved.dataset.input, unsaved.dataset.name, unsaved.dataset.tables, contextOf(unsaved.dataset, unsaved.files))}>{t("datasetContinue")}</button> : null}
     <details className="drop-help">
       <summary>{t("dropHelpTitle")}</summary>
       <ul>{(["dropHelpTable", "dropHelpXYM", "dropHelpFormats", "dropHelpJson"] as const).map((k) => <li key={k}>{t(k)}</li>)}</ul>
@@ -207,7 +211,7 @@ export function DatasetPicker({ locale, t, onLoad, onSynthetic }: { locale: Loca
           <span className="recent-name">{dataset.name}</span>
           <span className="recent-meta">{fill(t("recentMeta"), { n: dataset.input.samples.length.toLocaleString(locale), p: dataset.input.sources.reduce((n, s) => n + s.axis.length, 0).toLocaleString(locale), y: dataset.input.targets.length })}</span>
           <span className="recent-actions">
-            <button className="btn btn-outline btn-sm" disabled={busy} onClick={() => onLoad(dataset.input, dataset.name, dataset.tables)}>{t("datasetReuse")}</button>
+            <button className="btn btn-outline btn-sm" disabled={busy} onClick={() => onLoad(dataset.input, dataset.name, dataset.tables, contextOf(dataset))}>{t("datasetReuse")}</button>
             <button className="btn btn-ghost btn-sm" disabled={busy} aria-label={`${t("datasetRemove")} ${dataset.name}`} onClick={() => {
               void removeDataset(dataset.id).then(() => setDatasets((items) => items.filter((item) => item.id !== dataset.id))).catch(() => setStorageError(t("datasetStorageError")));
             }}>{t("datasetRemove")}</button>
