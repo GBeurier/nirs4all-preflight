@@ -19,6 +19,7 @@ import {
   extractConfounding,
   extractDomainShift,
   extractDuplicates,
+  extractIntrinsic,
   extractNoiseProxy,
   extractPca,
   extractProbes,
@@ -41,6 +42,7 @@ import {
 import { fill, isTextKey, type TextKey } from "./i18n";
 import { Measured } from "./Measured";
 import { Section, type Scope } from "./Sections";
+import { atypicalSpectra } from "./views";
 
 /** Counts exactly; other engine numbers with `digits` significant digits, exponent form outside [1e-4, 1e6). */
 const n = (v: number | null | undefined, locale: Locale, digits = 3) =>
@@ -59,6 +61,7 @@ export const BLOCK_SECTIONS: readonly { id: string; label: TextKey; prefixes: re
   { id: "s-shift", label: "navShift", prefixes: ["domain_shift."] },
   { id: "s-association", label: "navAssociation", prefixes: ["association."] },
   { id: "s-probe", label: "navProbe", prefixes: ["probe."] },
+  { id: "s-quality", label: "navQuality", prefixes: ["intrinsic."] },
 ];
 
 export const presentSections = (s: Scope) => BLOCK_SECTIONS.filter((b) => hasBlock(s.view, b.prefixes));
@@ -616,6 +619,77 @@ export function ProbeSection({ t, locale, view, sourceId, targetId }: Scope) {
           </div>
         );
       })}
+    </Section>
+  );
+}
+
+// --- spectral quality: in-sample T²/Q, spikes, jumps, noise (options.intrinsic_qc) --------------
+
+const ATYPICAL_MAX = 20;
+
+export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
+  const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
+  if (!intrinsic) return null;
+  const t2 = intrinsic.signals["pca.pca_t2"];
+  const q = intrinsic.signals["pca.pca_q"];
+  const pcaReady = t2?.state.status === "computed" && q?.state.status === "computed";
+  const atypical = pcaReady ? atypicalSpectra(t2, q) : [];
+  const flagged = new Set(atypical.map((a) => a.observationId));
+  const points: ScorePoint[] = pcaReady
+    ? t2.values.flatMap((value, i) => {
+      const residual = q.values[i];
+      if (value === null || residual === null || residual === undefined) return [];
+      const id = t2.sampleIds[i] ?? "";
+      return [{ id, x: value, y: residual, group: flagged.has(t2.observationIds[i] ?? "") ? t("qualityAtypical") : t("qualityTypical") }];
+    })
+    : [];
+  const g = intrinsic.globals;
+  const snr = intrinsic.signals["noise.signal_noise_db"];
+  const distance = intrinsic.signals["reference.rms"];
+  const unavailable = Object.values(intrinsic.signals).filter((s) => s.state.status !== "computed" && /^(pca|events|noise|reference)\./.test(s.id));
+  return (
+    <Section id="s-quality" icon="data" accent="rose" title={t("qualityTitle")} lead={t("qualityLead")}>
+      <div className="stats">
+        <StatTile label={t("qualityAtypicalCount")} value={pcaReady ? n(atypical.length, locale) : "—"} hint={pcaReady ? fill(t("qualityAtypicalHint"), { t2: n(t2.p95, locale), q: n(q.p95, locale) }) : "—"} tone={atypical.length ? "warning" : "neutral"} />
+        <StatTile label={t("qualitySpikes")} value={n(g["events.global_spike_count"], locale)} hint={t("qualityEventsHint")} tone={(g["events.global_spike_count"] ?? 0) > 0 ? "warning" : "neutral"} />
+        <StatTile label={t("qualityJumps")} value={n(g["events.global_jump_count"], locale)} hint={t("qualityEventsHint")} tone={(g["events.global_jump_count"] ?? 0) > 0 ? "warning" : "neutral"} />
+        <StatTile label={t("qualitySnr")} value={snr?.median !== null && snr?.median !== undefined ? `${n(snr.median, locale)} dB` : "—"} hint={distance?.p95 !== null && distance?.p95 !== undefined ? fill(t("qualityDistanceHint"), { d: n(distance.p95, locale) }) : "—"} />
+      </div>
+      {pcaReady ? (
+        <div className="grid-3-2">
+          <div className="card">
+            <h3 className="card-title">{t("qualityMap")}</h3>
+            <Measured>{(w) => <ScoreMap
+              width={w}
+              height={Math.min(420, Math.max(280, w * 0.66))}
+              points={points}
+              colorBy="group"
+              groupColors={{ [t("qualityTypical")]: "#0d9488", [t("qualityAtypical")]: "#e11d48" }}
+              xLabel="T²"
+              yLabel="Q"
+              colorLabel={t("qualityMap")}
+              title={t("qualityMap")}
+              locale={locale}
+            />}</Measured>
+            <p className="hint">{t("qualityMapHint")}</p>
+          </div>
+          <div className="card">
+            <h3 className="card-title">{t("qualityList")}</h3>
+            {atypical.length ? (
+              <ChartDataTable
+                locale={locale}
+                caption={t("qualityList")}
+                columns={[t("unitId"), "T²", "Q"]}
+                rows={atypical.slice(0, ATYPICAL_MAX).map((a) => [a.sampleId, c6(a.t2), c6(a.q)])}
+              />
+            ) : <p className="note">{t("qualityNone")}</p>}
+            {atypical.length > ATYPICAL_MAX ? <p className="note">{t("tableCap")} {ATYPICAL_MAX} / {atypical.length}</p> : null}
+          </div>
+        </div>
+      ) : null}
+      {unavailable.length ? (
+        <div className="card">{unavailable.map((s) => <p key={s.id}>{metricLabel(`intrinsic.${s.id}`, locale)} : <AvailabilityBadge status={s.state.status} reason={s.state.reasonCode} locale={locale} /></p>)}</div>
+      ) : null}
     </Section>
   );
 }

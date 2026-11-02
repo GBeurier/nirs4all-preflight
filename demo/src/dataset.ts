@@ -1,5 +1,5 @@
 import type { DetectedTable } from "./dataset-io";
-import type { EngineInput, InputMetadata, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
+import type { EngineInput, InputMetadata, InputOptions, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
 
 export interface IoMatrix { n_rows: number; n_cols: number; data: (number | null)[] }
 export interface IoBlock {
@@ -103,8 +103,11 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
     block.x.forEach((matrix, index) => {
       if (matrix.n_rows !== block.n_samples || matrix.data.length !== matrix.n_rows * matrix.n_cols) throw new Error("Misaligned IO feature matrix.");
       const headers = block.feature_headers[index] ?? [];
-      const numericAxis = headers.length === matrix.n_cols && headers.every((h) => h.trim() !== "" && Number.isFinite(Number(h)));
-      const axis = numericAxis ? headers.map(Number) : Array.from({ length: matrix.n_cols }, (_, i) => i);
+      const values = headers.map(Number);
+      // The engine needs a strictly monotonic axis; concatenated detector ranges fall back to the band index.
+      const monotonic = values.every((v, i) => i === 0 || v > values[i - 1]!) || values.every((v, i) => i === 0 || v < values[i - 1]!);
+      const numericAxis = headers.length === matrix.n_cols && headers.every((h) => h.trim() !== "" && Number.isFinite(Number(h))) && monotonic;
+      const axis = numericAxis ? values : Array.from({ length: matrix.n_cols }, (_, i) => i);
       const unit = numericAxis ? (block.header_units[index] || "unknown") : "index";
       let source = sources[index];
       if (!source) {
@@ -132,8 +135,11 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
         if (!target) { target = { target_id: name, kind, values: [] }; targets.set(name, target); }
         if (target.kind !== kind) throw new Error(`Target kind differs across partitions: ${name}`);
         for (let row = 0; row < block.y.n_rows; row++) {
+          // A missing reference is no reference: each target keeps its own samples.
           const value = numberOrNull(block.y.data[row * block.y.n_cols + col]);
-          target.values.push({ sample_id: ids[row]!, status: "exact", ...(categories ? { category: value === null ? null : categories[value] ?? null } : { value }) });
+          const category = categories && value !== null ? categories[value] ?? null : null;
+          if (value === null || (categories && category === null)) continue;
+          target.values.push({ sample_id: ids[row]!, status: "exact", ...(categories ? { category } : { value }) });
         }
       }
     }
@@ -141,7 +147,11 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
   if (!sources.length || !samples.size) throw new Error("No spectra found in the dataset.");
   const reserved = new Set([identity?.sample_id, identity?.observation_id, identity?.group_id].filter((name): name is string => typeof name === "string"));
   const metadata = sampleMetadata(metadataRows, reserved, sourceIds);
-  return { schema_version: 1, data_origin: "user_provided", sources, samples: [...samples.values()], targets: [...targets.values()], ...(metadata ? { metadata } : {}), options: { independence_unit: "unknown" } };
+  // Spectral signatures (T²/Q, distance to the mean spectrum, spikes, jumps, noise) on the development
+  // spectra, and the X-only audit of a retained test set against development (test Y is never read).
+  const options: InputOptions = { independence_unit: "unknown", intrinsic_qc: {} };
+  if ([...samples.values()].some((s) => s.partition === "retained_test")) options.domain_shift = { external_domain_audit: true };
+  return { schema_version: 1, data_origin: "user_provided", sources, samples: [...samples.values()], targets: [...targets.values()].filter((t) => t.values.length), ...(metadata ? { metadata } : {}), options };
 }
 
 export interface SavedDataset {

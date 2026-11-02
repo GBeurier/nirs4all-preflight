@@ -70,6 +70,14 @@ export function App() {
     try {
       const report = await host.current.analyze(payload);
       if (generation !== job.current) return;
+      // A refused input yields a report without results: show why instead of an empty diagnosis.
+      const refused = (report as unknown as { validation?: EngineValidation }).validation;
+      if (refused && !refused.valid) {
+        setResult(null);
+        setRun({ state: "error", code: "INPUT_REFUSED", message: "" });
+        setValidation(refused);
+        return;
+      }
       setResult({ report, input: payload, origin: from });
       setRun({ state: "idle" });
     } catch (error) {

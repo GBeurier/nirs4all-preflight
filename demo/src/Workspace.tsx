@@ -9,7 +9,7 @@ import type { EngineValidation } from "./engine";
 import { fill, type TextKey } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { countIndependenceGroups, defaultConfig, parseSeed, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
-import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
+import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
 type View = "data" | "diagnosis" | "evidence" | "export";
@@ -20,6 +20,18 @@ const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-repeat", label: "navRepeat" },
   { id: "s-target", label: "navTarget" },
 ];
+
+/** One line per issue code: an input can repeat the same issue on thousands of values. */
+function issueGroups(validation: EngineValidation) {
+  const groups = new Map<string, { code: string; message: string; blocking: boolean; paths: string[] }>();
+  for (const issue of validation.issues) {
+    const group = groups.get(issue.code) ?? { code: issue.code, message: issue.message, blocking: false, paths: [] };
+    group.blocking ||= issue.blocking;
+    group.paths.push(issue.path);
+    groups.set(issue.code, group);
+  }
+  return [...groups.values()].sort((a, b) => Number(b.blocking) - Number(a.blocking));
+}
 
 /** Which journey step owns an in-page anchor. */
 function viewOf(anchor: string): View | null {
@@ -125,7 +137,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               <p className="ws-sub ws-files">
                 {t("detectedFiles")}{" "}
                 {origin.tables.map((table, i) => (
-                  <span key={table.file} className="ws-file">{i ? " · " : ""}<code>{table.file}</code> → {t(`role_${table.role}` as TextKey)}{table.partition === "test" ? ` (${t("partitionTest")})` : table.partition === "predict" ? ` (${t("partitionPredict")})` : ""}</span>
+                  <span key={table.file} className="ws-file">{i ? " · " : ""}<code>{table.file}</code> → {t(`role_${table.role}` as TextKey)}{table.partition === "test" ? ` (${t("partitionTest")})` : table.partition === "predict" ? ` (${t("partitionPredict")})` : ""}{table.emptyBands ? ` — ${fill(t("emptyBands"), { n: table.emptyBands })}` : ""}</span>
                 ))}
               </p>
             ) : null}
@@ -152,11 +164,11 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} /> : null}
           {run.state === "error" ? (
             <div role="alert" className="alert">
-              <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>
+              {run.code === "INPUT_REFUSED" ? null : <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>}
               {validation ? (
                 <>
                   <p>{t("validKo")}</p>
-                  <ul>{validation.issues.map((i, k) => <li key={`${i.code}${k}`}><code>{i.code}</code> {i.path} — {i.message}{i.blocking ? ` (${t("blocking")})` : ""}</li>)}</ul>
+                  <ul>{issueGroups(validation).map((g) => <li key={g.code}><code>{g.code}</code> {g.message}{g.blocking ? ` (${t("blocking")})` : ""} — {g.paths.slice(0, 3).join(", ")}{g.paths.length > 3 ? ` … (${g.paths.length})` : ""}</li>)}</ul>
                 </>
               ) : null}
             </div>
@@ -217,6 +229,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               {[...DIAG_LINKS, ...presentSections(scope)].map((l) => <a key={l.id} href={`#${l.id}`} className="chip-link">{t(l.label)}</a>)}
             </nav>
             <PopulationsSection {...scope} />
+            <SpectralQualitySection {...scope} />
             <DuplicatesSection {...scope} />
             <StructureSection key={`pca-${source ?? ""}`} {...scope} />
             <SensitivitySection {...scope} />
