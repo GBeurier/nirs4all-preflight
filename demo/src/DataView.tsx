@@ -15,6 +15,7 @@ const EXPLORER_MAX = 200;
 const TABLE_PAGE = 40;
 const KIND_COLOR: Record<RowKind, string> = { development: "#0d9488", retained_test: "#0891b2", prediction: "#4f46e5", augmented: "#94a3b8", undeclared: "#e11d48" };
 const NONE = "#0d9488";
+const UNEVALUATED = "#cbd5e1";
 
 const num = (v: number, locale: Locale) => (Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(4)).toLocaleString(locale));
 
@@ -23,9 +24,12 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
   const source = input.sources.find((s) => s.source_id === sourceId) ?? input.sources[0];
   const [colorBy, setColorBy] = useState<ColorBy | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const atypical = useMemo(() => (report && source ? atypicalScans(report, source.source_id) : null), [report, source]);
+  const scan = useMemo(() => (report && source ? atypicalScans(report, source.source_id) : null), [report, source]);
+  const atypical = scan?.atypical ?? null;
   const flagged = useMemo(() => new Set(atypical?.map((a) => a.observationId)), [atypical]);
   const preview = useMemo(() => (source ? spectraPreview(input, source, EXPLORER_MAX, flagged) : null), [input, source, flagged]);
+  // drawn scans the in-sample T²/Q could not use (incomplete spectra) are neither typical nor atypical
+  const unevaluated = preview && scan ? preview.rows.filter((r) => !scan.evaluated.has(r.observationId)).length : 0;
   // atypical scans in red by default once the report flags any; otherwise the reader's choice
   const fallback: ColorBy = atypical?.length ? "quality" : targetId ? "target" : "campaign";
   const mode: ColorBy = colorBy === null || (colorBy === "quality" && !atypical) ? fallback : colorBy;
@@ -41,7 +45,7 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
   const groups = [...new Set((preview?.rows ?? []).map((r) => groupKey(r.sampleId)))].sort((a, b) => a.localeCompare(b));
   const colorOf = (sampleId: string, observationId: string) => {
     if (mode === "none") return NONE;
-    if (mode === "quality") return flagged.has(observationId) ? ATYPICAL_RED : TYPICAL_GREY;
+    if (mode === "quality") return flagged.has(observationId) ? ATYPICAL_RED : scan?.evaluated.has(observationId) ? TYPICAL_GREY : UNEVALUATED;
     if (mode === "target") {
       const v = values.get(sampleId);
       return v === undefined ? "#94a3b8" : rampAt(SCORE_SEQUENTIAL, (v - lo) / (hi - lo || 1));
@@ -111,6 +115,7 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
                 <ul className="n4q-legend">
                   <li><span className="n4q-key-line" style={{ background: TYPICAL_GREY }} aria-hidden="true" />{t("qualityTypical")}</li>
                   <li><span className="n4q-key-line" style={{ background: ATYPICAL_RED }} aria-hidden="true" />{t("qualityAtypical")} <strong>{atypical?.length ?? 0}</strong></li>
+                  {unevaluated ? <li><span className="n4q-key-line" style={{ background: UNEVALUATED }} aria-hidden="true" />{t("qualityUnevaluated")} <strong>{unevaluated}</strong></li> : null}
                 </ul>
               ) : null}
               {mode === "campaign" || mode === "instrument" ? (

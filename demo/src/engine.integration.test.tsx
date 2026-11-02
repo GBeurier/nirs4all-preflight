@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createQualificationRuntime } from "@nirs4all/preflight";
 import { buildQualificationReportView, type EngineReport } from "nirs4all-ui/qualification";
 import { importFiles, type FormatsRuntime, type IoRuntime } from "./dataset-io";
+import { buildChecks } from "./checks";
 import { ClusteringSection, ConfoundingSection, DomainShiftSection, ProbeSection, presentSections } from "./Blocks";
 import { translate, type TextKey } from "./i18n";
 import type { Scope } from "./Sections";
@@ -107,6 +108,25 @@ describe("real engine on dropped X/y/metadata files", () => {
     expect(report.validation.valid).toBe(true);
     expect(input.metadata?.columns.map((c) => c.name)).toEqual(["site", "moisture"]);
     expect(report.metrics.some((m) => m.metric_id === "association.metadata_target" && m.status === "computed")).toBe(true);
+  });
+
+  it("never reads a missing reference or an unevaluated event count as an all-clear", () => {
+    const n = 12;
+    const rows = Array.from({ length: n }, (_, r) => Array.from({ length: 4 }, (_, b) => (0.5 + 0.1 * b + 0.01 * ((r * 7 + b * 3) % 11)).toFixed(4)).join(";"));
+    const encode = (name: string, text: string) => ({ name, bytes: new TextEncoder().encode(text) });
+    const { input } = importFiles([
+      encode("X_train.csv", `1000;1100;1200;1300\n${rows.join("\n")}`),
+      encode("y_train.csv", `protein\n${Array.from({ length: n }, (_, r) => (r === 3 ? "" : (10 + r / 3).toFixed(2))).join("\n")}`),
+    ], "short", io, formats);
+    const report = runtime.analyze(input) as EngineReport;
+    const checks = buildChecks(buildQualificationReportView(report), input, input.sources[0]!.source_id, "protein", (k: TextKey) => translate(k, "en"), "en");
+    const target = checks.find((c) => c.id === "target");
+    expect(target?.status).toBe("attention");
+    expect(target?.detail).toContain(`1 of ${n} development samples without a reference`);
+    const events = checks.find((c) => c.id === "events");
+    // four bands are too few for the spike detector: its count stays unevaluated, never zero
+    expect(events?.status).not.toBe("ok");
+    expect(events?.detail).toMatch(/^— isolated spikes/);
   });
 
   it("measures technical repeatability once the repetition column is declared", () => {

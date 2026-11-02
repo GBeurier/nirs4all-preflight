@@ -195,6 +195,23 @@ describe("native dataset import → shared builder → preflight", () => {
     expect(input.sources[0]?.axis_unit).toBe("index");
   });
 
+  it("refuses partitions whose non-monotonic headers name different bands", () => {
+    expect(() => importFiles([
+      file("Xtrain.csv", "1100;1200;1000\n0.1;0.2;0.3\n0.4;0.5;0.6"), file("Ytrain.csv", "protein\n11\n12"),
+      file("Xtest.csv", "1200;1000;1100\n0.7;0.8;0.9"), file("Ytest.csv", "protein\n13"),
+    ], "shuffled", io, formats)).toThrow("Spectral axes differ across partitions");
+  });
+
+  it("keeps one sample record per instrument for a declared repeated sample", () => {
+    const { input } = importFiles([
+      file("Xtrain.csv", "1000;1100;1200\n0.1;0.2;0.3\n0.11;0.21;0.31\n0.4;0.5;0.6\n0.41;0.52;0.6"),
+      file("Ytrain.csv", "protein\n11\n11\n12\n12"),
+      file("Mtrain.csv", "Sample_ID;instrument\ns1;A\ns1;B\ns2;A\ns2;B"),
+    ], "instruments", io, formats, { column: "Sample_ID", type: "rescan" });
+    expect(input.samples.map((s) => [s.physical_sample_id, s.instrument])).toEqual([["s1", "A"], ["s1", "B"], ["s2", "A"], ["s2", "B"]]);
+    expect(new Set(input.samples.map((s) => s.sample_id)).size).toBe(4);
+  });
+
   it("leaves out a band empty on every row and says so", () => {
     const { input, tables } = importFiles([
       file("Xtrain.csv", "1000;1100;1200;1300\n0.1;0.2;0.3;\n0.4;0.5;0.6;\n0.7;0.8;0.9;"),
