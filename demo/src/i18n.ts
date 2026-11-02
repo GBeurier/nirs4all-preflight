@@ -206,8 +206,8 @@ const DICT = {
   hoverHint: { fr: "Survolez ou parcourez au clavier (←/→) pour lire les valeurs.", en: "Hover or use the keyboard (←/→) to read values." },
   targetTitle: { fr: "Couverture et distribution de la cible", en: "Target coverage and distribution" },
   targetLead: {
-    fr: "Boîte à quartiles calculée par le moteur sur les références exactes éligibles ; points = valeurs déclarées des échantillons de développement réels. Les valeurs du test réservé ne sont pas lues.",
-    en: "Quartile box computed by the engine on eligible exact references; dots = declared values of real development samples. Retained-test values are not read.",
+    fr: "Boîte à quartiles calculée par le moteur sur les références exactes éligibles ; histogramme = valeurs déclarées des échantillons de développement réels. Les valeurs du test réservé ne sont pas lues.",
+    en: "Quartile box computed by the engine on eligible exact references; histogram = declared values of real development samples. Retained-test values are not read.",
   },
   eligible: { fr: "références exactes éligibles", en: "eligible exact references" },
   excludedCensored: { fr: "censurées exclues", en: "censored excluded" },
