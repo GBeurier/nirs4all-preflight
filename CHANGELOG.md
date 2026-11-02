@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 — 2026-11-02
+
+Large datasets are no longer refused by the transport. The CLI, C ABI and WASM bindings read JSON inputs and reports up to 384 MiB (`MAX_JSON_BYTES`, was 64 MiB), enough for the default `max_cells` of 10 million spectral cells; an input of about 3.2 to 10 million cells used to fail with `JSON_MEMORY_BUDGET_EXCEEDED` although the engine accepts it. Above `options.max_cells`, the npm binding now refuses the input before serializing it, whose JSON can exceed the longest JavaScript string: `analyze` throws and `validate` returns the engine's own `CELL_BUDGET_EXCEEDED` issue. Engine protocols and reports are unchanged.
+
 ## 0.1.2 — 2026-11-02
 
 Browser analyses of wide datasets become about 26 times faster: a 424 × 2,151 dataset with eight metadata columns (one with 94 levels) goes from 8 min 47 s to 20 s in WebAssembly. Each simplification below has an option that restores the heavier computation.

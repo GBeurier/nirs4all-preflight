@@ -3,7 +3,6 @@ use nirs4all_preflight::*;
 use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
 #[repr(C)]
 #[derive(Default)]
 pub struct N4pfBuffer {

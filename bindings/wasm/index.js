@@ -21,6 +21,18 @@ function providerError(error) {
   return { kind: 'internal', reason: 'METHODS_CALLBACK_FAILED' };
 }
 
+/** Inputs above the engine's spectral cell budget are refused before they
+ * are serialized, since their JSON can exceed the longest JavaScript string:
+ * the same code and meaning as the engine's own validation issue. */
+function cellBudgetIssue(input) {
+  const max = input?.options?.max_cells ?? 10_000_000;
+  let cells = 0;
+  for (const source of input?.sources ?? []) cells += (source.x?.length ?? 0) * (source.x?.[0]?.length ?? 0);
+  return cells > max
+    ? { code: 'CELL_BUDGET_EXCEEDED', path: 'sources', message: `${cells} spectral cells exceed options.max_cells (${max})`, blocking: true }
+    : null;
+}
+
 /** A failed nested selection travels as its DAG-ML message plus the first
  * error raised by the selection-metrics callback; the Rust engine maps both
  * exactly as the native provider (`dagml::nested_selection_failure`), so the
@@ -377,8 +389,15 @@ export async function createQualificationRuntime(options = {}) {
     }
   };
   return {
-    analyze: input => JSON.parse(rust.analyze_json(JSON.stringify(seedAsDecimal(input)), callback)),
-    validate: input => JSON.parse(rust.validate_json(JSON.stringify(seedAsDecimal(input)))),
+    analyze: input => {
+      const issue = cellBudgetIssue(input);
+      if (issue) throw Object.assign(new Error(issue.message), { code: issue.code });
+      return JSON.parse(rust.analyze_json(JSON.stringify(seedAsDecimal(input)), callback));
+    },
+    validate: input => {
+      const issue = cellBudgetIssue(input);
+      return issue ? { valid: false, issues: [issue] } : JSON.parse(rust.validate_json(JSON.stringify(seedAsDecimal(input))));
+    },
     // JSON-text entry points: the text reaches the Rust parser unchanged, so
     // nothing is rounded or decoded by JavaScript (u64 seeds, reserved Y).
     analyzeJson: text => rust.analyze_json(text, callback),
