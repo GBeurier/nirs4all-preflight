@@ -127,11 +127,12 @@ export function App() {
     void execute(next, cfg, from);
   };
 
-  /** Re-assembles the dropped files with IO under a new repetition declaration, then reruns. */
+  /** Re-assembles the dropped files with IO under a new repetition declaration, then reruns (an analysis in progress is cancelled). */
   const redeclare = async (repetition: RepetitionDeclaration | undefined) => {
     const dropped = files.current;
-    if (!dropped || !origin || run.state === "running") return;
+    if (!dropped || !origin) return;
     const generation = ++job.current;
+    if (run.state === "running") host.current?.cancel();
     setRun({ state: "running" });
     setValidation(null);
     try {
