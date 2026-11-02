@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "preflight_source_sha": "d83a1754bc8036b8ec4c6d329c7a6ea55f5db179",
+  "preflight_source_sha": "0879f88d00fbc7ed7eb748697281c590e30a4e1d",
   "methods_source_sha": "6cff3e1a6dc9005e5bb65a169143f26bad1c2202",
   "artifacts_sha256": {
-    "cli": "9c52650e1ecc29a3081a664780f836d6339932fb1690a9de3295221f9b1435da",
+    "cli": "28251b72828c389543dfe639275311d7efe7ee853f046dff2dff74e07e68ebd0",
     "methods_library": "16d13563f0046bd07b7152fc7fef25cf1dc67716132174a394ec19207b04f354",
     "fixture": "7d5bb9d6786b88cdd45d8e83366f5799c176c1738520a85c2964e28cbfa71f29"
   },
@@ -5409,7 +5409,7 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "backend_version": "1.3.12+abi.2.20.0",
             "outputs": {
@@ -6012,7 +6012,9 @@
             }
           },
           "unit": null,
-          "denominators": {},
+          "denominators": {
+            "n_excluded_incomplete_observations": 0
+          },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
@@ -6077,7 +6079,7 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "observation_ids": [
               "obs-0",
@@ -6143,6 +6145,7 @@
           "unit": "1",
           "denominators": {
             "n_available_observations": 8,
+            "n_excluded_incomplete_observations": 0,
             "n_observations": 8
           },
           "parameters": {
@@ -6199,11 +6202,12 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 4.25833333336244,
           "unit": "1",
           "denominators": {
-            "n_available_observations": 8
+            "n_available_observations": 8,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -6240,11 +6244,12 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 6.124999999999977,
           "unit": "1",
           "denominators": {
-            "n_available_observations": 8
+            "n_available_observations": 8,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -6281,7 +6286,7 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "observation_ids": [
               "obs-0",
@@ -6347,6 +6352,7 @@
           "unit": "(a.u.)^2",
           "denominators": {
             "n_available_observations": 8,
+            "n_excluded_incomplete_observations": 0,
             "n_observations": 8
           },
           "parameters": {
@@ -6403,11 +6409,12 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 5.539409137508194e-26,
           "unit": "(a.u.)^2",
           "denominators": {
-            "n_available_observations": 8
+            "n_available_observations": 8,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -6444,11 +6451,12 @@
           "source_id": "complete",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 1.4362892892644175e-25,
           "unit": "(a.u.)^2",
           "denominators": {
-            "n_available_observations": 8
+            "n_available_observations": 8,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -12192,25 +12200,705 @@
           }
         },
         {
-          "metric_id": "intrinsic.pca.pca_t2",
+          "metric_id": "intrinsic.pca.protocol_evidence",
           "protocol_version": "pca-in-sample-t2-q.v1",
-          "status": "unsupported",
-          "reason_code": "PCA_REQUIRES_COMPLETE_SPECTRA",
+          "status": "computed",
+          "reason_code": null,
           "scope": "source",
           "source_id": "masked",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
-          "value": null,
+          "population_id": "development_real_complete",
+          "value": {
+            "backend_version": "1.3.12+abi.2.20.0",
+            "outputs": {
+              "effective_components": {
+                "kind": "scalar",
+                "value": 4.0
+              },
+              "eigenvalue_resolution": {
+                "kind": "scalar",
+                "value": 5.852355439746835e-12
+              },
+              "eigenvalue_resolution_status": {
+                "data": [
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "eigenvalues": {
+                "cols": 5,
+                "data": [
+                  49.91792760924913,
+                  12.50215712178645,
+                  1.9892607285759365,
+                  0.000571015260266564,
+                  1.1175189179338522e-14
+                ],
+                "kind": "matrix",
+                "rows": 1
+              },
+              "exact_full_moments_status": {
+                "data": [
+                  6
+                ],
+                "kind": "integer_vector"
+              },
+              "loadings": {
+                "cols": 33,
+                "data": [
+                  0.021021003702849716,
+                  0.021736456419271643,
+                  0.024340782890340532,
+                  0.026430621597772406,
+                  0.027146074314194298,
+                  0.026665969529386255,
+                  0.028755808236818118,
+                  0.029471260953240017,
+                  0.03207558742430892,
+                  0.03416542613174079,
+                  0.031796447592285726,
+                  0.03440077406335465,
+                  0.0364906127707865,
+                  0.03720606548720839,
+                  0.039810391958277326,
+                  -0.2875844374627516,
+                  0.0395312521262541,
+                  0.04213557859732303,
+                  0.044225417304754905,
+                  0.0449408700211768,
+                  0.04446076523636875,
+                  0.04655060394380058,
+                  0.04726605666022254,
+                  0.04987038313129146,
+                  0.31094909054165454,
+                  0.3085801120021996,
+                  0.31118443847326843,
+                  0.3132742771807002,
+                  0.31398972989712226,
+                  0.3165940563681911,
+                  0.3155994638197459,
+                  0.3163149165361679,
+                  0.31891924300723684,
+                  -0.04192386486174081,
+                  -0.04661803986843995,
+                  -0.0509424379006756,
+                  -0.05316942006677449,
+                  -0.057863595073473655,
+                  -0.055776053734418136,
+                  -0.05800303590051702,
+                  -0.06269721090721618,
+                  -0.06702160893945182,
+                  -0.06924859110555068,
+                  -0.06753082674095874,
+                  -0.07185522477319442,
+                  -0.07408220693929322,
+                  -0.07877638194599239,
+                  -0.08310077997822805,
+                  0.8705703088816443,
+                  -0.08360999777973495,
+                  -0.08793439581197064,
+                  -0.0901613779780695,
+                  -0.09485555298476862,
+                  -0.09276801164571315,
+                  -0.09499499381181203,
+                  -0.0996891688185111,
+                  -0.10401356685074681,
+                  0.11891578551201988,
+                  0.12063354987661198,
+                  0.11630915184437618,
+                  0.11408216967827729,
+                  0.10938799467157831,
+                  0.10506359663934253,
+                  0.10924855384453484,
+                  0.10455437883783572,
+                  0.10022998080559997,
+                  0.10822213018073461,
+                  0.11898172394731617,
+                  0.12555665835904464,
+                  0.13666251096116516,
+                  0.14742210472774672,
+                  0.13778103255414204,
+                  0.14888688515626253,
+                  0.15964647892284412,
+                  0.1662214133345727,
+                  0.1773272659366932,
+                  0.17187085311794148,
+                  0.17844578752966997,
+                  0.18955164013179057,
+                  0.20031123389837213,
+                  0.20688616831010068,
+                  0.3992202071004702,
+                  0.2125356080934695,
+                  0.21911054250519812,
+                  0.23021639510731864,
+                  0.24097598887389998,
+                  0.2313349167002955,
+                  0.24244076930241595,
+                  0.25320036306899735,
+                  0.2597752974807258,
+                  -0.033753811767457974,
+                  -0.03921022458620992,
+                  -0.032635290174481295,
+                  -0.02152943757236075,
+                  -0.010769843805779241,
+                  -0.004194909394050672,
+                  -0.009305063377263433,
+                  0.001454530389318152,
+                  0.008029464801046684,
+                  0.13034196423114225,
+                  0.13094981541922407,
+                  -0.24123490619332036,
+                  0.13195899646176693,
+                  0.13256684764984408,
+                  -0.24053986602401628,
+                  0.13265403663107075,
+                  0.1332618878191552,
+                  -0.2389228337933934,
+                  0.13427106886169832,
+                  0.13395692798845904,
+                  -0.23822779362408386,
+                  0.13496610903100162,
+                  0.1355739602190845,
+                  -0.23661076139346307,
+                  -0.005074925182586569,
+                  0.13626900038838832,
+                  -0.23591572122415716,
+                  0.13727818143092574,
+                  0.13788603261900392,
+                  -0.2352206810548476,
+                  0.13797322160024048,
+                  0.13858107278832074,
+                  -0.23360364882422213,
+                  0.12319967179787587,
+                  0.12288553092464154,
+                  -0.24929919068789724,
+                  0.1238947119671752,
+                  0.12450256315525957,
+                  -0.24768215845726368,
+                  0.12458975213647672,
+                  0.12519760332456253,
+                  -0.24698711828795913,
+                  1.3240402689253234e-07,
+                  1.3138357196465153e-07,
+                  -2.6378759885718387e-07,
+                  1.260261835932774e-07,
+                  1.2908754837691976e-07,
+                  -2.6633873617688585e-07,
+                  1.3112845823268136e-07,
+                  1.25515956129337e-07,
+                  -2.5970577914566074e-07,
+                  1.352102779442045e-07,
+                  1.3010800330480054e-07,
+                  -2.6378759885718387e-07,
+                  1.3316936808844292e-07,
+                  1.3725118779996609e-07,
+                  -2.6531828124900504e-07,
+                  -1.530682391821183e-08,
+                  1.341898230163237e-07,
+                  -2.6531828124900504e-07,
+                  1.357205054081449e-07,
+                  1.3265914062450252e-07,
+                  -2.5919555168172033e-07,
+                  1.3163868569662173e-07,
+                  1.3827164272784687e-07,
+                  -2.6735919110476666e-07,
+                  1.3977043590317178e-07,
+                  1.260580728097737e-07,
+                  -2.624801409808366e-07,
+                  1.1794226721147178e-07,
+                  1.450321566250571e-07,
+                  -2.5638930063004813e-07,
+                  1.2851354247998682e-07,
+                  1.2321993254160523e-07,
+                  -2.69144987228558e-07
+                ],
+                "kind": "matrix",
+                "rows": 5
+              },
+              "n_rows": {
+                "kind": "scalar",
+                "value": 6.0
+              },
+              "pca_q_aggregate_status": {
+                "data": [
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "pca_q_median": {
+                "kind": "scalar",
+                "value": 4.5684062757892465e-26
+              },
+              "pca_q_n": {
+                "kind": "scalar",
+                "value": 6.0
+              },
+              "pca_q_p95": {
+                "kind": "scalar",
+                "value": 2.794063250741149e-25
+              },
+              "pca_q_rows": {
+                "data": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ],
+                "kind": "integer_vector"
+              },
+              "pca_q_status": {
+                "data": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "pca_q_values": {
+                "cols": 1,
+                "data": [
+                  2.3213009340556558e-26,
+                  9.9561869164856e-27,
+                  3.454692561819206e-28,
+                  3.2463524619857967e-25,
+                  1.4371956170072042e-25,
+                  6.815511617522837e-26
+                ],
+                "kind": "matrix",
+                "rows": 6
+              },
+              "pca_t2_aggregate_status": {
+                "data": [
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "pca_t2_median": {
+                "kind": "scalar",
+                "value": 2.9166666666826484
+              },
+              "pca_t2_n": {
+                "kind": "scalar",
+                "value": 6.0
+              },
+              "pca_t2_p95": {
+                "kind": "scalar",
+                "value": 4.1666666666666465
+              },
+              "pca_t2_rows": {
+                "data": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ],
+                "kind": "integer_vector"
+              },
+              "pca_t2_status": {
+                "data": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "pca_t2_values": {
+                "cols": 1,
+                "data": [
+                  4.166666666666643,
+                  2.916666666668796,
+                  2.9166666666539163,
+                  4.166666666666647,
+                  2.916666666696501,
+                  2.9166666666474956
+                ],
+                "kind": "matrix",
+                "rows": 6
+              },
+              "protocol_version": {
+                "kind": "scalar",
+                "value": 1.0
+              },
+              "reference_mean": {
+                "cols": 33,
+                "data": [
+                  1.5188333333333333,
+                  1.6848564102564103,
+                  1.8438794871794872,
+                  2.0064025641025647,
+                  2.172425641025641,
+                  2.053448717948718,
+                  2.215971794871795,
+                  2.381994871794872,
+                  2.5410179487179487,
+                  2.7035410256410253,
+                  2.5915641025641025,
+                  2.7505871794871797,
+                  2.9131102564102562,
+                  3.079133333333333,
+                  3.23815641025641,
+                  4.789346153846154,
+                  3.288702564102564,
+                  3.447725641025641,
+                  3.6102487179487177,
+                  3.776271794871795,
+                  3.6572948717948717,
+                  3.8198179487179487,
+                  3.9858410256410255,
+                  4.144864102564103,
+                  5.140720512820512,
+                  5.02874358974359,
+                  5.187766666666667,
+                  5.3502897435897445,
+                  5.51631282051282,
+                  5.675335897435898,
+                  5.559858974358974,
+                  5.725882051282052,
+                  5.884905128205129
+                ],
+                "kind": "matrix",
+                "rows": 1
+              },
+              "reference_q_aggregate_status": {
+                "data": [
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "reference_q_median": {
+                "kind": "scalar",
+                "value": 4.5684062757892465e-26
+              },
+              "reference_q_n": {
+                "kind": "scalar",
+                "value": 6.0
+              },
+              "reference_q_p95": {
+                "kind": "scalar",
+                "value": 2.794063250741149e-25
+              },
+              "reference_q_rows": {
+                "data": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ],
+                "kind": "integer_vector"
+              },
+              "reference_q_status": {
+                "data": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "reference_q_values": {
+                "cols": 1,
+                "data": [
+                  2.3213009340556558e-26,
+                  9.9561869164856e-27,
+                  3.454692561819206e-28,
+                  3.2463524619857967e-25,
+                  1.4371956170072042e-25,
+                  6.815511617522837e-26
+                ],
+                "kind": "matrix",
+                "rows": 6
+              },
+              "reference_scores": {
+                "cols": 5,
+                "data": [
+                  -8.146611697923706,
+                  5.9353124014520064,
+                  0.19638398938492446,
+                  -4.018122291871151e-05,
+                  1.1924529637067003e-07,
+                  -3.2311220905861116,
+                  -2.484530260449744,
+                  -1.846873858467925,
+                  -0.016881682436232226,
+                  8.32657513840058e-08,
+                  -2.2152165917526796,
+                  -2.3304932816316946,
+                  -0.8720685173821486,
+                  0.03380776164329363,
+                  7.848163030624993e-08,
+                  12.92818759951426,
+                  2.814939871245386,
+                  -0.6059983661600397,
+                  -9.359271895048593e-06,
+                  -5.5076249258101354e-08,
+                  -0.17557135904259907,
+                  -2.044632854717003,
+                  1.0768757057697065,
+                  -0.03378299139588507,
+                  -1.1056615386253217e-07,
+                  0.8403341397908343,
+                  -1.8905958758989536,
+                  2.051681046855481,
+                  0.01690645268364069,
+                  -1.153502749402882e-07
+                ],
+                "kind": "matrix",
+                "rows": 6
+              },
+              "reference_t2_aggregate_status": {
+                "data": [
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "reference_t2_median": {
+                "kind": "scalar",
+                "value": 2.9166666666826484
+              },
+              "reference_t2_n": {
+                "kind": "scalar",
+                "value": 6.0
+              },
+              "reference_t2_p95": {
+                "kind": "scalar",
+                "value": 4.1666666666666465
+              },
+              "reference_t2_rows": {
+                "data": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ],
+                "kind": "integer_vector"
+              },
+              "reference_t2_status": {
+                "data": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "reference_t2_values": {
+                "cols": 1,
+                "data": [
+                  4.166666666666643,
+                  2.916666666668796,
+                  2.9166666666539163,
+                  4.166666666666647,
+                  2.916666666696501,
+                  2.9166666666474956
+                ],
+                "kind": "matrix",
+                "rows": 6
+              },
+              "resolved_components": {
+                "data": [
+                  1,
+                  1,
+                  1,
+                  1,
+                  0
+                ],
+                "kind": "integer_vector"
+              },
+              "scores": {
+                "cols": 5,
+                "data": [
+                  -8.146611697923706,
+                  5.9353124014520064,
+                  0.19638398938492446,
+                  -4.018122291871151e-05,
+                  1.1924529637067003e-07,
+                  -3.2311220905861116,
+                  -2.484530260449744,
+                  -1.846873858467925,
+                  -0.016881682436232226,
+                  8.32657513840058e-08,
+                  -2.2152165917526796,
+                  -2.3304932816316946,
+                  -0.8720685173821486,
+                  0.03380776164329363,
+                  7.848163030624993e-08,
+                  12.92818759951426,
+                  2.814939871245386,
+                  -0.6059983661600397,
+                  -9.359271895048593e-06,
+                  -5.5076249258101354e-08,
+                  -0.17557135904259907,
+                  -2.044632854717003,
+                  1.0768757057697065,
+                  -0.03378299139588507,
+                  -1.1056615386253217e-07,
+                  0.8403341397908343,
+                  -1.8905958758989536,
+                  2.051681046855481,
+                  0.01690645268364069,
+                  -1.153502749402882e-07
+                ],
+                "kind": "matrix",
+                "rows": 6
+              },
+              "solver_code": {
+                "kind": "scalar",
+                "value": 1.0
+              }
+            }
+          },
           "unit": null,
           "denominators": {
-            "n_observations": 8
+            "n_excluded_incomplete_observations": 2
           },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
             "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
+            "meaning": "lossless_methods_transport_evidence_not_a_quality_verdict",
             "methods_procedure": "diagnostics.pca_reference_qc",
+            "observation_ids": [
+              "obs-1",
+              "obs-3",
+              "obs-4",
+              "obs-5",
+              "obs-6",
+              "obs-7"
+            ],
+            "options": {
+              "axis_basis": "index",
+              "clip_lower": null,
+              "clip_tolerance": 0.0,
+              "clip_upper": null,
+              "events": true,
+              "local_density": true,
+              "n_neighbors": 3,
+              "noise": true,
+              "outlier_threshold": 8.0,
+              "pca": true,
+              "pca_components": 5,
+              "reference": true
+            },
+            "physical_sample_ids": [
+              "physical-0",
+              "physical-1",
+              "physical-2",
+              "physical-2",
+              "physical-3",
+              "physical-3"
+            ],
+            "population_weighting": "one_per_real_development_observation_no_independence_claim",
+            "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
+            "sample_ids": [
+              "sample-1",
+              "sample-3",
+              "sample-4",
+              "sample-5",
+              "sample-6",
+              "sample-7"
+            ],
+            "signal_unit": "a.u."
+          }
+        },
+        {
+          "metric_id": "intrinsic.pca.pca_t2",
+          "protocol_version": "pca-in-sample-t2-q.v1",
+          "status": "computed",
+          "reason_code": null,
+          "scope": "source",
+          "source_id": "masked",
+          "target_id": null,
+          "view_id": "native:observations",
+          "population_id": "development_real_complete",
+          "value": {
+            "observation_ids": [
+              "obs-1",
+              "obs-3",
+              "obs-4",
+              "obs-5",
+              "obs-6",
+              "obs-7"
+            ],
+            "physical_sample_ids": [
+              "physical-0",
+              "physical-1",
+              "physical-2",
+              "physical-2",
+              "physical-3",
+              "physical-3"
+            ],
+            "reason_codes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "sample_ids": [
+              "sample-1",
+              "sample-3",
+              "sample-4",
+              "sample-5",
+              "sample-6",
+              "sample-7"
+            ],
+            "status_codes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "values": [
+              4.166666666666643,
+              2.916666666668796,
+              2.9166666666539163,
+              4.166666666666647,
+              2.916666666696501,
+              2.9166666666474956
+            ]
+          },
+          "unit": "1",
+          "denominators": {
+            "n_available_observations": 6,
+            "n_excluded_incomplete_observations": 2,
+            "n_observations": 6
+          },
+          "parameters": {
+            "axis_basis": "index",
+            "axis_unit": "nm",
+            "backend_version": "1.3.12+abi.2.20.0",
+            "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
+            "methods_procedure": "diagnostics.pca_reference_qc",
+            "observation_ids": [
+              "obs-1",
+              "obs-3",
+              "obs-4",
+              "obs-5",
+              "obs-6",
+              "obs-7"
+            ],
             "options": {
               "axis_basis": "index",
               "clip_lower": null,
@@ -12227,27 +12915,37 @@
             },
             "population_weighting": "one_per_real_development_observation_no_independence_claim",
             "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
+            "row_status_codes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
             "signal_unit": "a.u."
           }
         },
         {
           "metric_id": "intrinsic.pca.pca_t2_median",
           "protocol_version": "pca-in-sample-t2-q.v1",
-          "status": "unsupported",
-          "reason_code": "PCA_REQUIRES_COMPLETE_SPECTRA",
+          "status": "computed",
+          "reason_code": null,
           "scope": "source",
           "source_id": "masked",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
-          "value": null,
-          "unit": null,
+          "population_id": "development_real_complete",
+          "value": 2.9166666666826484,
+          "unit": "1",
           "denominators": {
-            "n_observations": 8
+            "n_available_observations": 6,
+            "n_excluded_incomplete_observations": 2
           },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
+            "backend_version": "1.3.12+abi.2.20.0",
             "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
             "methods_procedure": "diagnostics.pca_reference_qc",
             "options": {
@@ -12265,6 +12963,7 @@
               "reference": true
             },
             "population_weighting": "one_per_real_development_observation_no_independence_claim",
+            "quantile": "Methods_Hyndman_Fan_type7",
             "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
             "signal_unit": "a.u."
           }
@@ -12272,21 +12971,23 @@
         {
           "metric_id": "intrinsic.pca.pca_t2_p95",
           "protocol_version": "pca-in-sample-t2-q.v1",
-          "status": "unsupported",
-          "reason_code": "PCA_REQUIRES_COMPLETE_SPECTRA",
+          "status": "computed",
+          "reason_code": null,
           "scope": "source",
           "source_id": "masked",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
-          "value": null,
-          "unit": null,
+          "population_id": "development_real_complete",
+          "value": 4.1666666666666465,
+          "unit": "1",
           "denominators": {
-            "n_observations": 8
+            "n_available_observations": 6,
+            "n_excluded_incomplete_observations": 2
           },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
+            "backend_version": "1.3.12+abi.2.20.0",
             "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
             "methods_procedure": "diagnostics.pca_reference_qc",
             "options": {
@@ -12304,6 +13005,7 @@
               "reference": true
             },
             "population_weighting": "one_per_real_development_observation_no_independence_claim",
+            "quantile": "Methods_Hyndman_Fan_type7",
             "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
             "signal_unit": "a.u."
           }
@@ -12311,23 +13013,83 @@
         {
           "metric_id": "intrinsic.pca.pca_q",
           "protocol_version": "pca-in-sample-t2-q.v1",
-          "status": "unsupported",
-          "reason_code": "PCA_REQUIRES_COMPLETE_SPECTRA",
+          "status": "computed",
+          "reason_code": null,
           "scope": "source",
           "source_id": "masked",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
-          "value": null,
-          "unit": null,
+          "population_id": "development_real_complete",
+          "value": {
+            "observation_ids": [
+              "obs-1",
+              "obs-3",
+              "obs-4",
+              "obs-5",
+              "obs-6",
+              "obs-7"
+            ],
+            "physical_sample_ids": [
+              "physical-0",
+              "physical-1",
+              "physical-2",
+              "physical-2",
+              "physical-3",
+              "physical-3"
+            ],
+            "reason_codes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "sample_ids": [
+              "sample-1",
+              "sample-3",
+              "sample-4",
+              "sample-5",
+              "sample-6",
+              "sample-7"
+            ],
+            "status_codes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "values": [
+              2.3213009340556558e-26,
+              9.9561869164856e-27,
+              3.454692561819206e-28,
+              3.2463524619857967e-25,
+              1.4371956170072042e-25,
+              6.815511617522837e-26
+            ]
+          },
+          "unit": "(a.u.)^2",
           "denominators": {
-            "n_observations": 8
+            "n_available_observations": 6,
+            "n_excluded_incomplete_observations": 2,
+            "n_observations": 6
           },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
+            "backend_version": "1.3.12+abi.2.20.0",
             "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
             "methods_procedure": "diagnostics.pca_reference_qc",
+            "observation_ids": [
+              "obs-1",
+              "obs-3",
+              "obs-4",
+              "obs-5",
+              "obs-6",
+              "obs-7"
+            ],
             "options": {
               "axis_basis": "index",
               "clip_lower": null,
@@ -12344,27 +13106,37 @@
             },
             "population_weighting": "one_per_real_development_observation_no_independence_claim",
             "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
+            "row_status_codes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
             "signal_unit": "a.u."
           }
         },
         {
           "metric_id": "intrinsic.pca.pca_q_median",
           "protocol_version": "pca-in-sample-t2-q.v1",
-          "status": "unsupported",
-          "reason_code": "PCA_REQUIRES_COMPLETE_SPECTRA",
+          "status": "computed",
+          "reason_code": null,
           "scope": "source",
           "source_id": "masked",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
-          "value": null,
-          "unit": null,
+          "population_id": "development_real_complete",
+          "value": 4.5684062757892465e-26,
+          "unit": "(a.u.)^2",
           "denominators": {
-            "n_observations": 8
+            "n_available_observations": 6,
+            "n_excluded_incomplete_observations": 2
           },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
+            "backend_version": "1.3.12+abi.2.20.0",
             "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
             "methods_procedure": "diagnostics.pca_reference_qc",
             "options": {
@@ -12382,6 +13154,7 @@
               "reference": true
             },
             "population_weighting": "one_per_real_development_observation_no_independence_claim",
+            "quantile": "Methods_Hyndman_Fan_type7",
             "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
             "signal_unit": "a.u."
           }
@@ -12389,21 +13162,23 @@
         {
           "metric_id": "intrinsic.pca.pca_q_p95",
           "protocol_version": "pca-in-sample-t2-q.v1",
-          "status": "unsupported",
-          "reason_code": "PCA_REQUIRES_COMPLETE_SPECTRA",
+          "status": "computed",
+          "reason_code": null,
           "scope": "source",
           "source_id": "masked",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
-          "value": null,
-          "unit": null,
+          "population_id": "development_real_complete",
+          "value": 2.794063250741149e-25,
+          "unit": "(a.u.)^2",
           "denominators": {
-            "n_observations": 8
+            "n_available_observations": 6,
+            "n_excluded_incomplete_observations": 2
           },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
+            "backend_version": "1.3.12+abi.2.20.0",
             "interpretation": "descriptive_signature_only_not_causal_confidence_or_calibrated_probability",
             "methods_procedure": "diagnostics.pca_reference_qc",
             "options": {
@@ -12421,6 +13196,7 @@
               "reference": true
             },
             "population_weighting": "one_per_real_development_observation_no_independence_claim",
+            "quantile": "Methods_Hyndman_Fan_type7",
             "reference_definition": "pca_fitted_on_the_same_development_real_observations_in_sample",
             "signal_unit": "a.u."
           }
@@ -16594,7 +17370,7 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "backend_version": "1.3.12+abi.2.20.0",
             "outputs": {
@@ -16867,7 +17643,9 @@
             }
           },
           "unit": null,
-          "denominators": {},
+          "denominators": {
+            "n_excluded_incomplete_observations": 0
+          },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
@@ -16920,11 +17698,12 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": null,
           "unit": "1",
           "denominators": {
             "n_available_observations": 0,
+            "n_excluded_incomplete_observations": 0,
             "n_observations": 4
           },
           "parameters": {
@@ -16973,11 +17752,12 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": null,
           "unit": "1",
           "denominators": {
-            "n_available_observations": 0
+            "n_available_observations": 0,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -17014,11 +17794,12 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": null,
           "unit": "1",
           "denominators": {
-            "n_available_observations": 0
+            "n_available_observations": 0,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -17055,7 +17836,7 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "observation_ids": [
               "obs-0",
@@ -17097,6 +17878,7 @@
           "unit": "(a.u.)^2",
           "denominators": {
             "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0,
             "n_observations": 4
           },
           "parameters": {
@@ -17145,11 +17927,12 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 0.0,
           "unit": "(a.u.)^2",
           "denominators": {
-            "n_available_observations": 4
+            "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -17186,11 +17969,12 @@
           "source_id": "zero_norm",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 0.0,
           "unit": "(a.u.)^2",
           "denominators": {
-            "n_available_observations": 4
+            "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -21565,7 +22349,7 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "backend_version": "1.3.12+abi.2.20.0",
             "outputs": {
@@ -21894,7 +22678,9 @@
             }
           },
           "unit": null,
-          "denominators": {},
+          "denominators": {
+            "n_excluded_incomplete_observations": 0
+          },
           "parameters": {
             "axis_basis": "index",
             "axis_unit": "nm",
@@ -21947,7 +22733,7 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "observation_ids": [
               "obs-0",
@@ -21989,6 +22775,7 @@
           "unit": "1",
           "denominators": {
             "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0,
             "n_observations": 4
           },
           "parameters": {
@@ -22037,11 +22824,12 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 0.7499999999999999,
           "unit": "1",
           "denominators": {
-            "n_available_observations": 4
+            "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -22078,11 +22866,12 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 1.3499999999999996,
           "unit": "1",
           "denominators": {
-            "n_available_observations": 4
+            "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -22119,7 +22908,7 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": {
             "observation_ids": [
               "obs-0",
@@ -22161,6 +22950,7 @@
           "unit": "(a.u.)^2",
           "denominators": {
             "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0,
             "n_observations": 4
           },
           "parameters": {
@@ -22209,11 +22999,12 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 3.5991778800708664e-30,
           "unit": "(a.u.)^2",
           "denominators": {
-            "n_available_observations": 4
+            "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",
@@ -22250,11 +23041,12 @@
           "source_id": "constant_reference",
           "target_id": null,
           "view_id": "native:observations",
-          "population_id": "development_real",
+          "population_id": "development_real_complete",
           "value": 6.310887241768095e-30,
           "unit": "(a.u.)^2",
           "denominators": {
-            "n_available_observations": 4
+            "n_available_observations": 4,
+            "n_excluded_incomplete_observations": 0
           },
           "parameters": {
             "axis_basis": "index",

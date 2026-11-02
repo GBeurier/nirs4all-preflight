@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.1.5 — 2026-11-02
+
+- In-sample T²/Q (`intrinsic.pca.*`) is fitted on, and describes, the complete real development spectra; incomplete ones are counted in `n_excluded_incomplete_observations` (population `development_real_complete`) instead of making the whole family unavailable. One missing cell among 912,024 used to suppress T²/Q for a 360-spectrum set. Fewer than three complete spectra give `PCA_REQUIRES_THREE_COMPLETE_OBSERVATIONS`.
+
 ## 0.1.4 — 2026-11-02
 
-- Intrinsic spectral signatures (`options.intrinsic_qc`) gain the `pca` family (`pca: true`, `pca_components: 5` by default): Hotelling T² and Q (squared residual) of every real development spectrum in the PCA fitted on those same spectra (in-sample), through the existing Methods procedure `diagnostics.pca_reference_qc`. Metrics `intrinsic.pca.pca_t2` and `intrinsic.pca.pca_q` carry per-observation values with their native median and 95th percentile, protocol `pca-in-sample-t2-q.v1`. The components are capped at n − 1 and the band count; incomplete spectra are refused with `PCA_REQUIRES_COMPLETE_SPECTRA` before any kernel call. In-sample T² averages exactly k (n − 1) / n, checked against the native kernel. These are descriptive ranks, not calibrated control limits; the retained-test audit keeps its out-of-fold monitor.
+- Intrinsic spectral signatures (`options.intrinsic_qc`) gain the `pca` family (`pca: true`, `pca_components: 5` by default): Hotelling T² and Q (squared residual) of every real development spectrum in the PCA fitted on those same spectra (in-sample), through the existing Methods procedure `diagnostics.pca_reference_qc`. Metrics `intrinsic.pca.pca_t2` and `intrinsic.pca.pca_q` carry per-observation values with their native median and 95th percentile, protocol `pca-in-sample-t2-q.v1`. The components are capped at n − 1 and the band count. In-sample T² averages exactly k (n − 1) / n, checked against the native kernel. These are descriptive ranks, not calibrated control limits; the retained-test audit keeps its out-of-fold monitor.
 - Methods 1.3.12 (ABI 2.20 unchanged): the preflight PCA work budget rises from 2.4e9 to 4e10, so structure, clustering, SNV sensitivity and the T²/Q monitor run on calibration sets of up to about 1,650 samples on 2,150 bands (before: about 600 samples). The native intrinsic fixture is recaptured with the `pca` family.
 
 ## 0.1.3 — 2026-11-02

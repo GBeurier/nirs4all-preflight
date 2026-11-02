@@ -44,8 +44,28 @@ fn intrinsic_population_preserves_masks_and_excludes_retained_and_augmented_rows
     assert!(validate_input(&input).valid);
     let report = analyze(&input, &provider);
     let calls = provider.0.borrow();
-    assert_eq!(calls.len(), 3);
-    for call in calls.iter() {
+    assert_eq!(calls.len(), 4);
+    // The PCA family sees only the complete development spectra (row 0 has a
+    // missing cell); the others keep every row with its mask.
+    let pca = calls
+        .iter()
+        .find(|c| c.method_id == "diagnostics.pca_reference_qc")
+        .unwrap();
+    assert_eq!(pca.matrix.len(), 3);
+    assert!(
+        matches!(pca.parameters.get("valid_mask"), Some(ProcedureParameter::IntArray(mask)) if mask.iter().all(|&v| v == 1))
+    );
+    let t2 = report
+        .metrics
+        .iter()
+        .find(|m| m.metric_id == "intrinsic.pca.pca_t2")
+        .unwrap();
+    assert_eq!(t2.population_id, "development_real_complete");
+    assert_eq!(t2.denominators["n_excluded_incomplete_observations"], 1);
+    for call in calls
+        .iter()
+        .filter(|c| c.method_id != "diagnostics.pca_reference_qc")
+    {
         assert_eq!(call.matrix.len(), 4);
         assert_eq!(call.matrix[0][0], 0.);
         assert!(

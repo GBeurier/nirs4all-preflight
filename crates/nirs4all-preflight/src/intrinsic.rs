@@ -276,16 +276,9 @@ fn publish(
             .is_some_and(|p| matches!(p, ProcedureParameter::IntArray(mask) if mask.contains(&0)))
     {
         Err(ProviderError::unsupported("LOF_REQUIRES_COMPLETE_SPECTRA"))
-    } else if protocol.family == "pca"
-        && request
-            .parameters
-            .get("valid_mask")
-            .is_some_and(|p| matches!(p, ProcedureParameter::IntArray(mask) if mask.contains(&0)))
-    {
-        Err(ProviderError::unsupported("PCA_REQUIRES_COMPLETE_SPECTRA"))
     } else if protocol.family == "pca" && rows.len() < 3 {
         Err(ProviderError::unsupported(
-            "PCA_REQUIRES_THREE_OBSERVATIONS",
+            "PCA_REQUIRES_THREE_COMPLETE_OBSERVATIONS",
         ))
     } else if protocol.family == "local_density"
         && (rows.len() as u128) * (rows.len() as u128) * (source.axis.len() as u128) > 2_500_000_000
@@ -616,26 +609,62 @@ pub(super) fn analyze(
         );
     }
     if options.pca {
-        let mut request = base.clone();
-        request.reference = Some(request.matrix.clone());
+        // The PCA needs complete spectra: it is fitted on, and describes, the
+        // complete development observations only; incomplete ones are counted.
+        let complete: Vec<usize> = (0..rows.len())
+            .filter(|&i| {
+                let ProcedureParameter::IntArray(mask) = &base.parameters["valid_mask"] else {
+                    unreachable!("the base request carries its mask")
+                };
+                mask[i * source.axis.len()..(i + 1) * source.axis.len()]
+                    .iter()
+                    .all(|&v| v == 1)
+            })
+            .collect();
+        let complete_rows: Vec<usize> = complete.iter().map(|&i| rows[i]).collect();
+        let matrix: Vec<Vec<f64>> = complete.iter().map(|&i| base.matrix[i].clone()).collect();
         let components = options
             .pca_components
-            .min(rows.len().saturating_sub(1))
+            .min(complete.len().saturating_sub(1))
             .min(source.axis.len());
-        request.parameters.insert(
-            "n_components".into(),
-            ProcedureParameter::Int(components as i64),
-        );
-        run(
-            Protocol {
+        let request = ProcedureRequest {
+            method_id: "diagnostics.pca_reference_qc".into(),
+            reference: Some(matrix.clone()),
+            parameters: BTreeMap::from([
+                (
+                    "valid_mask".into(),
+                    ProcedureParameter::IntArray(vec![1; matrix.len() * source.axis.len()]),
+                ),
+                (
+                    "n_components".into(),
+                    ProcedureParameter::Int(components as i64),
+                ),
+            ]),
+            matrix,
+        };
+        let first = report.metrics.len();
+        publish(
+            &Protocol {
                 family: "pca",
                 method: "diagnostics.pca_reference_qc",
                 version: "pca-in-sample-t2-q.v1",
                 signals: PCA,
             },
-            request,
+            &request,
+            &Context {
+                rows: &complete_rows,
+                ..context
+            },
+            provider,
             report,
         );
+        for metric in &mut report.metrics[first..] {
+            metric.population_id = "development_real_complete".into();
+            metric.denominators.insert(
+                "n_excluded_incomplete_observations".into(),
+                rows.len() - complete.len(),
+            );
+        }
     }
     if options.local_density {
         let mut request = base;
