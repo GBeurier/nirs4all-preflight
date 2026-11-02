@@ -104,6 +104,7 @@ const DICT = {
 
   // settings
   cfgUnit: { fr: "Unité d'indépendance", en: "Independence unit" },
+  tooManyCells: { fr: "Jeu trop volumineux pour l’analyse dans le navigateur : au-delà de 10 millions de valeurs spectrales (échantillons × bandes). Réduisez le nombre d’échantillons ou de bandes.", en: "Dataset too large for in-browser analysis: more than 10 million spectral values (samples × bands). Reduce the number of samples or bands." },
   cfgFull: { fr: "Calcul complet (lent)", en: "Full computation (slow)" },
   cfgFullHint: { fr: "Réajuste l'ACP à chaque sous-échantillon du clustering et calcule énergies et moniteur T²/Q sur toutes les bandes, au lieu de l'espace ACP réduit. Plusieurs minutes sur les grands jeux.", en: "Refits the PCA on every clustering subsample and computes energies and the T²/Q monitor on every band instead of the reduced PCA space. Several minutes on large datasets." },
   cfgOneObs: { fr: "Supposer une observation par échantillon", en: "Assume one observation per sample" },

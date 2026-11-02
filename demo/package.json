@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@nirs4all/formats-wasm": "0.2.12",
-    "@nirs4all/io-wasm": "0.2.10",
-    "@nirs4all/preflight": "0.1.2",
+    "@nirs4all/io-wasm": "0.2.13",
+    "@nirs4all/preflight": "0.1.3",
     "idb-keyval": "6.2.2",
     "nirs4all-ui": "github:GBeurier/nirs4all-ui#36a199490844ae3b6e2a9148f9709a5b930919a6",
     "react": "^19.2.3",
