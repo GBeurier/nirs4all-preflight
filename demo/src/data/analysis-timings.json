@@ -1,0 +1,332 @@
+{
+  "measuredAt": "2026-11-03T09:51:14.500Z",
+  "browser": "143.0.7499.40",
+  "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+  "method": "One warm-runtime browser run per configuration. Each family timing includes mandatory integrity, populations, PCA and target checks. Standard reduced-space options; no clustering PCA refit. Timings are examples, not predictions for another device or dataset.",
+  "measurements": [
+    {
+      "dataset": "clean",
+      "family": "base",
+      "milliseconds": 3,
+      "computedMetrics": 18,
+      "unavailableMetrics": 6,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "spectral_quality",
+      "milliseconds": 40,
+      "computedMetrics": 66,
+      "unavailableMetrics": 9,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "sensitivity",
+      "milliseconds": 11,
+      "computedMetrics": 4,
+      "unavailableMetrics": 1,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "repeatability",
+      "milliseconds": 3,
+      "computedMetrics": 4,
+      "unavailableMetrics": 1,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "clustering",
+      "milliseconds": 479,
+      "computedMetrics": 11,
+      "unavailableMetrics": 0,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "association",
+      "milliseconds": 5,
+      "computedMetrics": 1,
+      "unavailableMetrics": 4,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "confounding",
+      "milliseconds": 13,
+      "computedMetrics": 3,
+      "unavailableMetrics": 10,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "domain_shift",
+      "milliseconds": 14,
+      "computedMetrics": 11,
+      "unavailableMetrics": 3,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "clean",
+      "family": "probe",
+      "milliseconds": 1150,
+      "computedMetrics": 20,
+      "unavailableMetrics": 0,
+      "observations": 30,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "base",
+      "milliseconds": 68,
+      "computedMetrics": 20,
+      "unavailableMetrics": 4,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "spectral_quality",
+      "milliseconds": 98,
+      "computedMetrics": 66,
+      "unavailableMetrics": 9,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "sensitivity",
+      "milliseconds": 84,
+      "computedMetrics": 5,
+      "unavailableMetrics": 0,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "repeatability",
+      "milliseconds": 117,
+      "computedMetrics": 27,
+      "unavailableMetrics": 6,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "clustering",
+      "milliseconds": 486,
+      "computedMetrics": 11,
+      "unavailableMetrics": 0,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "association",
+      "milliseconds": 56,
+      "computedMetrics": 3,
+      "unavailableMetrics": 4,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "confounding",
+      "milliseconds": 68,
+      "computedMetrics": 5,
+      "unavailableMetrics": 14,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "domain_shift",
+      "milliseconds": 74,
+      "computedMetrics": 38,
+      "unavailableMetrics": 4,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "pitfalls",
+      "family": "probe",
+      "milliseconds": 68,
+      "computedMetrics": 0,
+      "unavailableMetrics": 10,
+      "observations": 47,
+      "bands": 60
+    },
+    {
+      "dataset": "beer",
+      "family": "base",
+      "milliseconds": 13,
+      "computedMetrics": 18,
+      "unavailableMetrics": 6,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "spectral_quality",
+      "milliseconds": 56,
+      "computedMetrics": 66,
+      "unavailableMetrics": 9,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "sensitivity",
+      "milliseconds": 46,
+      "computedMetrics": 4,
+      "unavailableMetrics": 1,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "repeatability",
+      "milliseconds": 23,
+      "computedMetrics": 2,
+      "unavailableMetrics": 1,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "clustering",
+      "milliseconds": 496,
+      "computedMetrics": 9,
+      "unavailableMetrics": 2,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "association",
+      "milliseconds": 9,
+      "computedMetrics": 0,
+      "unavailableMetrics": 5,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "confounding",
+      "milliseconds": 8,
+      "computedMetrics": 0,
+      "unavailableMetrics": 2,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "domain_shift",
+      "milliseconds": 123,
+      "computedMetrics": 4,
+      "unavailableMetrics": 4,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "beer",
+      "family": "probe",
+      "milliseconds": 8,
+      "computedMetrics": 0,
+      "unavailableMetrics": 10,
+      "observations": 60,
+      "bands": 576
+    },
+    {
+      "dataset": "anopheles",
+      "family": "base",
+      "milliseconds": 257,
+      "computedMetrics": 22,
+      "unavailableMetrics": 4,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "spectral_quality",
+      "milliseconds": 938,
+      "computedMetrics": 66,
+      "unavailableMetrics": 9,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "sensitivity",
+      "milliseconds": 1039,
+      "computedMetrics": 4,
+      "unavailableMetrics": 1,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "repeatability",
+      "milliseconds": 432,
+      "computedMetrics": 2,
+      "unavailableMetrics": 1,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "clustering",
+      "milliseconds": 5799,
+      "computedMetrics": 9,
+      "unavailableMetrics": 2,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "association",
+      "milliseconds": 229,
+      "computedMetrics": 0,
+      "unavailableMetrics": 5,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "confounding",
+      "milliseconds": 232,
+      "computedMetrics": 0,
+      "unavailableMetrics": 2,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "domain_shift",
+      "milliseconds": 2184,
+      "computedMetrics": 4,
+      "unavailableMetrics": 4,
+      "observations": 333,
+      "bands": 2151
+    },
+    {
+      "dataset": "anopheles",
+      "family": "probe",
+      "milliseconds": 258,
+      "computedMetrics": 0,
+      "unavailableMetrics": 10,
+      "observations": 333,
+      "bands": 2151
+    }
+  ]
+}

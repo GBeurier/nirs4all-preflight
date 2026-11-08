@@ -8,11 +8,12 @@ import { buildQualificationReportView, type EngineReport } from "nirs4all-ui/qua
 // nirs4all-ui tests, they fix every layout case; engine.integration.test.tsx runs the real engine.
 import reportJson from "./fixtures/preflight-0.1.0-report.json";
 import extendedJson from "./fixtures/preflight-0.1.0-probe-extended.json";
-import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
+import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
 import { buildChecks } from "./checks";
 import { translate, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
-import { RepeatSection, type Scope } from "./Sections";
+import { RepeatSection, StructureSection, type Scope } from "./Sections";
+import { DataView } from "./DataView";
 
 const view = buildQualificationReportView(reportJson as unknown as EngineReport);
 const extended = buildQualificationReportView(extendedJson as unknown as EngineReport);
@@ -113,9 +114,31 @@ describe("0.1.0 capability sections", () => {
 
   it("repeatability shows repeat counts and the noise proxy next to the profile", () => {
     const out = html(<RepeatSection {...scope("en")} />);
-    expect(out).toContain("Repeats per sample");
+    expect(out).toContain("Technical repeats per physical sample");
     expect(out).toContain("Pooled noise proxy · A · 2026-03");
     expect(out).toContain("NO_BALANCED_BAND");
+  });
+
+  it("labels the actual table subsets exported from capped DOM tables", () => {
+    const metric = view.metrics.find((m) => m.id === "structure.pca_scores" && m.sourceId === "nir")!;
+    const ids = Array.from({ length: 501 }, (_, i) => `unit-${i}`);
+    const pcaView = { ...view, metrics: [{ ...metric, value: { sample_ids: ids, scores: ids.map((_, i) => [i, i + 1]) } }] };
+    expect(html(<StructureSection {...scope("en", { view: pcaView })} />)).toContain("first 500 of 501 units</caption>");
+
+    const scans = ids.slice(0, 21);
+    const qualityView = { ...view, metrics: ["pca_t2", "pca_q"].flatMap((name) => [
+      { ...metric, id: `intrinsic.pca.${name}`, value: { sample_ids: scans, observation_ids: scans, values: scans.map(() => 2) } },
+      { ...metric, id: `intrinsic.pca.${name}_p95`, value: 1 },
+    ]) };
+    expect(html(<SpectralQualitySection {...scope("en", { view: qualityView })} />)).toContain("first 20 of 21 atypical spectra</caption>");
+
+    const sampleIds = ids.slice(0, 41);
+    const tableInput: EngineInput = { ...input,
+      samples: sampleIds.map((sample_id) => ({ sample_id, partition: "development" })),
+      sources: [{ ...input.sources[0]!, observation_ids: sampleIds, sample_ids: sampleIds, x: sampleIds.map(() => axis.map(() => 1)) }],
+    };
+    const out = html(<DataView t={scope("en").t} locale="en" input={tableInput} sourceId="nir" targetId={null} report={null} />);
+    expect(out).toContain("first 40 of 41 filtered samples (41 total), sorted by sampleId ascending</caption>");
   });
 
   it("control points cover the new blocks", () => {

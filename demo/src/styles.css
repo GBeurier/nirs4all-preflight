@@ -371,3 +371,19 @@ code{font-size:.85em}
 }
 /* evidence rows: long parameter lists scroll inside their cell instead of stretching the row */
 #s-evidence td .n4q-sub{display:block;max-height:7.5em;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+
+/* Analysis controls and portable exports. */
+.settings-metadata, .settings-families { grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.settings-metadata label { display: inline-flex; flex-direction: column; margin: 8px 16px 8px 0; gap: 6px; }
+.settings-families details, .settings-advanced { border-top: 1px solid var(--border); padding: 12px 0; }
+.settings-families summary { display: flex; justify-content: space-between; gap: 16px; cursor: pointer; font-weight: 600; }
+.settings-families label, .settings-advanced label { margin: 12px 0; }
+.settings-advanced { grid-column: 1 / -1; }
+.sample-details { margin-block: 24px; }
+.sample-details > summary { cursor: pointer; padding: 16px; font-weight: 600; }
+.section-exports { display: flex; justify-content: flex-end; margin-top: 12px; }
+.plot-export { display: block; margin-left: auto; font-size: 0.75rem; }
+.diag-side a .count { margin-left: auto; font-size: 0.75rem; }
+.n4q-reason { font-family: inherit; white-space: normal; }
+.section-exports[hidden] { display: none; }
+.seg { flex-wrap: wrap; max-width: 100%; }

@@ -7,7 +7,7 @@ import type { IntrinsicSignal } from "nirs4all-ui/qualification";
 
 // Field lists of the Rust structs (`#[serde(deny_unknown_fields)]` in nirs4all-preflight-core).
 const RUST_FIELDS = {
-  input: ["data_origin", "schema_version", "sources", "samples", "targets", "options"],
+  input: ["data_origin", "schema_version", "sources", "samples", "targets", "metadata", "options"],
   source: ["source_id", "observation_ids", "sample_ids", "x", "valid_mask", "axis", "axis_unit", "signal_unit", "signal_type", "repetition_types"],
   sample: ["sample_id", "physical_sample_id", "partition", "independence_group", "instrument", "campaign", "individual_id", "augmentation_parent_id"],
   target: ["target_id", "kind", "values", "unit"],
@@ -38,29 +38,27 @@ describe("canonical input boundary", () => {
     expect(built.sources).toBe(input.sources);
     expect(built.targets).toBe(input.targets);
     expect(built.samples).toBe(input.samples);
-    expect(built.options).toEqual({ independence_unit: "group", seed: 7, max_cells: 5000 });
+    expect(built.options).toMatchObject({ independence_unit: "group", seed: 7, max_cells: 5000 });
     expect(buildEngineInput(input, { ...config, seed: null }).options).not.toHaveProperty("seed");
   });
 
-  it("declares the three heavy computations only when full computation is chosen", () => {
+  it("controls expensive calculations independently and preserves the external audit", () => {
     const input = syntheticInput("clean");
     input.options.domain_shift = { external_domain_audit: true };
     const config = defaultConfig(input);
-    expect(config.fullComputation).toBe(false);
-    expect(buildEngineInput(input, config).options).not.toHaveProperty("clustering");
-    expect(buildEngineInput(input, config).options.domain_shift).toEqual({ external_domain_audit: true });
-    const full = buildEngineInput(input, { ...config, fullComputation: true });
-    expect(full.options.clustering).toEqual({ subsample_refit: true });
-    expect(full.options.domain_shift).toEqual({ external_domain_audit: true, energy_on_spectra: true, monitor_on_spectra: true });
-    expect(defaultConfig(full).fullComputation).toBe(true);
+    expect(config.clusterRefit).toBe(false);
+    const built = buildEngineInput(input, { ...config, clusterRefit: true, fullSpectrumEnergy: true });
+    expect(built.options.clustering).toEqual({ subsample_refit: true });
+    expect(built.options.domain_shift).toEqual({ external_domain_audit: true, energy_on_spectra: true, monitor_on_spectra: false });
   });
 
-  it("accepts only seeds JS can carry exactly", () => {
+  it("preserves the full unsigned seed range without rounding", () => {
     expect(parseSeed("")).toBeNull();
     expect(parseSeed("42")).toBe(42);
     expect(parseSeed("-1")).toBe("invalid");
     expect(parseSeed("1.5")).toBe("invalid");
-    expect(parseSeed("18446744073709551615")).toBe("invalid");
+    expect(parseSeed("18446744073709551615")).toBe("18446744073709551615");
+    expect(parseSeed("18446744073709551616")).toBe("invalid");
   });
 });
 

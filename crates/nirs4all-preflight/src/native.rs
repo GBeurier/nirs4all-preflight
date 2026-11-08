@@ -525,6 +525,12 @@ impl Drop for NativeMethodsProvider {
     }
 }
 impl MethodsProvider for NativeMethodsProvider {
+    fn preprocess(
+        &self,
+        r: &PreprocessingRequest,
+    ) -> Result<PreprocessingDiagnostics, ProviderError> {
+        self.run_preprocess(r)
+    }
     fn procedure(&self, r: &ProcedureRequest) -> Result<ProcedureDiagnostics, ProviderError> {
         self.run_procedure(r)
     }
