@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
-import { buildQualificationReportView, evidenceCsv, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import { buildQualificationReportView, evidenceCsv, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import timings from "./data/analysis-timings.json";
+import { DEMO_DATASETS } from "./demo-datasets";
+import { metricKey, selectedReport } from "./export";
 import { baseName, type Origin, type Result, type Run, type T } from "./App";
 import { buildChecks, needsReview } from "./checks";
 import { DataView } from "./DataView";
@@ -8,12 +11,14 @@ import { downloadText } from "./download";
 import type { EngineValidation } from "./engine";
 import { fill, type TextKey } from "./i18n";
 import { Icon, type IconName } from "./icons";
-import { countIndependenceGroups, defaultConfig, parseSeed, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
+import { countIndependenceGroups, defaultConfig, parseSeed, ANALYSIS_FAMILIES, metadataColumns, type MetadataRole, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
 import { DECLARABLE_REPETITIONS, type RepetitionDeclaration } from "./dataset";
 import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
 type View = "data" | "diagnosis" | "evidence" | "export";
+const FAMILY_LABELS = { spectral_quality: "Spectral quality", sensitivity: "Structure sensitivity", repeatability: "Technical repeatability", clustering: "Exploratory groups", association: "Metadata and target", confounding: "Confounding factors", domain_shift: "Domain comparisons", probe: "Validation probe" };
+const FAMILY_HINTS = { spectral_quality: "Locate unusual spectra, isolated peaks and abrupt changes before calibration.", sensitivity: "Check how scatter correction and repeat balancing change the spectral structure.", repeatability: "Measure agreement between declared repeat acquisitions of the same sample.", clustering: "Look for groups of similar samples and check whether those groups persist.", association: "Check whether the target changes with selected metadata.", confounding: "Check whether selected metadata effects can be separated from one another.", domain_shift: "Check whether selected groups cover similar spectral populations.", probe: "Estimate whether a simple grouped calibration can predict the target better than the training mean." };
 const UNITS: readonly IndependenceUnit[] = ["unknown", "sample", "reference_group", "group"];
 const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-populations", label: "navPopulations" },
@@ -37,10 +42,10 @@ function issueGroups(validation: EngineValidation) {
 /** Diagnosis sections in display order; the menu lists those present in the report. */
 const DIAG_ORDER = ["s-overview", "s-populations", "s-quality", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-repeat", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
 const diagMenu = (scope: Scope): { id: string; label: TextKey }[] =>
-  [{ id: "s-overview", label: "diagTitle" as TextKey }, ...DIAG_LINKS, ...presentSections(scope)].sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
+  [{ id: "s-overview", label: "diagTitle" as TextKey }, ...DIAG_LINKS, ...presentSections(scope)].filter((item) => (item.id !== "s-repeat" || scope.input.options.analysis_families?.repeatability !== false) && (item.id !== "s-target" || scope.targetId !== null)).sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
 
 /** Sticky left menu of the diagnosis sections; the section in view is highlighted. */
-function DiagnosisMenu({ t, items }: { t: T; items: { id: string; label: TextKey }[] }) {
+function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Record<string, number>; items: { id: string; label: TextKey }[] }) {
   const [active, setActive] = useState(items[0]?.id ?? "");
   const side = useRef<HTMLElement>(null);
   const ids = items.map((i) => i.id).join(" ");
@@ -67,7 +72,7 @@ function DiagnosisMenu({ t, items }: { t: T; items: { id: string; label: TextKey
         <p className="diag-side-title">{t("diagCharts")}</p>
         <ol>
           {items.map((item) => (
-            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}</a></li>
+            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}{alerts[item.id] ? <span className="count" aria-label={`${alerts[item.id]} alerts`}>{alerts[item.id]}</span> : null}</a></li>
           ))}
         </ol>
       </nav>
@@ -97,19 +102,22 @@ interface WorkspaceProps {
   htmlError: string | null;
   onRun: () => void;
   onCancel: () => void;
-  onDownloadHtml: () => void;
+  onDownloadHtml: (report: EngineReport) => void;
   /** Re-imports the dropped files with this repetition column; absent when the files are not in memory. */
   onRepetition?: (repetition: RepetitionDeclaration | undefined) => void;
 }
 
-const sameConfig = (a: AnalysisConfig, b: AnalysisConfig) =>
-  a.independenceUnit === b.independenceUnit && a.assumeOneObservationPerSample === b.assumeOneObservationPerSample && a.seed === b.seed && a.fullComputation === b.fullComputation;
+// Remembered declared tolerance is inactive while inference is enabled.
+export const sameConfig = (a: AnalysisConfig, b: AnalysisConfig) =>
+  JSON.stringify({ ...a, quasiTolerance: a.quasiToleranceFromRepeats ? null : a.quasiTolerance }) ===
+  JSON.stringify({ ...b, quasiTolerance: b.quasiToleranceFromRepeats ? null : b.quasiTolerance });
 
 export function Workspace({ t, locale, input, origin, config, onConfig, run, result, validation, htmlError, onRun, onCancel, onDownloadHtml, onRepetition }: WorkspaceProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setView] = useState<View>("data");
   const [scrollTo, setScrollTo] = useState<string | null>(null);
   const [evidenceQuery, setEvidenceQuery] = useState("");
+  const [excludedMetrics, setExcludedMetrics] = useState<ReadonlySet<string>>(new Set());
   const report = useMemo(() => (result ? buildQualificationReportView(result.report) : null), [result]);
   const sources = report ? reportSourceIds(report) : input.sources.map((s) => s.source_id);
   const targets = report ? reportTargetIds(report) : input.targets.map((x) => x.target_id);
@@ -125,6 +133,15 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const scope: Scope | null = report && result ? { t, locale, view: report, input: result.input, sourceId: source, targetId: target } : null;
   const checks = scope ? buildChecks(scope.view, scope.input, source, target, t, locale) : [];
   const review = needsReview(checks);
+  const selected = new Set(report?.metrics.map(metricKey).filter((key) => !excludedMetrics.has(key)) ?? []);
+  const choose = (keys: string[], checked: boolean) => setExcludedMetrics((previous) => { const next = new Set(previous); for (const key of keys) { if (checked) next.delete(key); else next.add(key); } return next; });
+  const filteredReport = result ? selectedReport(result.report, selected) : null;
+  const alertSections: Record<string, string> = { leak: "s-duplicates", duplicates: "s-duplicates", missing: "s-quality", repeats: "s-populations", unit: "s-overview" };
+  const alerts: Record<string, number> = {};
+  for (const check of checks.filter((c) => c.status === "attention" || c.status === "critical")) {
+    const id = alertSections[check.id] ?? (check.href?.startsWith("#s-") ? check.href.slice(1) : "s-overview");
+    alerts[id] = (alerts[id] ?? 0) + 1;
+  }
 
   const go = (next: View, anchor: string | null = null) => {
     setView(next);
@@ -177,6 +194,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               {synthetic ? <span className="tag tag-synth">{t("synthetic")}</span> : null}
             </div>
             {synthetic ? <p className="ws-sub">{t("demoLabel")}</p> : null}
+            {DEMO_DATASETS.filter((d) => d.name === origin.name).map((d) => <p className="ws-sub" key={d.id}>Source: <a href={d.source} target="_blank" rel="noreferrer">{d.attribution}</a> · {d.license}. Original demonstration split; see <a href={`${import.meta.env.BASE_URL}data/demo/SOURCES.md`} target="_blank" rel="noreferrer">dataset provenance</a>.</p>)}
             {origin.tables?.length ? (
               <p className="ws-sub ws-files">
                 {t("detectedFiles")}{" "}
@@ -190,7 +208,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
             <div className="ws-status" role="status" aria-live="polite">
               {running ? <><span className="spinner" aria-hidden="true" />{t("running")}</> : null}
               {run.state === "cancelled" ? t("cancelled") : null}
-              {run.state === "idle" && result && !dirty ? <><span className="ok-dot" aria-hidden="true" />{t("done")}</> : null}
+              {run.state === "idle" && result && !dirty ? <><span className="ok-dot" aria-hidden="true" />{t("done")}{result.elapsedMs !== undefined ? ` · ${(result.elapsedMs / 1000).toFixed(1)} s` : ""}</> : null}
               {dirty && !running ? <span className="warn-text">{t("settingsChanged")}</span> : null}
             </div>
             <button className="btn btn-outline" aria-expanded={settingsOpen} aria-controls="settings" onClick={() => setSettingsOpen((o) => !o)}>
@@ -200,7 +218,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
             {running ? (
               <button className="btn btn-danger" onClick={onCancel}>{t("cancel")}</button>
             ) : (
-              <button className={dirty || run.state !== "idle" ? "btn btn-primary" : "btn btn-outline"} onClick={onRun}>{t("rerun")}</button>
+              <button className={dirty || run.state !== "idle" ? "btn btn-primary" : "btn btn-outline"} onClick={() => { setSettingsOpen(false); onRun(); }}>{t("rerun")}</button>
             )}
           </div>
         </div>
@@ -223,12 +241,12 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
       <nav className="journey" aria-label={t("journey")}>
         <div className="container journey-inner">
           <ol>
-            {steps.map((s, i) => (
+            {steps.map((s) => (
               <li key={s.id}>
                 <button className="journey-step" aria-current={view === s.id ? "step" : undefined} disabled={s.disabled} onClick={() => go(s.id)}>
                   <span className="journey-icon"><Icon name={s.icon} size={18} />{s.badge ? <span className="journey-badge" data-kind={s.badge} aria-hidden="true" /> : null}</span>
                   <span className="journey-text">
-                    <span className="journey-label"><span className="journey-num">{i + 1}</span>{s.label}</span>
+                    <span className="journey-label">{s.label}</span>
                     <span className="journey-sub">{s.sub}</span>
                   </span>
                 </button>
@@ -268,7 +286,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
 
         {view === "diagnosis" && scope ? (
           <div className="diag-layout">
-            <DiagnosisMenu t={t} items={diagMenu(scope)} />
+            <DiagnosisMenu t={t} items={diagMenu(scope)} alerts={alerts} />
             <div className="diag-main">
             <DiagnosisSummary {...scope} checks={checks} />
             <PopulationsSection {...scope} />
@@ -290,7 +308,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
 
         {view === "evidence" && scope ? (
           <>
-            <EvidenceSection key={evidenceQuery} {...scope} initialQuery={evidenceQuery} fileName={`${baseName(result!)}-evidence.csv`} />
+            <EvidenceSection key={evidenceQuery} {...scope} initialQuery={evidenceQuery} fileName={`${baseName(result!)}-evidence.csv`} selected={selected} onToggle={(key) => choose([key], !selected.has(key))} onSelect={choose} />
             <CapabilitiesSection {...scope} />
             <Section id="s-technical" icon="data" accent="amber" title={t("techTitle")}>
               <TechnicalSection {...scope} />
@@ -301,14 +319,15 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
 
         {view === "export" && result ? (
           <Section id="export" icon="export" accent="cyan" title={t("exportTitle")}>
+            <p className="note">{selected.size} of {report?.metrics.length ?? 0} indicators selected. <button className="btn btn-ghost btn-sm" onClick={() => go("evidence")}>Choose indicators</button></p>
             <div className="exports">
-              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-report.json`, "application/json", JSON.stringify(result.report, null, 2))}>
+              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-report.json`, "application/json", JSON.stringify(filteredReport, null, 2))}>
                 <span className="export-ext">JSON</span><strong>{t("dlJson")}</strong><span>{t("dlJsonDesc")}</span>
               </button>
-              <button className="export-card" onClick={onDownloadHtml}>
+              <button className="export-card" onClick={() => { if (filteredReport) onDownloadHtml(filteredReport); }}>
                 <span className="export-ext">HTML</span><strong>{t("dlHtml")}</strong><span>{t("dlHtmlDesc")}</span>
               </button>
-              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-evidence.csv`, "text/csv", `\uFEFF${evidenceCsv(report!.metrics, locale)}`)}>
+              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-evidence.csv`, "text/csv", `\uFEFF${evidenceCsv(report!.metrics.filter((m) => selected.has(metricKey(m))), locale)}`)}>
                 <span className="export-ext">CSV</span><strong>{t("dlCsv")}</strong><span>{t("dlCsvDesc")}</span>
               </button>
               <button className="export-card" onClick={() => downloadText(`${baseName(result)}-input.json`, "application/json", JSON.stringify(result.input))}>
@@ -347,6 +366,7 @@ function Settings({ t, input, config, onChange, origin, onRepetition }: Settings
         </select>
         <small id="unit-hint">{config.independenceUnit === "group" ? `${t("groupHint")} ${countIndependenceGroups(input)} / ${input.samples.length}` : t("unitHint")}</small>
       </label>
+      <details className="settings-advanced"><summary>Reproducibility seed</summary>
       <label>
         <span>{t("cfgSeed")}</span>
         <input
@@ -363,15 +383,36 @@ function Settings({ t, input, config, onChange, origin, onRepetition }: Settings
         />
         <small id="seed-hint">{seed === "invalid" ? t("seedInvalid") : t("seedHint")}</small>
       </label>
+      </details>
       <label className="check">
         <input type="checkbox" checked={config.assumeOneObservationPerSample} onChange={(e) => onChange({ ...config, assumeOneObservationPerSample: e.target.checked })} />
         <span>{t("cfgOneObs")}</span>
       </label>
-      <label className="check">
-        <input type="checkbox" checked={config.fullComputation} aria-describedby="full-hint" onChange={(e) => onChange({ ...config, fullComputation: e.target.checked })} />
-        <span>{t("cfgFull")}</span>
-      </label>
-      <small id="full-hint">{t("cfgFullHint")}</small>
+      <fieldset className="settings-metadata">
+        <legend>Metadata roles</legend>
+        <p className="hint">Use groups and covariates for analysis. Identifiers and excluded columns stay in the dataset but are omitted from every metadata association, confounding and domain comparison. Physical identities and repeat declarations are preserved.</p>
+        {metadataColumns(input).map((column) => <label key={column.name}><span>{column.name} ({column.kind})</span><select aria-label={`Role of ${column.name}`} value={config.metadataRoles[column.name] ?? "analysis"} onChange={(e) => onChange({ ...config, metadataRoles: { ...config.metadataRoles, [column.name]: e.target.value as MetadataRole } })}><option value="analysis">Group / covariate</option><option value="identifier">Identifier</option><option value="excluded">Excluded</option></select></label>)}
+      </fieldset>
+      <fieldset className="settings-families">
+        <legend>Analysis menu</legend>
+        <p className="hint">Integrity, sample counts, PCA and target descriptions always run. Choose the additional analyses below; exports can be refined in Evidence. Timings are browser measurements on the bundled examples.</p>
+        {ANALYSIS_FAMILIES.map((family) => <details key={family}><summary><span>{FAMILY_LABELS[family]}</span><span>{config.families[family] ? "Enabled" : "Off"}</span></summary><label className="check"><input type="checkbox" checked={config.families[family]} onChange={(e) => onChange({ ...config, families: { ...config.families, [family]: e.target.checked } })} />Include {FAMILY_LABELS[family].toLowerCase()}</label><p className="hint">{FAMILY_HINTS[family]}</p>
+          <FamilyTiming family={family} />
+          {family === "clustering" ? <label className="check"><input type="checkbox" checked={config.clusterRefit} disabled={!config.families.clustering} onChange={(e) => onChange({ ...config, clusterRefit: e.target.checked })} />Refit PCA for each stability subsample (slower)</label> : null}
+          {family === "domain_shift" ? <><label className="check"><input type="checkbox" checked={config.fullSpectrumEnergy} disabled={!config.families.domain_shift} onChange={(e) => onChange({ ...config, fullSpectrumEnergy: e.target.checked })} />Compare distributions using all spectral bands</label><label className="check"><input type="checkbox" checked={config.fullSpectrumMonitor} disabled={!config.families.domain_shift} onChange={(e) => onChange({ ...config, fullSpectrumMonitor: e.target.checked })} />Fit coverage monitors using all spectral bands</label></> : null}
+          {family === "spectral_quality" ? <label>Spike and jump inspection threshold<input type="number" min="0.1" step="0.5" value={config.eventThreshold} onChange={(e) => { const value = Number(e.target.value); if (Number.isFinite(value) && value > 0) onChange({ ...config, eventThreshold: value }); }} /><small>Robust deviations. A lower threshold flags more events; no calibrated cutoff is available.</small></label> : null}
+        </details>)}
+      </fieldset>
+      <details className="settings-advanced"><summary>Advanced analysis assumptions</summary>
+        <label className="check"><input type="checkbox" checked={config.exchangeableUnits} onChange={(e) => onChange({ ...config, exchangeableUnits: e.target.checked })} />Independent units can be exchanged under the null hypothesis</label><p className="hint">Enable permutation tests only when this matches the sampling design. An independence declaration alone does not establish exchangeability.</p>
+        <label className="check"><input type="checkbox" checked={config.quasiToleranceFromRepeats} onChange={(e) => onChange({ ...config, quasiToleranceFromRepeats: e.target.checked })} />Estimate spectral similarity from declared technical repeats (X only)</label><p className="hint">Uses Q3 + 1.5 × IQR of RMS differences between technical repeats, separately for each source. At least three physical repeat groups are required. Target and retained-test data are excluded from estimation. This exploratory convention is not a calibrated duplicate boundary.</p>
+        <label>Spectral similarity tolerance (RMS)<input type="number" min={Number.MIN_VALUE} step="any" placeholder="Not declared" disabled={config.quasiToleranceFromRepeats} value={config.quasiTolerance ?? ""} onChange={(e) => { const value = e.target.value === "" ? null : Number(e.target.value); if (value === null || Number.isFinite(value) && value > 0) onChange({ ...config, quasiTolerance: value }); }} /><small>Use acquisition precision or repeat-scan differences, without consulting the target. A universal tolerance inferred from all sample distances would confuse natural similarity with duplication. Declare a value greater than zero. The native-view tolerance uses the signal units.</small></label>
+        <fieldset><legend>Conflicting references</legend><p className="hint">Categorical references conflict when their classes differ. For continuous references, declare the largest acceptable difference using reference precision or a domain requirement; it is not inferred from the target distribution.</p>{input.targets.map((target) => {
+          const tolerance = config.referenceTolerances[target.target_id];
+          const remove = () => { const next = { ...config.referenceTolerances }; delete next[target.target_id]; onChange({ ...config, referenceTolerances: next }); };
+          return target.kind === "categorical" ? <label className="check" key={target.target_id}><input type="checkbox" checked={Boolean(tolerance)} onChange={(e) => e.target.checked ? onChange({ ...config, referenceTolerances: { ...config.referenceTolerances, [target.target_id]: { kind: "different_class" } } }) : remove()} />Compare classes for {target.target_id}</label> : <label key={target.target_id}>Acceptable reference difference for {target.target_id}{target.unit ? ` (${target.unit})` : ""}<input type="number" min="0" step="any" value={tolerance && "value" in tolerance ? tolerance.value : ""} placeholder="Not declared" onChange={(e) => { if (e.target.value === "") remove(); else { const value = Number(e.target.value); if (Number.isFinite(value) && value >= 0) onChange({ ...config, referenceTolerances: { ...config.referenceTolerances, [target.target_id]: { kind: tolerance?.kind === "relative" ? "relative" : "absolute", value } } }); } }} /><small>{tolerance?.kind === "relative" ? "Relative difference, as a fraction of the larger absolute reference." : "Absolute difference in the target units."}</small></label>;
+        })}</fieldset>
+      </details>
       <p className="note settings-scope">{t("cfgScope")}</p>
     </form>
   );
@@ -401,4 +442,10 @@ function RepetitionSetting({ t, columns, current, onApply }: { t: T; columns: st
       <small id="repetition-hint">{onApply ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
     </fieldset>
   );
+}
+
+function FamilyTiming({ family }: { family: string }) {
+  const measurements = timings.measurements as { dataset: string; family: string; milliseconds: number; computedMetrics?: number; unavailableMetrics?: number }[];
+  const rows = measurements.filter((row) => row.family === family);
+  return rows.length ? <div className="table-wrap"><table><caption>Example browser timings, including shared checks</caption><thead><tr><th scope="col">Dataset</th><th scope="col">Time (s)</th><th scope="col">Indicators computed</th></tr></thead><tbody>{rows.map((row) => <tr key={row.dataset}><th scope="row">{row.dataset}</th><td>{(row.milliseconds / 1000).toFixed(2)}</td><td>{row.computedMetrics ?? "—"}{row.unavailableMetrics ? ` · ${row.unavailableMetrics} unavailable` : ""}</td></tr>)}</tbody></table><p className="hint">{timings.method}</p></div> : <p className="hint">No recorded benchmark for this configuration.</p>;
 }

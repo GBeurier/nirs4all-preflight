@@ -94,6 +94,87 @@ fn finite(values: &[f64]) -> Result<(), ProviderError> {
 }
 
 impl NativeMethodsProvider {
+    pub(super) fn run_preprocess(
+        &self,
+        r: &PreprocessingRequest,
+    ) -> Result<PreprocessingDiagnostics, ProviderError> {
+        let (mut x, n, p) = flatten(&r.matrix)?;
+        let input = MatrixView::new(&mut x, n, p);
+        let mut out = vec![0.0; n * p];
+        let mut output = MatrixView::new(&mut out, n, p);
+        if r.steps.is_empty()
+            || r.steps.len() > 256
+            || r.steps
+                .iter()
+                .any(|s| s.params.len() > 256 || s.params.iter().any(|v| !v.is_finite()))
+        {
+            return Err(ProviderError::internal("INVALID_PREPROCESSING_RECIPE"));
+        }
+        type Create = unsafe extern "C" fn(*mut *mut c_void) -> i32;
+        type Add = unsafe extern "C" fn(*mut c_void, i32, *const f64, i32) -> i32;
+        type Fit = unsafe extern "C" fn(
+            *mut c_void,
+            *mut c_void,
+            *const MatrixView,
+            *const MatrixView,
+        ) -> i32;
+        type Transform = unsafe extern "C" fn(
+            *mut c_void,
+            *const c_void,
+            *const MatrixView,
+            *mut MatrixView,
+        ) -> i32;
+        // SAFETY: symbols come from the provider's live Methods library. All
+        // buffers outlive the calls; OwnedHandle releases the fitted pipeline.
+        unsafe {
+            let missing = |_| ProviderError::unsupported("PREPROCESSING_ABI_SYMBOL_MISSING");
+            let create = *self
+                ._library
+                .get::<Create>(b"n4m_pipeline_create\0")
+                .map_err(missing)?;
+            let add = *self
+                ._library
+                .get::<Add>(b"n4m_pipeline_add_operator\0")
+                .map_err(missing)?;
+            let fit = *self
+                ._library
+                .get::<Fit>(b"n4m_pipeline_fit\0")
+                .map_err(missing)?;
+            let transform = *self
+                ._library
+                .get::<Transform>(b"n4m_pipeline_transform\0")
+                .map_err(missing)?;
+            let destroy = *self
+                ._library
+                .get::<Destroy>(b"n4m_pipeline_destroy\0")
+                .map_err(missing)?;
+            let mut handle = ptr::null_mut();
+            self.check(create(&mut handle))?;
+            if handle.is_null() {
+                return Err(ProviderError::internal("PREPROCESSING_NULL_HANDLE"));
+            }
+            let pipeline = OwnedHandle {
+                ptr: handle,
+                destroy,
+            };
+            for step in &r.steps {
+                self.check(add(
+                    pipeline.ptr,
+                    step.kind,
+                    step.params.as_ptr(),
+                    step.params.len() as i32,
+                ))?;
+            }
+            self.check(fit(self.context, pipeline.ptr, &input, ptr::null()))?;
+            self.check(transform(self.context, pipeline.ptr, &input, &mut output))?;
+        }
+        finite(&out)?;
+        Ok(PreprocessingDiagnostics {
+            matrix: out.chunks(p).map(|r| r.to_vec()).collect(),
+            backend_version: self.version.clone(),
+        })
+    }
+
     pub(super) fn run_procedure(
         &self,
         r: &ProcedureRequest,

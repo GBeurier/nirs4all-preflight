@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import {
   AvailabilityBadge,
@@ -14,11 +14,9 @@ import {
   PopulationFlow,
   ProfileStatusBadge,
   RepeatabilityProfile,
-  SCORE_SEQUENTIAL,
   ScoreMap,
   StatTile,
   TargetDistribution,
-  extractIntegrity,
   extractObservationFlow,
   extractPca,
   extractRepeatability,
@@ -28,6 +26,8 @@ import {
   extractTarget,
   formatEngineNumber,
   metricLabel,
+  metricFamily,
+  METRIC_FAMILY_LABEL,
   observationFlowStages,
   samplePopulationStage,
   type CheckItem,
@@ -35,13 +35,14 @@ import {
   withRepeatabilityUncertainty,
 } from "nirs4all-ui/qualification";
 import { NoiseProxyCard, presentSections } from "./Blocks";
+import { exportTables, metricKey } from "./export";
 import { downloadText } from "./download";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
 import { Measured } from "./Measured";
 import { fill, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
-import { atypicalScans, developmentTargetPoints, pcaPoints, type PcaColorBy } from "./views";
+import { atypicalScans, developmentTargetPoints, pcaPoints, varyingMetadata, type PcaColorBy } from "./views";
 
 export interface Scope {
   t: T;
@@ -59,8 +60,19 @@ const num = (v: number | null, locale: Locale, digits = 3) =>
 export type Accent = "teal" | "cyan" | "indigo" | "amber" | "green" | "rose";
 
 export function Section({ id, index, icon, accent = "teal", title, lead, children, aside }: { id: string; index?: string; icon?: IconName; accent?: Accent; title: string; lead?: string | undefined; children: ReactNode; aside?: ReactNode }) {
+  const section = useRef<HTMLElement>(null);
+  const [hasTables, setHasTables] = useState(false);
+  useEffect(() => {
+    const element = section.current;
+    if (!element) return;
+    const update = () => setHasTables(element.querySelector("table") !== null);
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(element, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
   return (
-    <section id={id} className="section" aria-labelledby={`${id}-h`}>
+    <section ref={section} id={id} className="section" aria-labelledby={`${id}-h`}>
       <header className="section-head">
         <div className="section-title">
           {icon ? <span className="section-icon" data-accent={accent}><Icon name={icon} size={22} /></span> : null}
@@ -73,6 +85,7 @@ export function Section({ id, index, icon, accent = "teal", title, lead, childre
         {aside ? <div className="section-aside">{aside}</div> : null}
       </header>
       {children}
+      <div className="section-exports" hidden={!hasTables}><button className="btn btn-ghost btn-sm" onClick={() => { if (section.current) exportTables(section.current, id); }}>Export tables (CSV)</button></div>
     </section>
   );
 }
@@ -150,7 +163,7 @@ export function PopulationsSection({ t, locale, view, sourceId }: Scope) {
 
 // --- 04 structure -----------------------------------------------------------------------------
 
-const COLOR_MODES: readonly PcaColorBy[] = ["none", "campaign", "instrument", "target", "quality"];
+const COLOR_MODES: readonly PcaColorBy[] = ["none", "target", "quality"];
 export const ATYPICAL_RED = "#e11d48";
 export const TYPICAL_GREY = "#94a3b8";
 const SCORE_TABLE_MAX = 500;
@@ -163,7 +176,11 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
   const k = pca?.scores[0]?.length ?? 0;
   const atypical = useMemo(() => (sourceId ? atypicalScans(view, sourceId)?.atypical ?? null : null), [view, sourceId]);
   const quality = useMemo(() => (atypical ? { flagged: new Set(atypical.map((a) => a.sampleId)), typical: t("qualityTypical"), atypical: t("qualityAtypical") } : undefined), [atypical, t]);
-  const fallback: PcaColorBy = atypical?.length ? "quality" : targetId ? "target" : "campaign";
+  const metadata = varyingMetadata(input);
+  const colorOptions: PcaColorBy[] = [...COLOR_MODES, ...metadata.map((c) => `metadata:${c.name}` as const)];
+  const colorLabel = (mode: PcaColorBy) => mode.startsWith("metadata:") ? mode.slice(9) : t(`color_${mode}` as TextKey);
+  const continuous = (mode: PcaColorBy) => mode === "target" ? input.targets.find((t) => t.target_id === targetId)?.kind === "continuous" : metadata.find((c) => `metadata:${c.name}` === mode)?.kind === "continuous";
+  const fallback: PcaColorBy = atypical?.length ? "quality" : targetId ? "target" : "none";
   const colorBy: PcaColorBy = chosen === null || (chosen === "quality" && !quality) ? fallback : chosen;
   const points = useMemo(() => (pca ? pcaPoints(input, pca, xi, Math.min(yi, k - 1), colorBy, targetId, quality) : []), [input, pca, xi, yi, k, colorBy, targetId, quality]);
   const unavailable = view.metrics.filter((m) => m.sourceId === sourceId && (m.id === "structure.pca" || m.id === "structure.pca_scores") && m.status !== "computed");
@@ -180,8 +197,8 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
             <label>{t("axisY")}<select value={yi} onChange={(e) => setYi(Number(e.target.value))}>{pcs.map((i) => <option key={i} value={i}>PC{i + 1}</option>)}</select></label>
             <div className="seg" role="group" aria-label={t("colorBy")}>
               <span className="seg-label">{t("colorBy")}</span>
-              {COLOR_MODES.filter((m) => (m !== "target" || targetId) && (m !== "quality" || quality)).map((m) => (
-                <button key={m} aria-pressed={colorBy === m} onClick={() => setColorBy(m)}>{t(`color_${m}` as TextKey)}</button>
+              {colorOptions.filter((m) => (m !== "target" || targetId) && (m !== "quality" || quality)).map((m) => (
+                <button key={m} aria-pressed={colorBy === m} onClick={() => setColorBy(m)}>{colorLabel(m)}</button>
               ))}
             </div>
           </div>
@@ -197,11 +214,11 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
                   width={w}
                   height={Math.min(460, Math.max(300, w * 0.72))}
                   points={points}
-                  colorBy={colorBy === "none" ? "none" : colorBy === "target" ? "value" : "group"}
+                  colorBy={colorBy === "none" ? "none" : continuous(colorBy) ? "value" : "group"}
                   groupColors={colorBy === "quality" && quality ? { [quality.typical]: TYPICAL_GREY, [quality.atypical]: ATYPICAL_RED } : undefined}
                   xLabel={`PC${xi + 1}${share(xi)}`}
                   yLabel={`PC${Math.min(yi, k - 1) + 1}${share(Math.min(yi, k - 1))}`}
-                  colorLabel={colorBy === "target" ? targetId ?? "" : t(`color_${colorBy}` as TextKey)}
+                  colorLabel={colorBy === "target" ? targetId ?? "" : colorLabel(colorBy)}
                   title={`${t("scoreTable")} — ${pca.sourceId}`}
                   locale={locale}
                 />}</Measured>
@@ -218,9 +235,9 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
           {pca.sampleIds.length > SCORE_TABLE_MAX ? <p className="note">{t("tableCap")} {SCORE_TABLE_MAX} / {pca.sampleIds.length}</p> : null}
           <ChartDataTable
             locale={locale}
-            caption={`${t("scoreTable")} — ${pca.sourceId} (${pca.viewId})`}
-            columns={[t("unitId"), ...pcs.map((i) => `PC${i + 1}`)]}
-            rows={pca.sampleIds.slice(0, SCORE_TABLE_MAX).map((id, i) => [id, ...(pca.scores[i] ?? [])])}
+            caption={`${t("scoreTable")} — ${pca.sourceId} (${pca.viewId})${pca.sampleIds.length > SCORE_TABLE_MAX ? ` — first ${SCORE_TABLE_MAX} of ${pca.sampleIds.length} units` : ""}`}
+            columns={[t("unitId"), ...pcs.map((i) => `PC${i + 1}`), colorBy === "target" ? targetId ?? "Target" : colorLabel(colorBy)]}
+            rows={pca.sampleIds.slice(0, SCORE_TABLE_MAX).map((id, i) => [id, ...(pca.scores[i] ?? []), points.find((p) => p.id === id)?.value ?? points.find((p) => p.id === id)?.group ?? null])}
           />
         </>
       )}
@@ -232,6 +249,7 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
 
 export function RepeatSection(scope: Scope) {
   const { t, locale, view, input, sourceId } = scope;
+  if (input.options.analysis_families?.repeatability === false) return null;
   const source = input.sources.find((s) => s.source_id === sourceId);
   const uncertainty = sourceId ? extractRepeatabilityUncertainty(view, sourceId) : [];
   const contexts = sourceId ? withRepeatabilityUncertainty(extractRepeatability(view, sourceId), uncertainty) : [];
@@ -239,6 +257,7 @@ export function RepeatSection(scope: Scope) {
   const counts = uncertainty.filter((u) => u.repeatCounts?.histogram.length);
   return (
     <Section id="s-repeat" icon="repeat" accent="green" title={t("repeatTitle")} lead={t("repeatLead")}>
+      <p className="note">Repeatability SD uses the signal units: smaller values mean closer repeat scans. ICC compares differences between samples with variation between their repeats; values near 1 mean repeats agree relative to the sample differences.</p>
       <div className="card">
         {contexts.length && source ? (
           <>
@@ -256,7 +275,7 @@ export function RepeatSection(scope: Scope) {
         <div className="grid-2 flow-gap-sm">
           {counts.map((u) => (
             <div className="card" key={u.id}>
-              <h3 className="card-title">{metricLabel("measurement.repeat_counts", locale)} <span className="unit">· {u.id}</span></h3>
+              <h3 className="card-title">Technical repeats per physical sample <span className="unit">· {u.id}</span></h3><p className="hint">Each bar counts physical samples with this many acquisitions in this measurement context. Separate panels correspond to separate contexts.</p>
               <Measured>{(w) => <MeasureBars width={w} title={`${metricLabel("measurement.repeat_counts", locale)} — ${u.id}`} valueLabel={t("physicalGroups")} locale={locale} rows={u.repeatCounts!.histogram.map((h) => ({ id: String(h.r), label: fill(t("repeatsR"), { r: h.r }), value: h.nGroups }))} />}</Measured>
             </div>
           ))}
@@ -306,31 +325,30 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
 
 type StatusFilter = "all" | "computed" | "other";
 
-export function EvidenceSection({ t, locale, view, initialQuery = "", fileName }: Scope & { initialQuery?: string; fileName: string }) {
+export function EvidenceSection({ t, locale, view, initialQuery = "", fileName, selected, onToggle, onSelect }: Scope & { initialQuery?: string; fileName: string; selected: ReadonlySet<string>; onToggle: (key: string) => void; onSelect: (keys: string[], checked: boolean) => void }) {
   const [query, setQuery] = useState(initialQuery);
   const [status, setStatus] = useState<StatusFilter>("all");
+  const [family, setFamily] = useState("all");
+  const families = [...new Set(view.metrics.map((m) => metricFamily(m.id)))];
   const q = query.trim().toLowerCase();
   const shown = view.metrics.filter((m) =>
     (status === "all" || (status === "computed") === (m.status === "computed"))
-    && (!q || m.id.toLowerCase().includes(q) || metricLabel(m.id, locale).toLowerCase().includes(q) || (m.sourceId ?? "").toLowerCase().includes(q) || (m.targetId ?? "").toLowerCase().includes(q)));
+    && (family === "all" || metricFamily(m.id) === family)
+    && (!q || [m.id, metricLabel(m.id, locale), m.sourceId ?? "", m.targetId ?? ""].some((v) => v.toLowerCase().includes(q))));
   return (
-    <Section id="s-evidence" icon="evidence" accent="teal" title={t("evidenceTitle")} lead={t("evidenceLead")}>
+    <Section id="s-evidence" icon="evidence" accent="teal" title={t("evidenceTitle")} lead="Filter the evidence, then select the indicators to include in CSV, JSON and HTML exports.">
       <div className="toolbar">
-        <label className="search">
-          <span className="visually-hidden">{t("search")}</span>
-          <input type="search" placeholder={t("search")} value={query} onChange={(e) => setQuery(e.target.value)} />
-        </label>
+        <label className="search"><span className="visually-hidden">{t("search")}</span><input type="search" placeholder={t("search")} value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+        <label>Family<select aria-label="Family" value={family} onChange={(e) => setFamily(e.target.value)}><option value="all">All families</option>{families.map((f) => <option key={f} value={f}>{METRIC_FAMILY_LABEL[f][locale]}</option>)}</select></label>
         <div className="seg" role="group" aria-label={t("filterStatus")}>
-          {(["all", "computed", "other"] as const).map((s) => (
-            <button key={s} aria-pressed={status === s} onClick={() => setStatus(s)}>{t(s === "all" ? "filterAll" : s === "computed" ? "statusComputed" : "statusOther")}</button>
-          ))}
+          {(["all", "computed", "other"] as const).map((s) => <button key={s} aria-pressed={status === s} onClick={() => setStatus(s)}>{t(s === "all" ? "filterAll" : s === "computed" ? "statusComputed" : "statusOther")}</button>)}
         </div>
-        <span className="hint" role="status">{shown.length} / {view.metrics.length} {t("shown")}</span>
-        <button className="btn btn-outline btn-sm" onClick={() => downloadText(fileName, "text/csv", `\uFEFF${evidenceCsv(shown, locale)}`)}>{t("exportCsv")}</button>
+        <span className="hint" role="status">{shown.length} shown · {selected.size} selected for export</span>
+        <button className="btn btn-outline btn-sm" onClick={() => onSelect(shown.map(metricKey), true)}>Select shown</button>
+        <button className="btn btn-outline btn-sm" onClick={() => onSelect(shown.map(metricKey), false)}>Deselect shown</button>
+        <button className="btn btn-outline btn-sm" disabled={!shown.some((m) => selected.has(metricKey(m)))} onClick={() => downloadText(fileName, "text/csv", `\uFEFF${evidenceCsv(shown.filter((m) => selected.has(metricKey(m))), locale)}`)}>{t("exportCsv")}</button>
       </div>
-      <div className="card card-flush">
-        <EvidenceTable metrics={shown} provenance={view.provenance} locale={locale} />
-      </div>
+      <div className="card card-flush"><EvidenceTable metrics={shown} provenance={view.provenance} locale={locale} selected={selected} metricKey={metricKey} onToggle={onToggle} /></div>
     </Section>
   );
 }

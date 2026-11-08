@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add per-family analysis selection and metadata roles shared by associations, confounding and domain comparisons; preserve original identity/context fields and record selections in report provenance.
+- Add optional X-only repeat-derived near-duplicate tolerance with explicit method/budgets, plus linear-baseline structure sensitivity through the existing Methods preprocessing pipeline.
+- Revise browser guidance, prioritise control points, show per-section alert counts, support arbitrary metadata and categorical target colours, clarify spectral-event counts and inspection limits, and distinguish clustering assignment from measurement noise.
+- Add evidence filters and indicator selection for CSV/JSON/HTML, chart/table downloads, source attribution on loaded examples, richer declared synthetic acquisition groups and browser timing evidence on four examples.
+- Build the browser demo against the local `file:../bindings/wasm` Preflight binding and vendored `nirs4all-ui` 0.2.2-local.20261107.2 tgz (SHA-256 `237a3bf306bdb6fec5088783c425381bcf125540ba7ad25e1aec0604198d7728`) with its adjacent provenance file in `demo/vendor/`. No package release or deployment is included.
+
 ## 0.1.6 — 2026-11-02
 
 Engine protocols, report schema and numerical results are unchanged; this patch aligns the published packages on the current upstream releases and ships the browser demo work done since 0.1.5.

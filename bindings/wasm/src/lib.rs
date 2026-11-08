@@ -76,6 +76,9 @@ impl WireError {
     }
 }
 impl MethodsProvider for CallbackProvider<'_> {
+    fn preprocess(&self, r: &PreprocessingRequest) -> Result<PreprocessingDiagnostics, ProviderError> {
+        self.invoke("preprocess", r)
+    }
     fn procedure(&self, r: &ProcedureRequest) -> Result<ProcedureDiagnostics, ProviderError> {
         self.invoke("procedure", r)
     }

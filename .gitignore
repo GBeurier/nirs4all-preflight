@@ -19,3 +19,7 @@ bindings/wasm/native/
 /openai/
 **/.pytest_cache/
 demo/vendor/
+!/demo/vendor/
+/demo/vendor/*
+!/demo/vendor/nirs4all-ui-0.2.2-local.20261107.2.tgz
+!/demo/vendor/nirs4all-ui-0.2.2-local.20261107.2.provenance.json

@@ -3,7 +3,7 @@ import type { Locale } from "nirs4all-ui/lab";
 import type { EngineReport } from "nirs4all-ui/qualification";
 import { downloadText } from "./download";
 import { createEngineHost, EngineError, type EngineHost, type EngineValidation } from "./engine";
-import { initialLocale, translate, type TextKey } from "./i18n";
+import { translate, type TextKey } from "./i18n";
 import { buildEngineInput, defaultConfig, type AnalysisConfig, type EngineInput } from "./input";
 import { Landing } from "./Landing";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
@@ -26,7 +26,7 @@ export type Origin = {
   repetition?: RepetitionDeclaration;
 };
 /** A report is only ever shown with the exact input that produced it. */
-export type Result = { report: EngineReport; input: EngineInput; origin: Origin };
+export type Result = { report: EngineReport; input: EngineInput; origin: Origin; elapsedMs?: number };
 export type T = (k: TextKey) => string;
 type Theme = "light" | "dark";
 
@@ -44,7 +44,7 @@ function initialTheme(): Theme {
 }
 
 export function App() {
-  const [locale, setLocale] = useState<Locale>(initialLocale);
+  const locale: Locale = "en";
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const t: T = (key) => translate(key, locale);
   const [origin, setOrigin] = useState<Origin | null>(null);
@@ -83,7 +83,9 @@ export function App() {
     setRun({ state: "running" });
     setValidation(null);
     try {
+      const started = performance.now();
       const report = await host.current.analyze(payload);
+      const elapsedMs = performance.now() - started;
       if (generation !== job.current) return;
       // A refused input yields a report without results: show why instead of an empty diagnosis.
       const refused = (report as unknown as { validation?: EngineValidation }).validation;
@@ -93,7 +95,7 @@ export function App() {
         setValidation(refused);
         return;
       }
-      setResult({ report, input: payload, origin: from });
+      setResult({ report, input: payload, origin: from, elapsedMs });
       setRun({ state: "idle" });
     } catch (error) {
       if (generation !== job.current) return;
@@ -171,11 +173,11 @@ export function App() {
     setRun({ state: "idle" });
   };
 
-  const downloadHtml = async () => {
+  const downloadHtml = async (report: EngineReport) => {
     if (!result || !host.current) return;
     setHtmlError(null);
     try {
-      downloadText(`${baseName(result)}-report.html`, "text/html", await host.current.reportHtml(result.report));
+      downloadText(`${baseName(result)}-report.html`, "text/html", await host.current.reportHtml(report));
     } catch (error) {
       setHtmlError(error instanceof Error ? error.message : String(error));
     }
@@ -194,11 +196,6 @@ export function App() {
           <div className="nav-actions">
             {input ? <button className="btn btn-ghost" onClick={reset} aria-label={t("newDataset")}><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg><span className="hide-sm">{t("newDataset")}</span></button> : null}
             <a className="btn btn-ghost hide-sm" href="https://github.com/GBeurier/nirs4all-preflight/blob/main/docs/SPECIFICATION.md" target="_blank" rel="noreferrer">{t("docs")}</a>
-            <div className="seg" role="group" aria-label={t("language")}>
-              {(["fr", "en"] as const).map((l) => (
-                <button key={l} aria-pressed={locale === l} onClick={() => setLocale(l)} lang={l}>{l.toUpperCase()}</button>
-              ))}
-            </div>
             <button className="icon-btn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label={`${t("theme")}: ${t(theme === "dark" ? "themeDark" : "themeLight")}`} title={t("theme")}>
               {theme === "dark" ? (
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" /></svg>
@@ -224,7 +221,7 @@ export function App() {
             htmlError={htmlError}
             onRun={() => void execute(input, config, origin)}
             onCancel={cancel}
-            onDownloadHtml={() => void downloadHtml()}
+            onDownloadHtml={(report) => void downloadHtml(report)}
             {...(files.current ? { onRepetition: (repetition: RepetitionDeclaration | undefined) => void redeclare(repetition) } : {})}
           />
         ) : (

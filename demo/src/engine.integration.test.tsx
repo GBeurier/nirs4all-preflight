@@ -8,6 +8,7 @@ import { importFiles, type FormatsRuntime, type IoRuntime } from "./dataset-io";
 import { buildChecks } from "./checks";
 import { ClusteringSection, ConfoundingSection, DomainShiftSection, ProbeSection, presentSections } from "./Blocks";
 import { translate, type TextKey } from "./i18n";
+import { buildEngineInput, defaultConfig } from "./input";
 import type { Scope } from "./Sections";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
 
@@ -19,7 +20,7 @@ const fs = (await import(/* @vite-ignore */ fsName)) as { readFile(path: URL): P
 const modules = new URL("../node_modules/", import.meta.url);
 const runtime = await createQualificationRuntime({
   wasmModule: await fs.readFile(new URL("@nirs4all/preflight/native/nirs4all_preflight_wasm_bg.wasm", modules)),
-  dagMlWasmModule: await fs.readFile(new URL("dag-ml-wasm/dag_ml_wasm_bg.wasm", modules)),
+  dagMlWasmModule: await fs.readFile(new URL("../bindings/wasm/node_modules/dag-ml-wasm/dag_ml_wasm_bg.wasm", new URL("../", import.meta.url))),
 });
 
 interface Metric { metric_id: string; status: string; reason_code?: string; parameters?: Record<string, unknown> }
@@ -122,7 +123,9 @@ describe("real engine on dropped X/y/metadata files", () => {
     const checks = buildChecks(buildQualificationReportView(report), input, input.sources[0]!.source_id, "protein", (k: TextKey) => translate(k, "en"), "en");
     const target = checks.find((c) => c.id === "target");
     expect(target?.status).toBe("attention");
-    expect(target?.detail).toContain(`1 of ${n} development samples without a reference`);
+    expect(target?.detail).toContain(`1 of ${n} calibration samples without a reference`);
+    // T²/Q ranks by the dataset's own p95 (about 5% exceed it by construction): never a control point
+    expect(checks.some((c) => c.id === "atypical")).toBe(false);
     const events = checks.find((c) => c.id === "events");
     // four bands are too few for the spike detector: its count stays unevaluated, never zero
     expect(events?.status).not.toBe("ok");
@@ -147,3 +150,34 @@ describe("real engine on dropped X/y/metadata files", () => {
   });
 });
 
+
+
+describe("configured engine protocols", () => {
+  it("uses X-only repeat distances for tolerance and includes baseline sensitivity", () => {
+    const input = syntheticInput("pitfalls");
+    const report = runtime.analyze(buildEngineInput(input, defaultConfig(input))) as EngineReport;
+    expect(report.validation?.valid).toBe(true);
+    const tolerance = report.metrics.find((m) => m.metric_id === "integrity.quasi_duplicate_pairs");
+    expect(tolerance?.status, JSON.stringify(tolerance)).toBe("computed");
+    expect(tolerance?.parameters?.tolerance_source).toBe("technical_repeat_rms_Q3_plus_1.5_IQR_X_only");
+    expect(tolerance?.parameters?.tolerance_repeat_groups).toBe(8);
+    expect(report.metrics.find((m) => m.metric_id === "structure.detrend_sensitivity")?.status).toBe("computed");
+  });
+
+  it("omits identifier metadata across associations, confounding and domain comparisons", () => {
+    const input = syntheticInput("pitfalls");
+    const config = defaultConfig(input);
+    config.metadataRoles = { instrument: "identifier", campaign: "excluded", batch: "analysis", id_sample: "identifier" };
+    const report = runtime.analyze(buildEngineInput(input, config)) as EngineReport;
+    expect(report.validation?.valid).toBe(true);
+    const linked = report.metrics.filter((m) => /^(association|confounding|domain_shift)\./.test(m.metric_id));
+    expect(linked.length).toBeGreaterThan(0);
+    for (const metric of linked) {
+      if (metric.parameters?.factor) expect(["instrument", "campaign", "id_sample"]).not.toContain(metric.parameters.factor);
+      if (metric.parameters?.metadata) expect(["instrument", "campaign", "id_sample"]).not.toContain(metric.parameters.metadata);
+    }
+    const design = report.metrics.find((m) => m.metric_id === "confounding.design");
+    expect(JSON.stringify(design?.value)).toContain("batch");
+    expect(JSON.stringify(design?.value)).not.toContain('"factor":"instrument"');
+  });
+});

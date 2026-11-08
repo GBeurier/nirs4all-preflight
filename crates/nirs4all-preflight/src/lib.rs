@@ -238,7 +238,10 @@ pub fn analyze_with_validation(
     };
     for capability in &mut report.capabilities {
         let reason = match capability.capability_id.as_str() {
-            "quasi_duplicates" if input.options.quasi_duplicates.is_none() => {
+            "quasi_duplicates"
+                if input.options.quasi_duplicates.is_none()
+                    && !input.options.quasi_tolerance_from_repeats =>
+            {
                 "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED"
             }
             "snv_sensitivity" if !input.options.snv_sensitivity => "SNV_SENSITIVITY_DISABLED",
@@ -258,6 +261,12 @@ pub fn analyze_with_validation(
     if !report.validation.valid {
         return report;
     }
+    report.metrics.push(Metric::computed(
+        "analysis.selection",
+        json!({"families": input.options.analysis_families, "metadata_roles": input.options.metadata_roles}),
+        None,
+        None,
+    ));
     let samples: HashMap<_, _> = input
         .samples
         .iter()
@@ -314,7 +323,9 @@ pub fn analyze_with_validation(
         .collect();
     // Before sources and domain shift: confounding findings and domain-shift
     // recommendations read the association results.
-    association::analyze_metadata_associations(input, &samples, provider, &mut report);
+    if input.options.analysis_families.association {
+        association::analyze_metadata_associations(input, &samples, provider, &mut report);
+    }
     for source in &input.sources {
         analyze_source(source, &samples, &references, input, provider, &mut report);
     }
@@ -322,8 +333,56 @@ pub fn analyze_with_validation(
     for target in &input.targets {
         analyze_target(target, &samples, input, provider, &mut report);
     }
-    domain_shift::analyze(input, &samples, provider, &mut report);
-    probe::analyze(input, &samples, provider, validation_provider, &mut report);
+    if input.options.analysis_families.domain_shift {
+        domain_shift::analyze(input, &samples, provider, &mut report);
+    }
+    if input.options.analysis_families.probe {
+        probe::analyze(input, &samples, provider, validation_provider, &mut report);
+    }
+    // Disabled families must not look like failed or successful analyses, even
+    // when canonical geometry failed and emitted downstream refusal records.
+    let families = &input.options.analysis_families;
+    report.metrics.retain(|m| {
+        let id = m.metric_id.as_str();
+        if id.starts_with("clustering.") {
+            families.clustering
+        } else if id.starts_with("confounding.") {
+            families.confounding
+        } else if id.starts_with("association.") {
+            families.association
+        } else if id.starts_with("domain_shift.") {
+            families.domain_shift
+        } else if id.starts_with("probe.") {
+            families.probe
+        } else if id.starts_with("measurement.") {
+            families.repeatability
+        } else if id.starts_with("intrinsic.") {
+            families.spectral_quality
+        } else if id.starts_with("structure.snv_")
+            || id == "structure.balanced_repeat_sensitivity"
+            || id == "structure.detrend_sensitivity"
+        {
+            families.sensitivity
+        } else {
+            true
+        }
+    });
+    for capability in &mut report.capabilities {
+        let enabled = match capability.capability_id.as_str() {
+            "clustering" => families.clustering,
+            "confounding" => families.confounding,
+            "domain_shift" => families.domain_shift,
+            "metadata_association_tests" => families.association,
+            "snv_sensitivity" => families.sensitivity,
+            "noise_proxy" | "repeatability_uncertainty" => families.repeatability,
+            "validation_probe" => families.probe,
+            _ => true,
+        };
+        if !enabled {
+            capability.available = false;
+            capability.reason = Some("FAMILY_DISABLED".into());
+        }
+    }
     // Operation-specific numerical domain on success and on refusal.
     let categorical: BTreeSet<&str> = input
         .targets
@@ -806,8 +865,12 @@ fn analyze_source(
                         scores: &result.scores,
                         eigenvalues: &result.eigenvalues,
                     };
-                    clustering::analyze(source, input, samples, &geometry, provider, report);
-                    confounding::analyze(source, input, samples, &geometry, provider, report);
+                    if input.options.analysis_families.clustering {
+                        clustering::analyze(source, input, samples, &geometry, provider, report);
+                    }
+                    if input.options.analysis_families.confounding {
+                        confounding::analyze(source, input, samples, &geometry, provider, report);
+                    }
                 } else {
                     clustering::unavailable(
                         report,
@@ -913,9 +976,13 @@ fn analyze_source(
             }
         }
     }
-    repeatability::analyze_repeats(source, input, samples, &dev_rows, provider, report);
-    analyze_noise_proxy(source, samples, &dev_rows, input, provider, report);
-    intrinsic::analyze(source, samples, &dev_rows, input, provider, report);
+    if input.options.analysis_families.repeatability {
+        repeatability::analyze_repeats(source, input, samples, &dev_rows, provider, report);
+        analyze_noise_proxy(source, samples, &dev_rows, input, provider, report);
+    }
+    if input.options.analysis_families.spectral_quality {
+        intrinsic::analyze(source, samples, &dev_rows, input, provider, report);
+    }
 }
 
 /// Structure rows of one population: equal-weight means of the complete
@@ -1395,6 +1462,9 @@ fn structure_sensitivities(
     provider: &impl MethodsProvider,
     report: &mut QualificationReport,
 ) {
+    if !input.options.analysis_families.sensitivity {
+        return;
+    }
     repeatability::balanced_repeat_sensitivity(
         source,
         group_rows,
@@ -1404,7 +1474,100 @@ fn structure_sensitivities(
         provider,
         report,
     );
+    analyze_detrend(source, group_rows, k, canonical.clone(), provider, report);
     analyze_snv(source, group_rows, k, canonical, input, provider, report);
+}
+
+/// Baseline-family comparison, using Methods linear detrending before repeat aggregation.
+fn analyze_detrend(
+    source: &SpectralSource,
+    group_rows: &[Vec<usize>],
+    k: usize,
+    canonical: Result<&PcaDiagnostics, (Availability, &str)>,
+    provider: &impl MethodsProvider,
+    report: &mut QualificationReport,
+) {
+    let src = Some(source.source_id.as_str());
+    let result = (|| -> Result<Metric, (Availability, String)> {
+        let canonical = canonical.map_err(|(s, r)| (s, r.to_string()))?;
+        let p = source.axis.len();
+        let request = PreprocessingRequest {
+            matrix: group_rows
+                .iter()
+                .flatten()
+                .map(|&r| {
+                    (0..p)
+                        .map(|c| valid_cell(source, r, c).unwrap_or(0.0))
+                        .collect()
+                })
+                .collect(),
+            // Existing Methods DETREND_POLY operator, polynomial degree 1, band-index axis.
+            steps: vec![PreprocessingStep {
+                kind: 7,
+                params: vec![1.0],
+            }],
+        };
+        let failure = |e: ProviderError| (e.availability(), e.reason);
+        let transformed = provider.preprocess(&request).map_err(failure)?;
+        if transformed.matrix.len() != request.matrix.len()
+            || transformed
+                .matrix
+                .iter()
+                .any(|r| r.len() != p || r.iter().any(|v| !v.is_finite()))
+        {
+            return Err((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
+        }
+        let means = provider
+            .group_means(&GroupMeansRequest {
+                matrix: transformed.matrix,
+                group_codes: group_rows
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(g, rows)| std::iter::repeat_n(g as i64, rows.len()))
+                    .collect(),
+                n_groups: group_rows.len(),
+            })
+            .map_err(failure)?;
+        if means.means.len() != group_rows.len()
+            || means
+                .means
+                .iter()
+                .any(|r| r.len() != p || r.iter().any(|v| !v.is_finite()))
+        {
+            return Err((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
+        }
+        let raw = provider
+            .pca(&PcaRequest {
+                source_id: source.source_id.clone(),
+                sample_ids: vec![],
+                matrix: means.means,
+                n_components: k,
+            })
+            .map_err(failure)?;
+        if !pca_result_valid(&raw, k, group_rows.len()) {
+            return Err((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
+        }
+        let compared = raw.resolved();
+        if compared.full_moments[0] <= 0.0 {
+            return Err((Availability::Undefined, "ZERO_DETRENDED_VARIANCE".into()));
+        }
+        let reference = pca_structure(canonical);
+        let detrended = pca_structure(&compared);
+        let mut metric = Metric::computed(
+            "structure.detrend_sensitivity",
+            json!({"canonical": reference, "detrended": detrended, "delta_effective_dimension": detrended["effective_dimension"].as_f64().zip(reference["effective_dimension"].as_f64()).map(|(b,a)| b-a)}),
+            src,
+            None,
+        );
+        metric.parameters.insert("preprocessing".into(), json!({"method": "Methods DETREND_POLY", "polyorder": 1, "axis": "band_index", "order": "transform_acquisitions_then_equal_weight_aggregation", "backend_version": transformed.backend_version}));
+        insert_resolution(&mut metric, &raw);
+        Ok(metric)
+    })();
+    let mut metric = result.unwrap_or_else(|(status, reason)| {
+        Metric::unavailable("structure.detrend_sensitivity", status, &reason, src, None)
+    });
+    metric.view_id = "canonical:detrend_centered".into();
+    report.metrics.push(metric);
 }
 
 /// Labelled unsupervised SNV view of the same aggregated samples as the canonical PCA.
@@ -2211,6 +2374,126 @@ fn concordant_indices(
     out
 }
 
+/// Within-physical-sample distances only: no target or retained-test spectrum
+/// contributes. Methods computes every RMS and quartile; this protocol chooses
+/// the declared exploratory outer-fence convention and records its provenance.
+fn repeat_tolerance(
+    source: &SpectralSource,
+    samples: &HashMap<&str, &Sample>,
+    rows: &[usize],
+    provider: &impl MethodsProvider,
+) -> Result<(QuasiDuplicateOptions, usize, usize), (Availability, String)> {
+    let types = source.repetition_types.as_ref().ok_or_else(|| {
+        (
+            Availability::NotApplicable,
+            "TECHNICAL_REPEATS_REQUIRED_FOR_TOLERANCE".into(),
+        )
+    })?;
+    let p = source.axis.len();
+    let mut groups = BTreeMap::new();
+    for &r in rows {
+        if !matches!(
+            types[r],
+            RepetitionType::Rescan | RepetitionType::Repositioning | RepetitionType::Repreparation
+        ) || !(0..p).all(|c| valid_cell(source, r, c).is_some())
+        {
+            continue;
+        }
+        let sample = samples[source.sample_ids[r].as_str()];
+        let key = (
+            sample
+                .physical_sample_id
+                .as_deref()
+                .unwrap_or(&sample.sample_id),
+            sample.instrument.as_deref(),
+            sample.campaign.as_deref(),
+            format!("{:?}", types[r]),
+        );
+        groups.entry(key).or_insert_with(Vec::new).push(r);
+    }
+    groups.retain(|_, rows| rows.len() >= 2);
+    let n_physical = groups
+        .keys()
+        .map(|(physical, _, _, _)| *physical)
+        .collect::<BTreeSet<_>>()
+        .len();
+    if n_physical < 3 {
+        return Err((
+            Availability::InsufficientData,
+            "FEWER_THAN_THREE_TECHNICAL_REPEAT_GROUPS".into(),
+        ));
+    }
+    // The exact sum fits u128: the groups partition at most usize::MAX rows
+    // on native and WASM. Refuse the protocol budget before calling Methods.
+    let pair_count: u128 = groups
+        .values()
+        .map(|rows| {
+            let n = rows.len() as u128;
+            n * (n - 1) / 2
+        })
+        .sum();
+    if pair_count > 10_000 {
+        return Err((
+            Availability::Unsupported,
+            "REPEAT_TOLERANCE_PAIR_BUDGET_EXCEEDED".into(),
+        ));
+    }
+    let mut distances = Vec::new();
+    for rows in groups.values() {
+        for (i, &a) in rows.iter().enumerate() {
+            for &b in &rows[i + 1..] {
+                let out = provider
+                    .procedure(&ProcedureRequest {
+                        method_id: "diagnostics.spectral_reference_qc".into(),
+                        matrix: vec![(0..p).map(|c| valid_cell(source, a, c).unwrap()).collect()],
+                        reference: Some(vec![(0..p)
+                            .map(|c| valid_cell(source, b, c).unwrap())
+                            .collect()]),
+                        parameters: BTreeMap::from([(
+                            "reference_mode".into(),
+                            ProcedureParameter::Enum("supplied".into()),
+                        )]),
+                    })
+                    .map_err(|e| (e.availability(), e.reason))?;
+                match out.outputs.get("rms_values") {
+                    Some(ProcedureOutput::Matrix {
+                        rows: 1,
+                        cols: 1,
+                        data,
+                    }) if data.len() == 1 && data[0].is_finite() && data[0] >= 0.0 => {
+                        distances.push(data[0])
+                    }
+                    _ => return Err((Availability::Error, "INVALID_PROVIDER_RESULT".into())),
+                }
+            }
+        }
+    }
+    let count = distances.len();
+    let summary = provider
+        .summary(&SummaryRequest { values: distances })
+        .map_err(|e| (e.availability(), e.reason))?;
+    let tolerance = summary.q75 + 1.5 * (summary.q75 - summary.q25);
+    if summary.count != count
+        || !summary.q25.is_finite()
+        || !summary.q75.is_finite()
+        || summary.q25 < 0.0
+        || summary.q75 < summary.q25
+        || !tolerance.is_finite()
+        || tolerance < 0.0
+    {
+        return Err((Availability::Error, "INVALID_PROVIDER_RESULT".into()));
+    }
+    Ok((
+        QuasiDuplicateOptions {
+            tolerance,
+            view: QuasiDuplicateView::Native,
+            context: ComparisonContext::InstrumentCampaign,
+        },
+        groups.len(),
+        count,
+    ))
+}
+
 /// Quasi-identity suspicions within a declared view, context and tolerance. X only.
 /// Returns the development pairs for reference comparison (all of them when a
 /// contradiction tolerance is declared), their parameters, view and population.
@@ -2251,7 +2534,19 @@ fn analyze_quasi_duplicates(
             Vec::new(),
         )
     };
-    let Some(options) = &input.options.quasi_duplicates else {
+    let inferred = if input.options.quasi_tolerance_from_repeats {
+        match repeat_tolerance(source, samples, dev_rows, provider) {
+            Ok(result) => Some(result),
+            Err((status, reason)) => return unavailable(report, status, &reason),
+        }
+    } else {
+        None
+    };
+    let Some(options) = inferred
+        .as_ref()
+        .map(|(options, _, _)| options)
+        .or(input.options.quasi_duplicates.as_ref())
+    else {
         return unavailable(
             report,
             Availability::NotApplicable,
@@ -2473,8 +2768,17 @@ fn analyze_quasi_duplicates(
     parameters.insert("tolerance_unit".into(), json!(tolerance_unit));
     parameters.insert(
         "tolerance_source".into(),
-        json!("declared_in_options_quasi_duplicates"),
+        json!(if inferred.is_some() {
+            "technical_repeat_rms_Q3_plus_1.5_IQR_X_only"
+        } else {
+            "declared_in_options_quasi_duplicates"
+        }),
     );
+    if let Some((_, n_groups, n_pairs)) = &inferred {
+        parameters.insert("tolerance_repeat_groups".into(), json!(n_groups));
+        parameters.insert("tolerance_repeat_pairs".into(), json!(n_pairs));
+        parameters.insert("tolerance_interpretation".into(), json!("exploratory_not_calibrated; development_technical_repeats_only; target_never_read; native_signal_units"));
+    }
     parameters.insert("distance".into(), json!("root_mean_square_band_difference"));
     parameters.insert(
         "numerical_domain".into(),
@@ -3238,7 +3542,7 @@ pub fn report_html(report: &QualificationReport) -> String {
             .as_ref()
             .map(|v| concise_value(&m.metric_id, v))
             .unwrap_or_else(|| "null".into());
-        html.push_str(&format!("<tr><td>{}<br><small>protocol {}</small></td><td>source: {}<br>target: {}<br>scope: {}<br>population: {}<br>view: {}</td><td>{}<br>{}</td><td>{}<br>unit: {}</td><td>{}</td><td>{}</td></tr>", esc(&m.metric_id),esc(&m.protocol_version),esc(m.source_id.as_deref().unwrap_or("—")),esc(m.target_id.as_deref().unwrap_or("—")),esc(&m.scope),esc(&m.population_id),esc(&m.view_id),wire_status(&m.status),esc(m.reason_code.as_deref().unwrap_or("—")),esc(&value),esc(m.unit.as_deref().unwrap_or("—")),denominators,params));
+        html.push_str(&format!("<tr><td>{}<br><small>protocol {}</small></td><td>scope: {}<br>source: {}<br>target: {}<br>population: {}<br>view: {}</td><td>{}<br>{}</td><td>{}<br>unit: {}</td><td>{}</td><td>{}</td></tr>", esc(&m.metric_id),esc(&m.protocol_version),esc(&m.scope),esc(m.source_id.as_deref().unwrap_or("—")),esc(m.target_id.as_deref().unwrap_or("—")),esc(&m.population_id),esc(&m.view_id),wire_status(&m.status),esc(m.reason_code.as_deref().unwrap_or("—")),esc(&value),esc(m.unit.as_deref().unwrap_or("—")),denominators,params));
     }
     html.push_str("</tbody></table><h2>Findings</h2><table><caption>Findings, evidence and actions</caption><thead><tr><th scope=\"col\">Rule</th><th scope=\"col\">Severity / confidence</th><th scope=\"col\">Evidence</th><th scope=\"col\">Observation</th><th scope=\"col\">Action</th></tr></thead><tbody>");
     for f in &report.findings {

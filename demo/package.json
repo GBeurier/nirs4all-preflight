@@ -15,9 +15,9 @@
   "dependencies": {
     "@nirs4all/formats-wasm": "0.2.14",
     "@nirs4all/io-wasm": "0.2.14",
-    "@nirs4all/preflight": "0.1.6",
+    "@nirs4all/preflight": "file:../bindings/wasm",
     "idb-keyval": "6.2.2",
-    "nirs4all-ui": "0.2.0",
+    "nirs4all-ui": "file:vendor/nirs4all-ui-0.2.2-local.20261107.2.tgz",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },

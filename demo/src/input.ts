@@ -53,13 +53,20 @@ export interface InputOptions {
   independence_unit?: IndependenceUnit;
   assume_one_observation_per_sample?: boolean;
   /** u64 in Rust; JS numbers are exact only up to Number.MAX_SAFE_INTEGER. */
-  seed?: number;
+  seed?: number | string;
   max_cells?: number;
   max_samples?: number;
   clustering?: { subsample_refit?: boolean };
   domain_shift?: { energy_on_spectra?: boolean; monitor_on_spectra?: boolean; external_domain_audit?: boolean; [key: string]: unknown };
   /** Descriptive per-spectrum signatures; `{}` keeps the engine defaults. */
   intrinsic_qc?: Record<string, unknown>;
+  metadata_roles?: Record<string, MetadataRole>;
+  analysis_families?: Partial<AnalysisFamilies>;
+  exchangeable_units?: boolean;
+  snv_sensitivity?: boolean;
+  quasi_duplicates?: { tolerance: number; view?: "native" | "snv"; context?: "source" | "instrument" | "instrument_campaign" };
+  quasi_tolerance_from_repeats?: boolean;
+  reference_contradiction_tolerances?: Record<string, { kind: "absolute" | "relative"; value: number } | { kind: "different_class" }>;
 }
 
 export interface InputMetadataColumn {
@@ -122,13 +129,45 @@ export function parseCanonicalInput(text: string): ParseResult {
   return { ok: true, input: { ...(raw as unknown as EngineInput), targets: (raw.targets ?? []) as InputTarget[], options: (raw.options ?? {}) as InputOptions } };
 }
 
-/** Engine options edited on the page. Sources and targets are never subset: the engine analyses the whole input. */
+export type MetadataRole = "analysis" | "identifier" | "excluded";
+export const ANALYSIS_FAMILIES = ["spectral_quality", "sensitivity", "repeatability", "clustering", "association", "confounding", "domain_shift", "probe"] as const;
+export type AnalysisFamily = typeof ANALYSIS_FAMILIES[number];
+export type AnalysisFamilies = Record<AnalysisFamily, boolean>;
+
+/** All original columns and identities stay in the input; roles control analytical use. */
 export interface AnalysisConfig {
   independenceUnit: IndependenceUnit;
   assumeOneObservationPerSample: boolean;
-  seed: number | null;
-  /** Restores the heavy computations: PCA refit per clustering subsample, energies and T²/Q monitor on every band. */
-  fullComputation: boolean;
+  seed: number | string | null;
+  metadataRoles: Record<string, MetadataRole>;
+  families: AnalysisFamilies;
+  clusterRefit: boolean;
+  fullSpectrumEnergy: boolean;
+  fullSpectrumMonitor: boolean;
+  exchangeableUnits: boolean;
+  eventThreshold: number;
+  quasiTolerance: number | null;
+  quasiToleranceFromRepeats: boolean;
+  referenceTolerances: NonNullable<InputOptions["reference_contradiction_tolerances"]>;
+}
+
+export function metadataColumns(input: EngineInput): InputMetadataColumn[] {
+  return [
+    ...(["instrument", "campaign"] as const).filter((key) => input.samples.some((s) => s[key] != null)).map((name) => ({ name, kind: "categorical" as const })),
+    ...(input.metadata?.columns ?? []),
+  ];
+}
+
+export function metadataValue(input: EngineInput, sampleId: string, name: string, sample?: InputSample): string | number | null {
+  if (name === "instrument" || name === "campaign") return (sample ?? input.samples.find((s) => s.sample_id === sampleId))?.[name] ?? null;
+  return input.metadata?.values[sampleId]?.[name] ?? null;
+}
+
+/** ID-like names qualify only with distinct non-null sample values; every role remains editable. */
+export function defaultMetadataRole(input: EngineInput, name: string): MetadataRole {
+  if (!/(^id($|[_ -])|[_ -]id$|^(sample|scan|spectr(um|a|e|es))[_ -]?id$)/i.test(name)) return "analysis";
+  const values = input.samples.map((sample) => metadataValue(input, sample.sample_id, name, sample)).filter((value) => value !== null);
+  return values.length > 0 && new Set(values).size === values.length ? "identifier" : "analysis";
 }
 
 export function defaultConfig(input: EngineInput): AnalysisConfig {
@@ -136,34 +175,46 @@ export function defaultConfig(input: EngineInput): AnalysisConfig {
     independenceUnit: input.options.independence_unit ?? "unknown",
     assumeOneObservationPerSample: input.options.assume_one_observation_per_sample ?? false,
     seed: input.options.seed ?? null,
-    fullComputation: Boolean(input.options.clustering?.subsample_refit || input.options.domain_shift?.energy_on_spectra || input.options.domain_shift?.monitor_on_spectra),
+    metadataRoles: Object.fromEntries(metadataColumns(input).map((c) => [c.name, input.options.metadata_roles?.[c.name] ?? defaultMetadataRole(input, c.name)])),
+    families: Object.fromEntries(ANALYSIS_FAMILIES.map((name) => [name, input.options.analysis_families?.[name] ?? true])) as AnalysisFamilies,
+    clusterRefit: input.options.clustering?.subsample_refit ?? false,
+    fullSpectrumEnergy: input.options.domain_shift?.energy_on_spectra ?? false,
+    fullSpectrumMonitor: input.options.domain_shift?.monitor_on_spectra ?? false,
+    exchangeableUnits: input.options.exchangeable_units ?? false,
+    eventThreshold: typeof input.options.intrinsic_qc?.outlier_threshold === "number" ? input.options.intrinsic_qc.outlier_threshold : 8,
+    referenceTolerances: input.options.reference_contradiction_tolerances ?? Object.fromEntries(input.targets.filter((t) => t.kind === "categorical").map((t) => [t.target_id, { kind: "different_class" as const }])),
+    quasiTolerance: input.options.quasi_duplicates?.tolerance ?? null,
+    quasiToleranceFromRepeats: input.options.quasi_tolerance_from_repeats ?? (input.options.quasi_duplicates === undefined && input.sources.some((s) => s.repetition_types?.some((r) => ["rescan", "repositioning", "repreparation"].includes(r)))),
   };
 }
 
-/** Accepts a seed only when it is a nonnegative integer that JS can carry exactly to the u64 field. */
-export function parseSeed(text: string): number | null | "invalid" {
+/** Decimal strings preserve the complete u64 range without a browser precision caveat. */
+export function parseSeed(text: string): number | string | null | "invalid" {
   if (text.trim() === "") return null;
-  const n = Number(text);
-  return Number.isSafeInteger(n) && n >= 0 ? n : "invalid";
+  if (!/^(0|[1-9][0-9]*)$/.test(text) || text.length > 20 || BigInt(text) > 18446744073709551615n) return "invalid";
+  return BigInt(text) <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(text) : text;
 }
 
-/** Applies the edited options; data and declared budgets are passed through untouched. */
 export function buildEngineInput(input: EngineInput, config: AnalysisConfig): EngineInput {
-  const options: InputOptions = { ...input.options, independence_unit: config.independenceUnit };
+  const options: InputOptions = {
+    ...input.options,
+    independence_unit: config.independenceUnit,
+    metadata_roles: config.metadataRoles,
+    analysis_families: config.families,
+    exchangeable_units: config.exchangeableUnits,
+    quasi_tolerance_from_repeats: config.quasiToleranceFromRepeats,
+    reference_contradiction_tolerances: config.referenceTolerances,
+    intrinsic_qc: { ...input.options.intrinsic_qc, outlier_threshold: config.eventThreshold },
+  };
   delete options.assume_one_observation_per_sample;
   delete options.seed;
   if (config.assumeOneObservationPerSample) options.assume_one_observation_per_sample = true;
   if (config.seed !== null) options.seed = config.seed;
-  const domainShift = Object.fromEntries(Object.entries(options.domain_shift ?? {}).filter(([key]) => key !== "energy_on_spectra" && key !== "monitor_on_spectra"));
-  delete options.clustering;
-  delete options.domain_shift;
-  if (config.fullComputation) {
-    options.clustering = { subsample_refit: true };
-    options.domain_shift = { ...domainShift, energy_on_spectra: true, monitor_on_spectra: true };
-  } else if (Object.keys(domainShift).length) {
-    options.domain_shift = domainShift;
-  }
-  return { schema_version: 1, ...(input.data_origin ? { data_origin: input.data_origin } : {}), sources: input.sources, samples: input.samples, targets: input.targets, ...(input.metadata ? { metadata: input.metadata } : {}), options };
+  options.clustering = { subsample_refit: config.clusterRefit };
+  options.domain_shift = { ...options.domain_shift, energy_on_spectra: config.fullSpectrumEnergy, monitor_on_spectra: config.fullSpectrumMonitor };
+  if (config.quasiToleranceFromRepeats || config.quasiTolerance === null) delete options.quasi_duplicates;
+  else options.quasi_duplicates = { ...input.options.quasi_duplicates, tolerance: config.quasiTolerance };
+  return { ...input, options };
 }
 
 /** Number of declared samples carrying an `independence_group` (display hint for the "group" unit). */

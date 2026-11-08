@@ -19,7 +19,7 @@ import {
 import type { T } from "./App";
 import { fill, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
-import { atypicalSpectra, developmentTargetValues } from "./views";
+import { developmentTargetValues } from "./views";
 
 const n = (v: number, locale: Locale) => (Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(3)).toLocaleString(locale));
 
@@ -108,19 +108,8 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
 
   const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
   if (intrinsic) {
-    const t2 = intrinsic.signals["pca.pca_t2"];
-    const q = intrinsic.signals["pca.pca_q"];
-    if (t2 && q) {
-      const ready = t2.state.status === "computed" && q.state.status === "computed";
-      const atypical = ready ? atypicalSpectra(t2, q) : [];
-      items.push({
-        id: "atypical",
-        title: t("chkAtypical"),
-        status: !ready ? "unavailable" : atypical.length ? "attention" : "ok",
-        detail: !ready ? f("chkAtypicalNa", { r: t2.state.reasonCode ?? q.state.reasonCode ?? "—" }) : atypical.length ? f("chkAtypicalKo", { n: atypical.length, ids: atypical.slice(0, 3).map((a) => a.sampleId).join(", ") }) : t("chkAtypicalOk"),
-        href: "#s-quality",
-      });
-    }
+    // T²/Q ranks within the dataset (about 5% lie above their own p95 by construction): it has no
+    // calibrated threshold, so it is shown in the quality section but never as a control point.
     // A count is reported only when the engine computed it; an unevaluated one is never read as zero.
     const spikes = intrinsic.globals["events.global_spike_count"];
     const jumps = intrinsic.globals["events.global_jump_count"];
@@ -164,7 +153,8 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
     status: unit === "unknown" ? "attention" : "ok",
     detail: unit === "unknown" ? t("chkUnitKo") : f("chkUnitOk", { u: t(`unit_${unit}` as TextKey) }),
   });
-  return items;
+  const rank = { critical: 0, attention: 1, ok: 2, unavailable: 3 };
+  return items.filter((item) => item.id !== "repeatability" || input.options.analysis_families?.repeatability !== false).sort((a, b) => rank[a.status] - rank[b.status]);
 }
 
 export const needsReview = (items: readonly CheckItem[]) => items.filter((i) => i.status === "attention" || i.status === "critical").length;
