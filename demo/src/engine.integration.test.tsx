@@ -1,3 +1,5 @@
+import * as ioOwner from "../vendor/io-browser-owner/nirs4all_io_wasm.js";
+import { readFileSync as readIoBytes } from "node:fs";
 import { createRequire } from "node:module";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -42,8 +44,8 @@ const html = (node: ReactElement) => renderToStaticMarkup(node);
 describe("real engine on the demo synthetic sets", () => {
   const { report, scope } = analyze("clean");
 
-  it("is the 0.1.3 engine and labels the synthetic origin", () => {
-    expect(report.engine_version).toBe("0.1.6");
+  it("is the 0.1.7 engine and labels the synthetic origin", () => {
+    expect(report.engine_version).toBe("0.1.7");
     expect(report.data_origin).toBe("synthetic");
     expect(presentSections(scope).map((s) => s.id)).toEqual(["s-sensitivity", "s-duplicates", "s-clustering", "s-confounding", "s-shift", "s-association", "s-probe"]);
   });
@@ -91,7 +93,8 @@ describe("real engine on the demo synthetic sets", () => {
 
 describe("real engine on dropped X/y/metadata files", () => {
   const require = createRequire(import.meta.url);
-  const io = require("@nirs4all/io-wasm") as IoRuntime;
+  ioOwner.initSync({ module: readIoBytes(new URL("../vendor/io-browser-owner/nirs4all_io_wasm_bg.wasm", import.meta.url)) });
+const io: IoRuntime = ioOwner;
   const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
 
   it("accepts the IO metadata table and analyses its associations", () => {

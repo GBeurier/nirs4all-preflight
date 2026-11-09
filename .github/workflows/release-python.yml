@@ -1,0 +1,194 @@
+name: Python wheels
+on:
+  push:
+    branches: ['integration/release-20261109']
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Verify version and tag identity
+        id: version
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+          project = tomllib.loads(Path('bindings/python/pyproject.toml').read_text())['project']
+          cargo = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']
+          version = project['version']
+          assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version)
+          assert version == cargo['version']
+          facade = Path('bindings/python/src/nirs4all_preflight/__init__.py').read_text()
+          assert re.search(r'^__version__ = "' + re.escape(version) + r'"$', facade, re.M)
+          if os.environ['EVENT'] == 'push' and os.environ['REF_TYPE'] == 'tag':
+              assert os.environ['REF_NAME'] == 'v' + version
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('version=' + version, file=output)
+          PY
+  build-linux:
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {id: linux-x64, os: ubuntu-24.04, arch: x86_64}
+          - {id: linux-arm64, os: ubuntu-24.04-arm, arch: aarch64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build and repair in manylinux 2.28
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work \
+            -e ARCH "quay.io/pypa/manylinux_2_28_${ARCH}" bash -euxo pipefail -c '
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.91.1
+              export PATH="$HOME/.cargo/bin:$PATH"
+              PY=/opt/python/cp311-cp311/bin/python
+              "$PY" -m pip install build==1.2.2.post1 setuptools==80.9.0 wheel==0.45.1
+              cargo build --locked --release -p nirs4all-preflight-capi
+              "$PY" scripts/stage-python.py
+              "$PY" -m build --wheel --no-isolation --outdir dist-raw bindings/python
+              auditwheel repair --only-plat --plat "manylinux_2_28_${ARCH}" -w dist dist-raw/*.whl
+              auditwheel show dist/*.whl
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wheel-${{ matrix.id }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+  build-native:
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {id: macos-arm64, os: macos-15, deployment: '11.0', platform: macosx-11.0-arm64}
+          - {id: macos-x64, os: macos-15-intel, deployment: '11.0', platform: macosx-11.0-x86_64}
+          - {id: windows-x64, os: windows-2022, deployment: '', platform: ''}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+          architecture: ${{ endsWith(matrix.id, 'arm64') && 'arm64' || 'x64' }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.91.1
+      - name: Build native wheel
+        shell: bash
+        env:
+          DEPLOYMENT: ${{ matrix.deployment }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT"
+            export _PYTHON_HOST_PLATFORM="$PLATFORM"
+          fi
+          python -m pip install build==1.2.2.post1 setuptools==80.9.0 wheel==0.45.1
+          cargo build --locked --release -p nirs4all-preflight-capi
+          python scripts/stage-python.py
+          python -m build --wheel --no-isolation --outdir dist bindings/python
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wheel-${{ matrix.id }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+  test:
+    needs: [build-linux, build-native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {id: linux-x64, os: ubuntu-24.04}
+          - {id: linux-arm64, os: ubuntu-24.04-arm}
+          - {id: macos-arm64, os: macos-15}
+          - {id: macos-x64, os: macos-15-intel}
+          - {id: windows-x64, os: windows-2022}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+          architecture: ${{ endsWith(matrix.id, 'arm64') && 'arm64' || 'x64' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: wheel-${{ matrix.id }}
+          path: wheelhouse
+      - name: Install exact artifact and test installed binding
+        shell: bash
+        env:
+          PYTHONPATH: ''
+          PROFILE: ${{ matrix.id }}
+        run: |
+          unset N4PF_LIBRARY_PATH N4M_LIBRARY_PATH N4M_LIB_PATH
+          python -m venv "$RUNNER_TEMP/wheel-test"
+          if [ "$RUNNER_OS" = Windows ]; then PY="$RUNNER_TEMP/wheel-test/Scripts/python.exe"; else PY="$RUNNER_TEMP/wheel-test/bin/python"; fi
+          "$PY" -m pip install pytest==8.3.5
+          "$PY" - <<'PY'
+          import glob, os, re, subprocess, sys, zipfile
+          wheels = glob.glob('wheelhouse/*.whl')
+          assert len(wheels) == 1, wheels
+          patterns = {
+              'linux-x64': r'manylinux_2_28_x86_64(?:\.manylinux_\d+_\d+_x86_64)*',
+              'linux-arm64': r'manylinux_2_28_aarch64(?:\.manylinux_\d+_\d+_aarch64)*',
+              'macos-x64': r'macosx_11_0_x86_64', 'macos-arm64': r'macosx_11_0_arm64',
+              'windows-x64': r'win_amd64',
+          }
+          assert re.search(r'-py3-none-' + patterns[os.environ['PROFILE']] + r'\.whl$', wheels[0]), wheels
+          with zipfile.ZipFile(wheels[0]) as z:
+              metadata, = [n for n in z.namelist() if n.endswith('.dist-info/WHEEL')]
+              assert 'Root-Is-Purelib: false' in z.read(metadata).decode()
+          subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--only-binary=:all:', wheels[0]])
+          PY
+          "$PY" -m pip check
+          "$PY" -m pytest -s --import-mode=importlib bindings/python/tests/test_binding.py
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [identity, test]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Verify tested wheel set
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          files = list(Path('dist').iterdir())
+          patterns = [r'manylinux_2_28_x86_64(?:\.manylinux_\d+_\d+_x86_64)*',
+                      r'manylinux_2_28_aarch64(?:\.manylinux_\d+_\d+_aarch64)*',
+                      r'macosx_11_0_x86_64', r'macosx_11_0_arm64', r'win_amd64']
+          prefix = re.escape('nirs4all_preflight-' + os.environ['VERSION'] + '-py3-none-')
+          assert len(files) == len(patterns), files
+          for pattern in patterns:
+              assert sum(bool(re.fullmatch(prefix + pattern + r'\.whl', f.name)) for f in files) == 1, files
+          PY
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086

@@ -48,9 +48,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.44"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4f4fd800766c7a01a9f6605226556a8e8f5fbd7df498457b5c8ecc8b9029080"
+checksum = "7c169228bc44da427711b2122aa22f6f4f23d3f9752c02ad35c09efb5f40f502"
 dependencies = [
  "indexmap",
  "n4m",
@@ -148,9 +148,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "n4m"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d036a20611f734738741f0b70e8e0393a7fbf6dcf06bb41051a4eeae6d880b8"
+checksum = "dfb4564672f8d6c167d3e292d0eeed2e6029f97841efd966accbce4b724d48a8"
 dependencies = [
  "cc",
  "libloading",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dag-ml-core",
  "libloading",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-capi"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "nirs4all-preflight",
  "serde_json",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "nirs4all-preflight",
  "serde_json",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "nirs4all-preflight-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",

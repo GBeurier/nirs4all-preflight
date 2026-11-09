@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 __all__ = ["analyze", "validate", "report_html", "__version__"]
 
 class _Buffer(ctypes.Structure):
@@ -65,15 +65,22 @@ def validate(dataset: dict[str, Any]) -> dict[str, Any]:
 
 
 def analyze(dataset: dict[str, Any], *, methods_library: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Qualify development data. No inputs leave the local process.
+    """Qualify development data using Methods, locally in the current process.
 
-    Bundled Methods is used by default. Set N4M_LIBRARY_PATH or pass an explicit
-    ABI >=2.20 library. Advanced protocols remain explicitly unavailable.
+    An explicit path or N4M_LIBRARY_PATH takes precedence over the installed
+    Methods distribution. The latter exposes its loaded native library path.
     """
-    bundled = Path(__file__).parent / "_native" / ("n4m.dll" if sys.platform == "win32" else "libn4m.dylib" if sys.platform == "darwin" else "libn4m.so.2")
     selected = os.fspath(methods_library) if methods_library is not None else os.environ.get("N4M_LIBRARY_PATH")
-    if selected is None and bundled.exists():
-        selected = str(bundled)
+    if selected is None:
+        import n4m
+
+        selected = n4m.library_path()
+        if not selected:
+            raise RuntimeError("The installed Methods distribution did not report its library path")
+        native = Path(selected).resolve()
+        package = Path(n4m.__file__).resolve().parent
+        if not (native.is_relative_to(package / "lib") or native.is_relative_to(package.parent / "nirs4all_methods.libs")):
+            raise RuntimeError("Methods did not load its installed distribution library; use methods_library for an explicit override")
     return json.loads(_call("n4pf_analyze_json", dataset, selected))
 
 

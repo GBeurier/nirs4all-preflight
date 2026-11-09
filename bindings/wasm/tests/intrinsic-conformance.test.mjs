@@ -5,13 +5,19 @@ import { createQualificationRuntime } from '../index.js';
 
 const fixture = JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/intrinsic_legacy_v1.json', import.meta.url), 'utf8'));
 const native = JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/intrinsic_native_v1.json', import.meta.url), 'utf8'));
+// The captured native evidence and the selected WASM provider have independent identities.
+const frozenMethodsVersion = '1.3.13+abi.2.20.0';
+const currentMethodsVersion = '1.3.15+abi.2.22.0';
 const runtime = await createQualificationRuntime({
   wasmModule: await readFile(new URL('../native/nirs4all_preflight_wasm_bg.wasm', import.meta.url)),
   dagMlWasmModule: await readFile(new URL('../node_modules/dag-ml-wasm/dag_ml_wasm_bg.wasm', import.meta.url)),
 });
 
 function close(actual, expected, path = '') {
-  if (typeof expected === 'number') {
+  if (path.endsWith('.value.backend_version') || path.endsWith('.parameters.backend_version')) {
+    assert.equal(expected, frozenMethodsVersion, `${path}: frozen provenance`);
+    assert.equal(actual, currentMethodsVersion, `${path}: current provenance`);
+  } else if (typeof expected === 'number') {
     assert.equal(typeof actual, 'number', path);
     assert.ok(Number.isFinite(actual), path);
     const tolerance = path.includes('.sam_') ? 2e-10 : 2e-12 + 2e-11 * Math.abs(expected);

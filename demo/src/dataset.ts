@@ -1,26 +1,9 @@
 import type { DetectedTable } from "./dataset-io";
 import type { EngineInput, InputMetadata, InputOptions, InputSample, InputSource, InputTarget, Partition, RepetitionType } from "./input";
 
-/** IO matrix: row-major values, a missing one is NaN. */
-export interface IoMatrix { n_rows: number; n_cols: number; data: Float64Array }
-export interface IoBlock {
-  n_samples: number;
-  source_ids: string[];
-  x: IoMatrix[];
-  feature_headers: string[][];
-  header_units: string[];
-  signal_types: (string | null)[];
-  y?: IoMatrix | null;
-  y_headers: string[];
-  y_categorical?: Record<string, { categories: string[] }>;
-  metadata?: { columns: { name: string; values: (string | number | null)[] }[] } | null;
-}
-export interface AssembledDataset {
-  assembled_schema_version: number;
-  name: string;
-  blocks: Record<string, IoBlock>;
-  identity?: { provenance: { sample_id?: string; observation_id?: string; group_id?: string } };
-}
+import { numericCoordinates } from "../vendor/io-browser-owner/numeric-wire.mjs";
+import type { AssembledBlock as IoBlock, AssembledDataset } from "../vendor/io-browser-owner/types/nirs4all-io";
+export type { AssembledDataset } from "../vendor/io-browser-owner/types/nirs4all-io";
 
 const numberOrNull = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? value : null;
 const partitionOf = (name: string): Partition => {
@@ -47,7 +30,7 @@ function sampleMetadata(rows: { sampleId: string; block: IoBlock; row: number }[
   const columns: InputMetadata["columns"] = [];
   const values: InputMetadata["values"] = {};
   for (const name of names) {
-    const perSample = new Map<string, string | number>();
+    const perSample = new Map<string, string | number | boolean>();
     let consistent = true;
     for (const { sampleId, block, row } of rows) {
       const value = block.metadata?.columns.find((c) => plain(c.name) === name)?.values[row];
@@ -61,7 +44,7 @@ function sampleMetadata(rows: { sampleId: string; block: IoBlock; row: number }[
     // A text column with one level per sample is an identifier, not a factor.
     if (!continuous && perSample.size > 1 && new Set(perSample.values()).size === perSample.size) continue;
     columns.push({ name, kind: continuous ? "continuous" : "categorical" });
-    for (const [sampleId, value] of perSample) (values[sampleId] ??= {})[name] = continuous ? value : String(value);
+    for (const [sampleId, value] of perSample) (values[sampleId] ??= {})[name] = continuous && typeof value === "number" ? value : String(value);
   }
   return columns.length ? { columns, values } : undefined;
 }
@@ -80,7 +63,7 @@ export interface RepetitionDeclaration {
 
 /** Contract adapter only. IO already decoded, aligned and partitioned every row. */
 export function toEngineInput(full: AssembledDataset, sourceIds: readonly string[] = [], repetition?: RepetitionDeclaration): EngineInput {
-  if (full.assembled_schema_version !== 2) throw new Error("Expected nirs4all-io assembled dataset v2.");
+  if (full.assembled_schema_version !== 3) throw new Error("Expected nirs4all-io assembled dataset v3.");
   const sources: InputSource[] = [];
   const samples = new Map<string, InputSample>();
   const targets = new Map<string, InputTarget>();
@@ -88,11 +71,11 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
   const metadataRows: { sampleId: string; block: IoBlock; row: number }[] = [];
   let repetitionFound = false;
   // Spectral headers of each source: a band-index axis must still describe the same bands everywhere.
-  const sourceHeaders: string[][] = [];
-  for (const [part, block] of Object.entries(full.blocks)) {
+  const sourceHeaders: (readonly string[])[] = [];
+  for (const [part, block] of full.partition_order.map((part) => [part, full.blocks[part]!] as const)) {
     if (!block.n_samples) continue;
     const partition = partitionOf(part);
-    const metadata = (name: string | undefined, row: number): string | undefined => {
+    const metadata = (name: string | null | undefined, row: number): string | undefined => {
       if (!name) return undefined;
       const value = block.metadata?.columns.find((c) => c.name === name)?.values[row];
       return value === null || value === undefined || value === "" ? undefined : String(value);
@@ -128,14 +111,16 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
       samples.set(sample_id, sample);
     }
     block.x.forEach((matrix, index) => {
-      if (matrix.n_rows !== block.n_samples || matrix.data.length !== matrix.n_rows * matrix.n_cols) throw new Error("Misaligned IO feature matrix.");
+      if (matrix.n_rows !== block.n_samples || matrix.data.length !== matrix.n_rows * matrix.n_cols || matrix.validity.length !== matrix.data.length) throw new Error("Misaligned IO feature matrix.");
       const headers = block.feature_headers[index] ?? [];
-      const values = headers.map(Number);
-      // The engine needs a strictly monotonic axis; concatenated detector ranges fall back to the band index.
+      const ownerAxis = block.feature_axes[index]?.[0];
+      const coordinates = ownerAxis?.coordinates;
+      const values = coordinates?.kind === "numeric" ? Array.from(numericCoordinates(coordinates, matrix.n_cols)) : [];
+      // Preflight requires a monotonic numeric axis; retain the established index mapping for other bands.
       const monotonic = values.every((v, i) => i === 0 || v > values[i - 1]!) || values.every((v, i) => i === 0 || v < values[i - 1]!);
-      const numericAxis = headers.length === matrix.n_cols && headers.every((h) => h.trim() !== "" && Number.isFinite(Number(h))) && monotonic;
+      const numericAxis = values.length === matrix.n_cols && monotonic;
       const axis = numericAxis ? values : Array.from({ length: matrix.n_cols }, (_, i) => i);
-      const unit = numericAxis ? (block.header_units[index] || "unknown") : "index";
+      const unit = numericAxis ? (ownerAxis?.unit || block.header_units[index] || "unknown") : "index";
       let source = sources[index];
       if (!source) {
         source = { source_id: `source_${index + 1}`, observation_ids: [], sample_ids: [], x: [], axis, axis_unit: unit, repetition_types: [] };
@@ -149,27 +134,30 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
       for (let row = 0; row < matrix.n_rows; row++) {
         source.sample_ids.push(ids[row]!);
         source.observation_ids.push(JSON.stringify([index, part, row, metadata(identity?.observation_id, row) ?? null]));
-        source.x.push(Array.from(matrix.data.subarray(row * matrix.n_cols, (row + 1) * matrix.n_cols), numberOrNull));
+        source.x.push(Array.from({ length: matrix.n_cols }, (_, col) => { const cell = row * matrix.n_cols + col; return matrix.validity[cell] ? numberOrNull(matrix.data[cell]) : null; }));
         // A per-row `repetition_type` column wins over the type declared for the repetition column.
         const kind = metadata("repetition_type", row);
         source.repetition_types!.push((["rescan", "repositioning", "repreparation", "biological"] as string[]).includes(kind ?? "") ? kind as RepetitionType : repetition && declared[row] ? repetition.type : "unknown");
       }
     });
     if (block.y) {
-      if (block.y.n_rows !== block.n_samples || block.y.data.length !== block.n_samples * block.y.n_cols) throw new Error("Misaligned IO target matrix.");
-      for (let col = 0; col < block.y.n_cols; col++) {
-        const name = block.y_headers[col] ?? `target_${col + 1}`;
-        const categories = block.y_categorical?.[name]?.categories;
-        const kind = categories ? "categorical" : "continuous";
+      const y = block.y;
+      if (y.data.length !== block.n_samples * y.columns.length) throw new Error("Misaligned IO target matrix.");
+      for (let col = 0; col < y.columns.length; col++) {
+        const column = y.columns[col]!;
+        if (column.block.n_rows !== block.n_samples || column.block.n_cols !== 1 || column.block.validity.length !== block.n_samples) throw new Error("Misaligned IO target matrix.");
+        const name = column.name;
+        const categories = column.kind === "classification_string" ? block.y_categorical[name]?.categories : undefined;
+        const kind = column.kind === "classification_string" ? "categorical" : "continuous";
         let target = targets.get(name);
         if (!target) { target = { target_id: name, kind, values: [] }; targets.set(name, target); }
         if (target.kind !== kind) throw new Error(`Target kind differs across partitions: ${name}`);
-        for (let row = 0; row < block.y.n_rows; row++) {
-          // A missing reference is no reference: each target keeps its own samples.
-          const value = numberOrNull(block.y.data[row * block.y.n_cols + col]);
-          const category = categories && value !== null ? categories[value] ?? null : null;
-          if (value === null || (categories && category === null)) continue;
-          target.values.push({ sample_id: ids[row]!, status: "exact", ...(categories ? { category } : { value }) });
+        for (let row = 0; row < block.n_samples; row++) {
+          const value = column.block.validity[row] ? numberOrNull(y.data[row * y.columns.length + col]) : null;
+          if (value === null) continue;
+          const category = column.kind === "classification_string" ? categories?.[value] : undefined;
+          if (column.kind === "classification_string" && category === undefined) throw new Error(`Missing IO category label for target: ${name}`);
+          target.values.push({ sample_id: ids[row]!, status: "exact", ...(kind === "categorical" ? { category: category! } : { value }) });
         }
       }
     }
