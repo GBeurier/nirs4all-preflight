@@ -24,7 +24,7 @@ cargo run -p nirs4all-preflight-cli -- validate examples/first_run.json
 ```
 
 - Single test: `cargo test -p nirs4all-preflight --test confounding <name>`.
-- Native-provider tests (`native_provider`, `clustering_golden`, `confounding`, `domain_shift`, `repeatability`) silently skip their analytic part when `N4M_LIBRARY_PATH` is unset. Methods **ABI ≥ 2.20** is required; CI builds `GBeurier/nirs4all-methods` at the commit pinned in `ci.yml` (`cmake --preset dev-release && cmake --build --preset dev-release --target n4m_c`). Older local builds in `../nirs4all-methods/build/` may be below 2.20.
+- Native-provider tests (`native_provider`, `clustering_golden`, `confounding`, `domain_shift`, `repeatability`) silently skip their analytic part when `N4M_LIBRARY_PATH` is unset. The selected Methods **1.3.15 / ABI 2.22** cohort is built by CI from the commit pinned in `ci.yml` (`cmake --preset dev-release && cmake --build --preset dev-release --target n4m_c`). Older local builds in `../nirs4all-methods/build/` may lack that selected ABI surface.
 - CLI: `n4pf <capabilities|validate|analyze> [input.json|-] [--methods-library libn4m.so] [--html out.html]`.
 
 WASM / npm binding (`bindings/wasm`, excluded from the Cargo workspace, needs `wasm-pack` and the `wasm32-unknown-unknown` target):
@@ -44,7 +44,7 @@ npm run build --prefix demo            # tsc --noEmit && vite build
 npm run preview --prefix demo && CHROME=/path/to/chrome npm run test:browser --prefix demo
 ```
 
-Python (`bindings/python`): build `nirs4all-preflight-capi` in release, then `python scripts/stage-python.py --methods-library /path/to/libn4m.so.2` copies both shared libraries into `src/nirs4all_preflight/_native/` (never commit them); tests are in `bindings/python/tests/`. `N4PF_LIBRARY_PATH` / `N4M_LIBRARY_PATH` override the bundled libraries.
+Python (`bindings/python`): build `nirs4all-preflight-capi` in release, then `python scripts/stage-python.py` copies the C ABI library into `src/nirs4all_preflight/_native/` (never commit it); the pinned Methods Python distribution supplies its own library; tests are in `bindings/python/tests/`. `N4PF_LIBRARY_PATH` / `N4M_LIBRARY_PATH` override the selected native libraries.
 
 ## Architecture
 
@@ -60,7 +60,7 @@ Bindings stay thin:
 - `bindings/wasm` — `src/lib.rs` exposes the engine via wasm-bindgen; `index.js` (`createQualificationRuntime`) implements the provider callbacks by calling `@nirs4all/methods` and `dag-ml-wasm`. Same Rust protocols as native; only the kernel transport differs.
 - `bindings/python` — ctypes facade (`analyze`, `validate`, `report_html`) over the C ABI; no calculations in Python.
 
-Demo data flow: files → `@nirs4all/io-wasm` + `@nirs4all/formats-wasm` (`src/dataset-io.ts`, with `scripts/browser-wasm.ts` adapting their Node-target glue for the browser) → `src/dataset.ts` maps the IO v2 contract to `QualificationInput` → `src/engine.ts` / `engine.worker.ts` run this checkout’s `@nirs4all/preflight` (`file:../bindings/wasm`; build the WASM binding before demo checks) in a worker (cancellation = worker termination) → `nirs4all-ui/qualification` components and selectors render the report. `src/checks.ts` turns engine counts into control points (zero → OK, never a calibrated threshold). `nirs4all-ui` uses the vendored `demo/vendor/nirs4all-ui-0.2.2-local.20261107.2.tgz` (SHA-256 `237a3bf306bdb6fec5088783c425381bcf125540ba7ad25e1aec0604198d7728`) with `demo/vendor/nirs4all-ui-0.2.2-local.20261107.2.provenance.json`; the Preflight binding is local `file:../bindings/wasm`.
+Demo data flow: files → the source-built IO browser-owner snapshot in `demo/vendor/io-browser-owner` + `@nirs4all/formats-wasm` (`src/dataset-io.ts`; `scripts/browser-wasm.ts` adapts only Formats' Node-target glue) → `src/dataset.ts` maps the IO schema 3 contract to `QualificationInput`, using the snapshot's owner `numericCoordinates` helper for exact axes → `src/engine.ts` / `engine.worker.ts` run this checkout’s `@nirs4all/preflight` (`file:../bindings/wasm`; build the WASM binding before demo checks) in a worker (cancellation = worker termination) → `nirs4all-ui/qualification` components and selectors render the report. The IO snapshot comes from tag `v0.3.1` / commit `28e47c9d6491b83a31dd36a25f2b0a35eeab9860`; its `PROVENANCE.json` records the unpublished browser profile, which is distinct from the registry package. `src/checks.ts` turns engine counts into control points (zero → OK, never a calibrated threshold). `nirs4all-ui` uses the vendored `demo/vendor/nirs4all-ui-0.2.2-local.20261107.2.tgz` (SHA-256 `237a3bf306bdb6fec5088783c425381bcf125540ba7ad25e1aec0604198d7728`) with `demo/vendor/nirs4all-ui-0.2.2-local.20261107.2.provenance.json`; the Preflight binding is local `file:../bindings/wasm`.
 
 ## Testing data and goldens
 
@@ -68,4 +68,4 @@ Goldens live in `crates/nirs4all-preflight/tests/fixtures/` (`clustering_v4_gold
 
 ## Releases
 
-Versions are plain `X.Y.Z`, aligned across crates, npm and the Python wheel. Upstream pins (dag-ml 0.3.44, Methods 1.3.13 / ABI 2.20) appear in `Cargo.toml`s, `bindings/wasm/package.json`, `ci.yml` and the README — change them together. Release evidence goes in `docs/implementation/` (`RELEASE_MANIFEST.json`, `VALIDATION_*.md`). `docs/` design documents (SPECIFICATION, ROADMAP, SYNTHESE, DECISIONS_REVUES, reviews) are the preserved design record; `docs/SPECIFICATION.md` is the scientific and integration reference.
+Versions are plain `X.Y.Z`, aligned across crates, npm and the Python wheel. Current upstream pins (dag-ml 0.4.0, Methods 1.3.15 / ABI 2.22) appear in `Cargo.toml`s, `bindings/wasm/package.json`, `ci.yml` and the README — change them together. Release evidence goes in `docs/implementation/` (`RELEASE_MANIFEST.json`, `VALIDATION_*.md`). `docs/` design documents (SPECIFICATION, ROADMAP, SYNTHESE, DECISIONS_REVUES, reviews) are the preserved design record; `docs/SPECIFICATION.md` is the scientific and integration reference.

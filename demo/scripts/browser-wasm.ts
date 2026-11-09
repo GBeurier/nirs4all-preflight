@@ -3,12 +3,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Plugin } from "vite";
 
-// The published IO/Formats packages currently ship wasm-bindgen's Node loader.
+// The Formats package currently ships wasm-bindgen's Node loader.
 // Keep their generated glue and binaries; replace only the filesystem bootstrap.
 export function browserWasm(): Plugin {
   const require = createRequire(import.meta.url);
   const packages: Record<string, string> = {
-    "virtual:nirs4all-io": "@nirs4all/io-wasm",
     "virtual:nirs4all-formats": "@nirs4all/formats-wasm",
   };
   return {

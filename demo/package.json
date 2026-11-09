@@ -13,8 +13,8 @@
     "test:browser": "node scripts/dataset-smoke.mjs"
   },
   "dependencies": {
-    "@nirs4all/formats-wasm": "0.2.14",
-    "@nirs4all/io-wasm": "0.2.14",
+    "@nirs4all/formats-wasm": "0.2.16",
+    "@nirs4all/io-wasm": "0.3.1",
     "@nirs4all/preflight": "file:../bindings/wasm",
     "idb-keyval": "6.2.2",
     "nirs4all-ui": "file:vendor/nirs4all-ui-0.2.2-local.20261107.2.tgz",

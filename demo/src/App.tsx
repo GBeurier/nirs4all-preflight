@@ -12,7 +12,7 @@ import { importFiles, loadDatasetRuntime, type DetectedTable } from "./dataset-i
 import type { RepetitionDeclaration } from "./dataset";
 import { nextPaint, type LoadContext } from "./DatasetPicker";
 import { saveDataset } from "./dataset-store";
-import type { NamedFile } from "@nirs4all/io-wasm/types";
+import type { NamedFile } from "../vendor/io-browser-owner/types/nirs4all-io";
 
 export type Run = { state: "idle" } | { state: "running" } | { state: "cancelled" } | { state: "error"; code: string; message: string };
 export type Origin = {
