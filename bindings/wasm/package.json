@@ -1,6 +1,6 @@
 {
   "name": "@nirs4all/preflight",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Rust NIRS dataset qualification with reusable Methods diagnostics",
   "type": "module",
   "license": "(CECILL-2.1 OR AGPL-3.0-or-later)",
@@ -27,7 +27,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "dependencies": {
-    "@nirs4all/methods": "^1.3.0",
+    "@nirs4all/methods": "~1.4.1",
     "dag-ml-wasm": "^0.4.0"
   },
   "scripts": {

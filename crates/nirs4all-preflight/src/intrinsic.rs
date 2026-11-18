@@ -11,13 +11,38 @@ const REFERENCE: &[&str] = &[
     "affine_abs_gain_delta",
     "affine_residual_rms",
 ];
+/// Spikes and jumps relative to the other spectra at the same band position.
 const EVENTS: &[&str] = &[
     "jump_count",
     "jump_fraction",
     "spike_count",
     "spike_fraction",
-    "declared_clip_count",
-    "declared_clip_fraction",
+];
+const EVENT_GLOBALS: &[&str] = &[
+    "global_jump_count",
+    "global_jump_eligible",
+    "global_jump_fraction",
+    "global_spike_count",
+    "global_spike_eligible",
+    "global_spike_fraction",
+];
+/// Fewest spectra defining a band position before its population scale is used.
+const EVENT_MIN_SPECTRA: i64 = 5;
+/// Per-band event counts, for a summary by wavelength.
+const EVENT_BANDS: &[&str] = &["spike_band", "jump_band"];
+/// Declared sensor-limit occupancy, from the per-spectrum events protocol.
+const CLIPS: &[&str] = &["declared_clip_count", "declared_clip_fraction"];
+const CLIP_GLOBALS: &[&str] = &[
+    "observed_extrema_occupancy_fraction",
+    "global_declared_clip_count",
+    "global_declared_clip_eligible",
+    "global_declared_clip_fraction",
+];
+const NOISE_GLOBALS: &[&str] = &[
+    "global_noise_sigma",
+    "global_signal_mean_abs",
+    "global_signal_noise_ratio",
+    "global_signal_noise_db",
 ];
 const PCA: &[&str] = &["pca_t2", "pca_q"];
 const NOISE: &[&str] = &[
@@ -32,6 +57,11 @@ struct Protocol<'a> {
     method: &'a str,
     version: &'a str,
     signals: &'a [&'a str],
+    globals: &'a [&'a str],
+    /// Per-band integer outputs `{name}_counts` / `{name}_evaluated`.
+    bands: &'a [&'a str],
+    /// Metric id suffix of the lossless transport evidence.
+    evidence: &'a str,
 }
 
 struct Context<'a, 's> {
@@ -85,27 +115,12 @@ fn status(code: i64) -> Result<(Availability, Option<&'static str>), ProviderErr
     })
 }
 
-fn global_names(family: &str) -> &'static [&'static str] {
-    match family {
-        "events" => &[
-            "observed_extrema_occupancy_fraction",
-            "global_jump_count",
-            "global_jump_eligible",
-            "global_jump_fraction",
-            "global_spike_count",
-            "global_spike_eligible",
-            "global_spike_fraction",
-            "global_declared_clip_count",
-            "global_declared_clip_eligible",
-            "global_declared_clip_fraction",
-        ],
-        "noise" => &[
-            "global_noise_sigma",
-            "global_signal_mean_abs",
-            "global_signal_noise_ratio",
-            "global_signal_noise_db",
-        ],
-        _ => &[],
+/// `spike_band` -> `global_spike_band_counts`: a dataset-level vector, not a per-observation signal.
+fn band_metric(band: &str) -> &'static str {
+    match band {
+        "spike_band" => "global_spike_band_counts",
+        "jump_band" => "global_jump_band_counts",
+        _ => unreachable!("declared band output"),
     }
 }
 fn global_status(output: &ProcedureDiagnostics, name: &str) -> Result<i64, ProviderError> {
@@ -298,8 +313,18 @@ fn publish(
             .iter()
             .map(|signal| normalize_signal(&output, signal, rows.len()))
             .collect::<Result<Vec<_>, _>>()?;
-        for name in global_names(protocol.family) {
+        for name in protocol.globals.iter().copied() {
             global_status(&output, name)?;
+        }
+        for band in protocol.bands {
+            for suffix in ["counts", "evaluated"] {
+                let values = integers(&output, &format!("{band}_{suffix}"))?;
+                if values.len() != source.axis.len()
+                    || values.iter().any(|&v| v < 0 || v as usize > rows.len())
+                {
+                    return Err(error());
+                }
+            }
         }
         Ok((output, normalized))
     });
@@ -326,7 +351,12 @@ fn publish(
                     report.metrics.push(metric);
                 }
             }
-            for name in global_names(protocol.family) {
+            for name in protocol
+                .globals
+                .iter()
+                .copied()
+                .chain(protocol.bands.iter().map(|band| band_metric(band)))
+            {
                 let mut metric = Metric::unavailable(
                     &format!("intrinsic.{}.{name}", protocol.family),
                     if rows.is_empty() {
@@ -357,7 +387,7 @@ fn publish(
     // Retain every named native output (including counts/masks and sparse
     // indices) as transport evidence, independently of signal availability.
     let mut evidence = Metric::computed(
-        &format!("intrinsic.{}.protocol_evidence", protocol.family),
+        &format!("intrinsic.{}.{}", protocol.family, protocol.evidence),
         json!(output),
         Some(&source.source_id),
         None,
@@ -377,7 +407,31 @@ fn publish(
         json!("lossless_methods_transport_evidence_not_a_quality_verdict"),
     );
     report.metrics.push(evidence);
-    for name in global_names(protocol.family) {
+    for band in protocol.bands {
+        let counts = integers(&output, &format!("{band}_counts")).expect("validated band counts");
+        let evaluated =
+            integers(&output, &format!("{band}_evaluated")).expect("validated band counts");
+        let mut metric = Metric::computed(
+            &format!("intrinsic.{}.{}", protocol.family, band_metric(band)),
+            json!({ "axis": source.axis, "counts": counts, "evaluated": evaluated }),
+            Some(&source.source_id),
+            None,
+        );
+        decorate(&mut metric, protocol, source, options);
+        metric.unit = Some("count".into());
+        metric.parameters.insert(
+            "attribution".into(),
+            json!("an event is counted at the middle band of its difference stencil (second differences) or at the upper band of its pair (first differences)"),
+        );
+        metric
+            .denominators
+            .insert("n_observations".into(), rows.len());
+        metric
+            .parameters
+            .insert("backend_version".into(), json!(output.backend_version));
+        report.metrics.push(metric);
+    }
+    for name in protocol.globals.iter().copied() {
         let code = global_status(&output, name).expect("validated global status");
         let (availability, reason) = status(code).expect("validated global status");
         let id = format!("intrinsic.{}.{name}", protocol.family);
@@ -544,6 +598,9 @@ pub(super) fn analyze(
                 method: "diagnostics.spectral_reference_qc",
                 version: "spectral-reference-pairwise-valid.v1",
                 signals: REFERENCE,
+                globals: &[],
+                bands: &[],
+                evidence: "protocol_evidence",
             },
             request,
             report,
@@ -571,6 +628,27 @@ pub(super) fn analyze(
             "outlier_threshold".into(),
             ProcedureParameter::Double(options.outlier_threshold),
         );
+        // Spikes and jumps are judged against the other spectra at the same
+        // band position: an absorption band shared by the population is not
+        // an event, whatever its curvature within one spectrum.
+        let mut population = request.clone();
+        population.parameters.insert(
+            "min_spectra".into(),
+            ProcedureParameter::Int(EVENT_MIN_SPECTRA),
+        );
+        run(
+            Protocol {
+                family: "events",
+                method: "diagnostics.spectral_population_events_qc",
+                version: "spectral-population-events.v1",
+                signals: EVENTS,
+                globals: EVENT_GLOBALS,
+                bands: EVENT_BANDS,
+                evidence: "protocol_evidence",
+            },
+            population,
+            report,
+        );
         request.parameters.insert(
             "clip_tolerance".into(),
             ProcedureParameter::Double(options.clip_tolerance),
@@ -590,7 +668,10 @@ pub(super) fn analyze(
                 family: "events",
                 method: "diagnostics.spectral_events_qc",
                 version: "spectral-events-declared-axis.v1",
-                signals: EVENTS,
+                signals: CLIPS,
+                globals: CLIP_GLOBALS,
+                bands: &[],
+                evidence: "clip_protocol_evidence",
             },
             request,
             report,
@@ -603,6 +684,9 @@ pub(super) fn analyze(
                 method: "diagnostics.spectral_noise_proxy",
                 version: "spectral-second-difference-mad-index.v1",
                 signals: NOISE,
+                globals: NOISE_GLOBALS,
+                bands: &[],
+                evidence: "protocol_evidence",
             },
             base.clone(),
             report,
@@ -649,6 +733,9 @@ pub(super) fn analyze(
                 method: "diagnostics.pca_reference_qc",
                 version: "pca-in-sample-t2-q.v1",
                 signals: PCA,
+                globals: &[],
+                bands: &[],
+                evidence: "protocol_evidence",
             },
             &request,
             &Context {
@@ -681,6 +768,9 @@ pub(super) fn analyze(
                 method: "diagnostics.local_density",
                 version: "euclidean-fixed-k-lof.v1",
                 signals: &["lof"],
+                globals: &[],
+                bands: &[],
+                evidence: "protocol_evidence",
             },
             request,
             report,

@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GBeurier/nirs4all-methods
-          ref: 41b5d4e02e2574a94cd9dad6fcfa6269573b5eed # Methods v1.3.15
+          ref: v1.4.1 # Methods 1.4.1 (ABI 2.24): spectral_population_events_qc
           path: upstream-methods
       - run: cmake --preset dev-release && cmake --build --preset dev-release --target n4m_c --parallel 2
         working-directory: upstream-methods

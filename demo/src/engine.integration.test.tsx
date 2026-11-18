@@ -44,8 +44,8 @@ const html = (node: ReactElement) => renderToStaticMarkup(node);
 describe("real engine on the demo synthetic sets", () => {
   const { report, scope } = analyze("clean");
 
-  it("is the 0.1.7 engine and labels the synthetic origin", () => {
-    expect(report.engine_version).toBe("0.1.7");
+  it("is the 0.2.0 engine and labels the synthetic origin", () => {
+    expect(report.engine_version).toBe("0.2.0");
     expect(report.data_origin).toBe("synthetic");
     expect(presentSections(scope).map((s) => s.id)).toEqual(["s-sensitivity", "s-duplicates", "s-clustering", "s-confounding", "s-shift", "s-association", "s-probe"]);
   });
@@ -130,9 +130,10 @@ const io: IoRuntime = ioOwner;
     // T²/Q ranks by the dataset's own p95 (about 5% exceed it by construction): never a control point
     expect(checks.some((c) => c.id === "atypical")).toBe(false);
     const events = checks.find((c) => c.id === "events");
-    // four bands are too few for the spike detector: its count stays unevaluated, never zero
+    // most rows share the same first difference, so the population spread of jumps is zero:
+    // the jump order is undefined and its count stays unevaluated, never zero
     expect(events?.status).not.toBe("ok");
-    expect(events?.detail).toMatch(/^— isolated spikes/);
+    expect(events?.detail).toMatch(/^0 isolated spikes and — jumps/);
   });
 
   it("measures technical repeatability once the repetition column is declared", () => {

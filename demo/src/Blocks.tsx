@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import {
+  SpectraExplorer,
   AvailabilityBadge,
   ChartDataTable,
   CheckList,
@@ -206,6 +207,32 @@ export function NoiseProxyCard({ t, locale, view, sourceId, axis }: Scope & { ax
         />
       ) : null}
       <Unavailable metrics={missing} locale={locale} />
+    </div>
+  );
+}
+
+/** Event counts by band (population-relative spikes and jumps), drawn against the spectral axis. */
+function EventBands({ t, locale, view, sourceId, unit }: Pick<Scope, "t" | "locale" | "view" | "sourceId"> & { unit: string }) {
+  const read = (id: string) => {
+    const metric = view.metrics.find((m) => m.sourceId === sourceId && m.id === `intrinsic.events.${id}` && m.status === "computed");
+    const value = metric?.value as { axis?: number[]; counts?: number[] } | undefined;
+    return value?.axis && value.counts && value.axis.length === value.counts.length ? { axis: value.axis, counts: value.counts } : null;
+  };
+  const spikes = read("global_spike_band_counts");
+  const jumps = read("global_jump_band_counts");
+  const axis = spikes?.axis ?? jumps?.axis;
+  if (!axis) return null;
+  const series = [
+    ...(spikes ? [{ id: t("qualitySpikes"), values: spikes.counts, color: "#e11d48", label: t("qualitySpikes") }] : []),
+    ...(jumps ? [{ id: t("qualityJumps"), values: jumps.counts, color: "#d97706", label: t("qualityJumps") }] : []),
+  ];
+  return (
+    <div className="card">
+      <h3 className="card-title">Where events occur</h3>
+      <Measured>{(w) => <SpectraExplorer axis={axis} axisUnit={unit} yLabel="spectra with an event" series={series} selected={[]} onSelect={() => undefined} title="Spike and jump counts by band" locale={locale} width={w} height={Math.min(260, Math.max(200, w * 0.32))} />}</Measured>
+      <ul className="n4q-legend">{series.map((s) => <li key={s.id}><span className="n4q-key-line" style={{ background: s.color }} aria-hidden="true" />{s.label}</li>)}</ul>
+      <p className="hint">Number of spectra with an event at each band. A narrow peak points to one wavelength region (a detector or splice artefact, a contaminant); events spread over the whole range point to individual noisy spectra. A spike also counts on its two neighbouring bands.</p>
+      <ChartDataTable locale={locale} caption="Spike and jump counts by band" columns={[t("bandCol"), t("qualitySpikes"), t("qualityJumps")]} rows={axis.map((x, i) => [cellNumber(x), cellNumber(spikes?.counts[i] ?? null), cellNumber(jumps?.counts[i] ?? null)])} />
     </div>
   );
 }
@@ -677,6 +704,7 @@ export function SpectralQualitySection({ t, locale, view, input, sourceId }: Sco
         <StatTile label={t("qualitySnr")} value={snr?.median !== null && snr?.median !== undefined ? `${n(snr.median, locale)} dB` : "—"} hint="Median over spectra of the mean absolute signal divided by its fine-scale noise estimate, in dB; higher means less fine-scale variation relative to the signal level. It depends on the instrument, band count, preprocessing and sample type, so compare it only between datasets acquired and processed alike. No calibrated reference values for named instruments are available." />
         <StatTile label="Distance from the mean spectrum (95th percentile)" value={n(distance?.p95, locale)} suffix={unit} hint={distance?.p95 != null ? fill(t("qualityDistanceHint"), { d: n(distance.p95, locale), level: level?.median != null ? `median mean absolute signal ${n(level.median, locale)} ${unit}` : "not available" }) : "—"} />
       </div>
+      <EventBands {...{ t, locale, view, sourceId }} unit={input.sources.find((s) => s.source_id === sourceId)?.axis_unit ?? ""} />
       {pcaReady ? (
         <div className="grid-3-2">
           <div className="card">
