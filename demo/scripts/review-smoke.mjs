@@ -31,11 +31,13 @@ try {
   await page.getByRole('button', { name: 'Re-run analysis', exact: true }).click();
   await complete();
   assert.equal(await page.locator('#data-spectra').getByRole('button', { name: 'batch', exact: true }).count(), 0);
-  await navigate('Diagnosis');
+  await navigate('Diagnostics');
   assert.equal(await page.locator('#s-clustering').count(), 0);
   assert.equal(await page.locator('#s-quality [data-reference]').count(), 2);
   assert.match(await page.locator('#s-quality').innerText(), /spectra|Spectra/);
-  assert(await page.locator('.diag-side .count').count() > 0);
+  const alertDots = page.locator('.diag-side .alert-dot');
+  assert(await alertDots.count() > 0);
+  for (const level of await alertDots.evaluateAll((dots) => dots.map((dot) => dot.dataset.level))) assert(['critical', 'attention'].includes(level));
   const svg = await download(page.locator('#s-quality').getByRole('button', { name: 'Export plot (SVG)', exact: true }).first());
   assert.match(svg.name, /\.svg$/);
   assert.match(svg.text, /data-reference="x"/);
