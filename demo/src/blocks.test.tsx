@@ -145,17 +145,19 @@ describe("0.1.0 capability sections", () => {
   it("caps metadata with many levels and says where repeats come from", () => {
     const sampleIds = Array.from({ length: 24 }, (_, i) => `s${i}`);
     const many: EngineInput = { ...input,
-      samples: sampleIds.map((sample_id, i) => ({ sample_id, partition: "development", physical_sample_id: i < 2 ? "shared" : sample_id })),
+      samples: sampleIds.map((sample_id) => ({ sample_id, partition: "development" })),
       sources: [{ ...input.sources[0]!, observation_ids: sampleIds, sample_ids: sampleIds, x: sampleIds.map(() => axis.map(() => 1)) }],
       metadata: { columns: [{ name: "field", kind: "categorical" }], values: Object.fromEntries(sampleIds.map((id, i) => [id, { field: `plot ${i % 20}` }])) },
     };
     const out = html(<DataView t={scope("en").t} locale="en" input={many} sourceId="nir" targetId={null} report={null} />);
     expect(out).toContain("Show all 20 levels");
-    expect(out).toContain("No repetition column declared: each spectrum is its own sample.");
-    expect(out).toContain("2 spectra share an identifier with another row");
+    expect(out).toContain("each spectrum is its own sample.");
+    // Two scans of one sample, grouped by the detected identifier without a declaration.
+    const grouped: EngineInput = { ...many, sources: [{ ...many.sources[0]!, observation_ids: [...sampleIds, "extra"], sample_ids: [...sampleIds, "s0"], x: [...sampleIds, "s0"].map(() => axis.map(() => 1)) }] };
+    expect(html(<DataView t={scope("en").t} locale="en" input={grouped} sourceId="nir" targetId={null} report={null} />)).toContain("grouped as repeated acquisitions of undeclared type");
     const declared = html(<DataView t={scope("en").t} locale="en" input={many} sourceId="nir" targetId={null} report={null} repetition={{ column: "Sample_ID", type: "rescan" }} />);
     expect(declared).toContain("grouped by the declared column Sample_ID");
-    expect(declared).not.toContain("share an identifier");
+    expect(declared).not.toContain("undeclared type");
   });
 
   it("edits metadata roles per role beyond ten columns", () => {

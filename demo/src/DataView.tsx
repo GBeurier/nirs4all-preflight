@@ -139,8 +139,7 @@ export function DataView({ t, locale, input, sourceId, targetId, report, repetit
               <CompBar title={t("compPartitions")} segments={partitionSegments} locale={locale} />
               <CompBar title={t("compRepeats")} segments={repeatSegments} locale={locale} />
               <p className="hint comp-note">
-                {repetition ? fill(t("repeatsDeclared"), { column: repetition.column, type: t(`repType_${repetition.type}` as TextKey) }) : t("repeatsNone")}
-                {!repetition && comp.sharedIdentityRows ? ` ${fill(t("repeatsSharedIds"), { n: comp.sharedIdentityRows })}` : ""}
+                {repetition ? fill(t("repeatsDeclared"), { column: repetition.column, type: t(`repType_${repetition.type}` as TextKey) }) : t(comp.repeats.two + comp.repeats.more ? "repeatsIdentifier" : "repeatsNone")}
               </p>
               {metadata.filter((c) => c.kind === "categorical").map((column) => {
                 const counts = new Map<string, number>();
