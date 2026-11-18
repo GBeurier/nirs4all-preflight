@@ -195,7 +195,9 @@ export function defaultConfig(input: EngineInput): AnalysisConfig {
     eventThreshold: typeof input.options.intrinsic_qc?.outlier_threshold === "number" ? input.options.intrinsic_qc.outlier_threshold : 8,
     referenceTolerances: input.options.reference_contradiction_tolerances ?? Object.fromEntries(input.targets.filter((t) => t.kind === "categorical").map((t) => [t.target_id, { kind: "different_class" as const }])),
     quasiTolerance: input.options.quasi_duplicates?.tolerance ?? null,
-    quasiToleranceFromRepeats: input.options.quasi_tolerance_from_repeats ?? (input.options.quasi_duplicates === undefined && input.sources.some((s) => s.repetition_types?.some((r) => ["rescan", "repositioning", "repreparation"].includes(r)))),
+    // Opt-in: when repeat scans differ about as much as distinct samples (e.g. handheld
+    // instruments with few bands), a repeat-derived tolerance flags most pairs as near duplicates.
+    quasiToleranceFromRepeats: input.options.quasi_tolerance_from_repeats ?? false,
   };
 }
 

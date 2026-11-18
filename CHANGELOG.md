@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Browser demo: severity-coloured alert counts in the Diagnostics menu, consistent "Diagnostics" naming, the repeat-derived near-duplicate tolerance made opt-in, and clearer explanations of observation units (instrument × campaign), spike/jump flags, signal-to-noise, distance to the mean spectrum, the raw centred PCA and structure sensitivity, with a variance chart for the baseline correction.
 - Browser demo: Your data states where repeated acquisitions come from (a declared repetition column, or the sample identifier detected by nirs4all-io with an undeclared type).
 - Browser demo: one "Apply and rerun" action applies every setting, including a repetition column, keeps the other settings when the files are reassembled and refreshes Your data.
 - Browser demo: quick analysis families are selected by default (clustering, structure sensitivity and the validation probe are opt-in; domain comparisons run when a retained test set exists), and core checks are shown as a preliminary result while the selected analyses run.

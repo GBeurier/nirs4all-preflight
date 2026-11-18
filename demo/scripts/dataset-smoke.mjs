@@ -60,7 +60,7 @@ try {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   assert.equal(await page.getByLabel('Repetition column').inputValue(), 'Sample_ID');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('button', { name: /Diagnosis/ }).first().click();
+  await page.getByRole('button', { name: /Diagnostics/ }).first().click();
   await page.locator('#s-repeat .n4q-repeatability, #s-repeat svg').first().waitFor({ timeout: 10000 });
   assert.equal(await page.locator('#s-repeat .empty').count(), 0, 'Repeatability not measured after declaring the repetition column');
   await page.getByRole('button', { name: 'New dataset', exact: true }).click();

@@ -122,6 +122,8 @@ describe("browser analysis defaults", () => {
     const families = defaultConfig(input).families;
     expect(families).toMatchObject({ spectral_quality: true, repeatability: true, association: true, confounding: true, clustering: false, sensitivity: false, probe: false });
     expect(families.domain_shift).toBe(input.samples.some((s) => s.partition === "retained_test"));
+    // The repeat-derived near-duplicate tolerance is opt-in even with declared technical repeats.
+    expect(defaultConfig(syntheticInput("pitfalls")).quasiToleranceFromRepeats).toBe(false);
     input.options.analysis_families = { clustering: true };
     expect(defaultConfig(input).families.clustering).toBe(true);
   });
