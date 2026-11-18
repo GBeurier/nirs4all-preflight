@@ -22,7 +22,6 @@ import {
   extractRepeatability,
   extractRepeatabilityUncertainty,
   extractSamplePopulations,
-  evidenceCsv,
   extractTarget,
   formatEngineNumber,
   metricLabel,
@@ -35,8 +34,7 @@ import {
   withRepeatabilityUncertainty,
 } from "nirs4all-ui/qualification";
 import { NoiseProxyCard, presentSections } from "./Blocks";
-import { exportTables, metricKey } from "./export";
-import { downloadText } from "./download";
+import { downloadEvidenceCsv, exportTables, metricKey } from "./export";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
 import { Measured } from "./Measured";
@@ -346,7 +344,7 @@ export function EvidenceSection({ t, locale, view, initialQuery = "", fileName, 
         <span className="hint" role="status">{shown.length} shown · {selected.size} selected for export</span>
         <button className="btn btn-outline btn-sm" onClick={() => onSelect(shown.map(metricKey), true)}>Select shown</button>
         <button className="btn btn-outline btn-sm" onClick={() => onSelect(shown.map(metricKey), false)}>Deselect shown</button>
-        <button className="btn btn-outline btn-sm" disabled={!shown.some((m) => selected.has(metricKey(m)))} onClick={() => downloadText(fileName, "text/csv", `\uFEFF${evidenceCsv(shown.filter((m) => selected.has(metricKey(m))), locale)}`)}>{t("exportCsv")}</button>
+        <button className="btn btn-outline btn-sm" disabled={!shown.some((m) => selected.has(metricKey(m)))} onClick={() => downloadEvidenceCsv(fileName, shown.filter((m) => selected.has(metricKey(m))), locale)}>{t("exportCsv")}</button>
       </div>
       <div className="card card-flush"><EvidenceTable metrics={shown} provenance={view.provenance} locale={locale} selected={selected} metricKey={metricKey} onToggle={onToggle} /></div>
     </Section>
