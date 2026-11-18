@@ -21,6 +21,4 @@ bindings/wasm/native/
 demo/vendor/
 !/demo/vendor/
 /demo/vendor/*
-!/demo/vendor/nirs4all-ui-0.2.7+local.0f62842.tgz
-!/demo/vendor/nirs4all-ui-0.2.7+local.0f62842.provenance.json
 !/demo/vendor/io-browser-owner/

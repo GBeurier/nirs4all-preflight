@@ -17,7 +17,7 @@
     "@nirs4all/io-wasm": "^0.3.0",
     "@nirs4all/preflight": "file:../bindings/wasm",
     "idb-keyval": "6.2.2",
-    "nirs4all-ui": "file:vendor/nirs4all-ui-0.2.7+local.0f62842.tgz",
+    "nirs4all-ui": "^0.3.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
