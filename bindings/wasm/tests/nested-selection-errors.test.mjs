@@ -11,14 +11,16 @@ import { readFile } from 'node:fs/promises';
 import * as methods from '@nirs4all/methods';
 
 let failure;
-mock.module('dag-ml-wasm', {
-  exports: {
-    default: async () => {},
-    dag_ml_version: () => 'stand-in',
-    derive_controller_manifest_json: () => '{}',
-    execute_nested_selection_json: (_request, _manifests, _envelope, _invoke, metrics) => failure(metrics),
-  },
-});
+const standIn = {
+  dag_ml_version: () => 'stand-in',
+  derive_controller_manifest_json: () => '{}',
+  execute_nested_selection_json: (_request, _manifests, _envelope, _invoke, metrics) => failure(metrics),
+};
+const init = async () => {};
+// Node 24 takes `exports`; Node 22 only knows the older defaultExport/namedExports options.
+mock.module('dag-ml-wasm', Number(process.versions.node.split('.')[0]) >= 24
+  ? { exports: { default: init, ...standIn } }
+  : { defaultExport: init, namedExports: standIn });
 const { createQualificationRuntime } = await import('../index.js');
 const bytes = await readFile(new URL('../native/nirs4all_preflight_wasm_bg.wasm', import.meta.url));
 const runtime = await createQualificationRuntime({ wasmModule: bytes });
