@@ -38,3 +38,15 @@ jobs:
       - run: npm ci --prefix bindings/wasm
       - run: npm run build:native --prefix bindings/wasm
       - run: npm test --prefix bindings/wasm
+      - run: npm ci --prefix demo
+      - run: npm test --prefix demo
+      - run: npm run build --prefix demo
+      - name: Demo browser smokes
+        env:
+          CHROME: /usr/bin/google-chrome
+          SMOKE_URL: http://127.0.0.1:4173/nirs4all-preflight/
+        run: |
+          npm run preview --prefix demo -- --port 4173 --strictPort --host 127.0.0.1 &
+          for attempt in $(seq 1 60); do curl -sf "$SMOKE_URL" > /dev/null && break; sleep 1; done
+          npm run test:browser --prefix demo
+          node demo/scripts/review-smoke.mjs
