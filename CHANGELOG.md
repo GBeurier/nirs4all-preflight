@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-18
+
+Compatibility-breaking release (engine, crates, npm binding and Python wheel). Spike and jump results change: they now come from the Methods population procedure, so the values of the existing `intrinsic.events.*` spike/jump metrics differ from 0.1.x. `intrinsic.events.protocol_evidence` now carries the `diagnostics.spectral_population_events_qc` evidence, and the declared sensor-clipping evidence of `diagnostics.spectral_events_qc` moves to the new id `intrinsic.events.clip_protocol_evidence`. New metrics `intrinsic.events.global_spike_band_counts` and `intrinsic.events.global_jump_band_counts`. Requires Methods 1.4.1 (ABI 2.24): the manifests declare `nirs4all-methods>=1.4.1,<1.5` (Python) and `@nirs4all/methods` `~1.4.1` (npm); CI builds the native library from the Methods `v1.4.1` tag and the lockfiles select `@nirs4all/methods` 1.4.1.
+
 - Engine: spikes and jumps use the Methods `diagnostics.spectral_population_events_qc` protocol (`spectral-population-events.v1`): a derivative is an event only when it is atypical relative to the other spectra at the same band position (at least 5 spectra), so absorption bands shared by the population are no longer flagged. Metric ids are unchanged; new `intrinsic.events.global_spike_band_counts` / `global_jump_band_counts` give event counts per band. Declared sensor clipping still uses `diagnostics.spectral_events_qc` (evidence `intrinsic.events.clip_protocol_evidence`). Requires a Methods release containing that procedure. The browser demo plots the per-band counts.
 - CI runs the browser demo tests, build and both browser smokes (`dataset-smoke.mjs`, `review-smoke.mjs`) on every push and pull request; the review smoke follows the current Diagnostics step and its severity-coloured alert counts.
 - Browser demo: CSV downloads (evidence and chart tables) write one value per cell in a spreadsheet dialect chosen in Export (semicolons with a decimal comma by default for decimal-comma browser languages); nested values are summarised and kept in full in the JSON report. Uses the published nirs4all-ui 0.3.0 from the npm registry (`^0.3.0`, exact integrity in `demo/package-lock.json`) instead of a vendored local build.
@@ -10,6 +14,9 @@
 - Browser demo: one "Apply and rerun" action applies every setting, including a repetition column, keeps the other settings when the files are reassembled and refreshes Your data.
 - Browser demo: quick analysis families are selected by default (clustering, structure sensitivity and the validation probe are opt-in; domain comparisons run when a retained test set exists), and core checks are shown as a preliminary result while the selected analyses run.
 - Browser demo: categorical metadata with many levels shows its most frequent levels first and expands into a bounded window; beyond ten metadata columns, roles are edited per role.
+
+## 0.1.7 — 2026-11-09
+
 - Add per-family analysis selection and metadata roles shared by associations, confounding and domain comparisons; preserve original identity/context fields and record selections in report provenance.
 - Add optional X-only repeat-derived near-duplicate tolerance with explicit method/budgets, plus linear-baseline structure sensitivity through the existing Methods preprocessing pipeline.
 - Revise browser guidance, prioritise control points, show per-section alert counts, support arbitrary metadata and categorical target colours, clarify spectral-event counts and inspection limits, and distinguish clustering assignment from measurement noise.
