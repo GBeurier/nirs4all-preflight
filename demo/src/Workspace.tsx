@@ -126,7 +126,8 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const source = sourceId && sources.includes(sourceId) ? sourceId : (sources[0] ?? input.sources[0]?.source_id ?? null);
   const target = targetId && targets.includes(targetId) ? targetId : (targets[0] ?? input.targets[0]?.target_id ?? null);
   const running = run.state === "running";
-  const dirty = result !== null && !sameConfig(config, defaultConfig(result.input));
+  const dirty = result !== null && !sameConfig(config, defaultConfig(result.requested));
+  const preliminary = result?.preliminary === true;
   const synthetic = origin.kind === "synthetic" || input.data_origin === "synthetic";
   const observations = input.sources.reduce((n, s) => n + s.observation_ids.length, 0);
   const bands = input.sources.reduce((n, s) => n + s.axis.length, 0);
@@ -180,7 +181,8 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
       disabled: !report,
     },
     { id: "evidence", icon: "evidence", label: t("stepEvidence"), sub: report ? fill(t("stepEvidenceSub"), { n: report.metrics.length }) : t("stepDiagWait"), disabled: !report },
-    { id: "export", icon: "export", label: t("stepExport"), sub: t("stepExportSub"), disabled: !report },
+    // A preliminary report lacks the selected analyses: it is shown, never exported as the run.
+    { id: "export", icon: "export", label: t("stepExport"), sub: preliminary ? t("stepExportWait") : t("stepExportSub"), disabled: !report || preliminary },
   ];
 
   return (
@@ -206,9 +208,10 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </div>
           <div className="ws-actions">
             <div className="ws-status" role="status" aria-live="polite">
-              {running ? <><span className="spinner" aria-hidden="true" />{t("running")}</> : null}
+              {running ? <><span className="spinner" aria-hidden="true" />{t(preliminary ? "runningSelected" : "running")}</> : null}
               {run.state === "cancelled" ? t("cancelled") : null}
-              {run.state === "idle" && result && !dirty ? <><span className="ok-dot" aria-hidden="true" />{t("done")}{result.elapsedMs !== undefined ? ` · ${(result.elapsedMs / 1000).toFixed(1)} s` : ""}</> : null}
+              {run.state === "idle" && result && !dirty && !preliminary ? <><span className="ok-dot" aria-hidden="true" />{t("done")}{result.elapsedMs !== undefined ? ` · ${(result.elapsedMs / 1000).toFixed(1)} s` : ""}</> : null}
+              {preliminary && !running ? <span className="warn-text">{t("preliminaryStopped")}</span> : null}
               {dirty && !running ? <span className="warn-text">{t("settingsChanged")}</span> : null}
             </div>
             <button className="btn btn-outline" aria-expanded={settingsOpen} aria-controls="settings" onClick={() => setSettingsOpen((o) => !o)}>
@@ -223,7 +226,12 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </div>
         </div>
         <div className="container">
-          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} onRepetition={onRepetition && ((r) => { setSettingsOpen(false); onRepetition(r); })} /> : null}
+          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} pending={dirty} canRepeat={Boolean(onRepetition)} onClose={() => setSettingsOpen(false)} onApply={(repetition) => {
+            setSettingsOpen(false);
+            // A new repetition column reassembles the files with IO, then reruns with these settings.
+            if (repetition && onRepetition) onRepetition(repetition.value);
+            else onRun();
+          }} /> : null}
           {run.state === "error" ? (
             <div role="alert" className="alert">
               {run.code === "INPUT_REFUSED" ? null : <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>}
@@ -280,7 +288,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
                 <span className="ready-text"><strong>{t("running")}</strong><span>{t("runningDetail")}</span></span>
               </div>
             ) : null}
-            <DataView key={source ?? ""} t={t} locale={locale} input={result?.input ?? input} sourceId={source} targetId={target} report={report} />
+            <DataView key={source ?? ""} t={t} locale={locale} input={result?.input ?? input} sourceId={source} targetId={target} report={report} repetition={(result?.origin ?? origin).repetition} />
           </>
         ) : null}
 
@@ -288,6 +296,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           <div className="diag-layout">
             <DiagnosisMenu t={t} items={diagMenu(scope)} alerts={alerts} />
             <div className="diag-main">
+            {preliminary ? <p className="alert alert-info" role="status">{running ? <span className="spinner" aria-hidden="true" /> : null}{t(running ? "preliminaryRunning" : "preliminaryStopped")}</p> : null}
             <DiagnosisSummary {...scope} checks={checks} />
             <PopulationsSection {...scope} />
             <SpectralQualitySection {...scope} />
@@ -317,7 +326,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </>
         ) : null}
 
-        {view === "export" && result ? (
+        {view === "export" && result && !preliminary ? (
           <Section id="export" icon="export" accent="cyan" title={t("exportTitle")}>
             <p className="note">{selected.size} of {report?.metrics.length ?? 0} indicators selected. <button className="btn btn-ghost btn-sm" onClick={() => go("evidence")}>Choose indicators</button></p>
             <div className="exports">
@@ -351,14 +360,43 @@ function NextStep({ label, t, onClick }: { label: string; t: T; onClick: () => v
   );
 }
 
-type SettingsProps = { t: T; input: EngineInput; config: AnalysisConfig; onChange: (c: AnalysisConfig) => void; origin: Origin; onRepetition: WorkspaceProps["onRepetition"] };
+type SettingsProps = {
+  t: T;
+  input: EngineInput;
+  config: AnalysisConfig;
+  onChange: (c: AnalysisConfig) => void;
+  origin: Origin;
+  /** Settings differ from those of the last applied run. */
+  pending: boolean;
+  /** The dropped files are in memory, so a repetition column can be (re)declared. */
+  canRepeat: boolean;
+  /** Applies every setting and reruns; `repetition` is set only when the declaration changed. */
+  onApply: (repetition?: { value: RepetitionDeclaration | undefined }) => void;
+  onClose: () => void;
+};
 
-function Settings({ t, input, config, onChange, origin, onRepetition }: SettingsProps) {
+/** Above this many metadata columns, roles are edited per role instead of per column. */
+export const ROLE_LIST_MAX = 10;
+const ROLE_LABELS: Record<MetadataRole, string> = { analysis: "Group / covariate", identifier: "Identifier", excluded: "Excluded" };
+const ROLE_HINTS: Record<MetadataRole, string> = {
+  analysis: "Used by metadata associations, confounding and domain comparisons.",
+  identifier: "Names samples or rows; never treated as a factor.",
+  excluded: "Kept in the dataset, left out of every metadata analysis.",
+};
+
+function Settings({ t, input, config, onChange, origin, pending, canRepeat, onApply, onClose }: SettingsProps) {
   const [seedText, setSeedText] = useState(config.seed === null ? "" : String(config.seed));
   const seed = parseSeed(seedText);
+  const [column, setColumn] = useState(origin.repetition?.column ?? "");
+  const [type, setType] = useState<RepetitionDeclaration["type"]>(origin.repetition?.type ?? "rescan");
+  const repetitionChanged = column !== (origin.repetition?.column ?? "") || (column !== "" && type !== origin.repetition?.type);
+  const changes = pending || repetitionChanged;
+  const setRoles = (names: readonly string[], role: MetadataRole) => onChange({ ...config, metadataRoles: { ...config.metadataRoles, ...Object.fromEntries(names.map((name) => [name, role])) } });
   return (
-    <form id="settings" className="settings" onSubmit={(e) => e.preventDefault()}>
-      {origin.columns?.length ? <RepetitionSetting key={`${origin.repetition?.column ?? ""}:${origin.repetition?.type ?? ""}`} t={t} columns={origin.columns} current={origin.repetition} onApply={onRepetition} /> : null}
+    // Every field validates its own value on change; native constraint checks (e.g. a step
+    // mismatch on the threshold) must never silently block applying the settings.
+    <form id="settings" className="settings" noValidate onSubmit={(e) => { e.preventDefault(); onApply(repetitionChanged ? { value: column ? { column, type } : undefined } : undefined); }}>
+      {origin.columns?.length ? <RepetitionSetting t={t} columns={origin.columns} column={column} type={type} enabled={canRepeat} onColumn={setColumn} onType={setType} /> : null}
       <label>
         <span>{t("cfgUnit")}</span>
         <select value={config.independenceUnit} onChange={(e) => onChange({ ...config, independenceUnit: e.target.value as IndependenceUnit })} aria-describedby="unit-hint">
@@ -388,14 +426,10 @@ function Settings({ t, input, config, onChange, origin, onRepetition }: Settings
         <input type="checkbox" checked={config.assumeOneObservationPerSample} onChange={(e) => onChange({ ...config, assumeOneObservationPerSample: e.target.checked })} />
         <span>{t("cfgOneObs")}</span>
       </label>
-      <fieldset className="settings-metadata">
-        <legend>Metadata roles</legend>
-        <p className="hint">Use groups and covariates for analysis. Identifiers and excluded columns stay in the dataset but are omitted from every metadata association, confounding and domain comparison. Physical identities and repeat declarations are preserved.</p>
-        {metadataColumns(input).map((column) => <label key={column.name}><span>{column.name} ({column.kind})</span><select aria-label={`Role of ${column.name}`} value={config.metadataRoles[column.name] ?? "analysis"} onChange={(e) => onChange({ ...config, metadataRoles: { ...config.metadataRoles, [column.name]: e.target.value as MetadataRole } })}><option value="analysis">Group / covariate</option><option value="identifier">Identifier</option><option value="excluded">Excluded</option></select></label>)}
-      </fieldset>
+      <MetadataRoles columns={metadataColumns(input)} roles={config.metadataRoles} onRoles={setRoles} />
       <fieldset className="settings-families">
         <legend>Analysis menu</legend>
-        <p className="hint">Integrity, sample counts, PCA and target descriptions always run. Choose the additional analyses below; exports can be refined in Evidence. Timings are browser measurements on the bundled examples.</p>
+        <p className="hint">Integrity, sample counts, PCA and target descriptions always run, and appear first; the selected analyses follow. The quick analyses are selected by default; clustering, structure sensitivity and the validation probe take longer. Exports can be refined in Evidence. Timings are browser measurements on the bundled examples.</p>
         {ANALYSIS_FAMILIES.map((family) => <details key={family}><summary><span>{FAMILY_LABELS[family]}</span><span>{config.families[family] ? "Enabled" : "Off"}</span></summary><label className="check"><input type="checkbox" checked={config.families[family]} onChange={(e) => onChange({ ...config, families: { ...config.families, [family]: e.target.checked } })} />Include {FAMILY_LABELS[family].toLowerCase()}</label><p className="hint">{FAMILY_HINTS[family]}</p>
           <FamilyTiming family={family} />
           {family === "clustering" ? <label className="check"><input type="checkbox" checked={config.clusterRefit} disabled={!config.families.clustering} onChange={(e) => onChange({ ...config, clusterRefit: e.target.checked })} />Refit PCA for each stability subsample (slower)</label> : null}
@@ -414,32 +448,91 @@ function Settings({ t, input, config, onChange, origin, onRepetition }: Settings
         })}</fieldset>
       </details>
       <p className="note settings-scope">{t("cfgScope")}</p>
+      <div className="settings-actions">
+        <span className={changes ? "warn-text" : "hint"} role="status">{t(changes ? "settingsPending" : "settingsApplied")}</span>
+        <button type="button" className="btn btn-ghost" onClick={onClose}>{t("close")}</button>
+        <button type="submit" className="btn btn-primary">{t("applyRerun")}</button>
+      </div>
     </form>
   );
 }
 
+/**
+ * Metadata roles. Up to ROLE_LIST_MAX columns, one role selector per column; beyond, one panel per
+ * role listing its columns, where columns are added to the identifier and excluded roles and
+ * everything else stays a group or covariate.
+ */
+export function MetadataRoles({ columns, roles, onRoles }: { columns: readonly { name: string; kind: string }[]; roles: Record<string, MetadataRole>; onRoles: (names: readonly string[], role: MetadataRole) => void }) {
+  const [query, setQuery] = useState("");
+  const roleOf = (name: string) => roles[name] ?? "analysis";
+  const intro = <p className="hint">Use groups and covariates for analysis. Identifiers and excluded columns stay in the dataset but are omitted from every metadata association, confounding and domain comparison. Physical identities and repeat declarations are preserved.</p>;
+  if (!columns.length) return null;
+  if (columns.length <= ROLE_LIST_MAX) {
+    return (
+      <fieldset className="settings-metadata">
+        <legend>Metadata roles</legend>
+        {intro}
+        {columns.map((column) => <label key={column.name}><span>{column.name} ({column.kind})</span><select aria-label={`Role of ${column.name}`} value={roleOf(column.name)} onChange={(e) => onRoles([column.name], e.target.value as MetadataRole)}>{(Object.keys(ROLE_LABELS) as MetadataRole[]).map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}</select></label>)}
+      </fieldset>
+    );
+  }
+  const q = query.trim().toLowerCase();
+  const matches = (name: string) => !q || name.toLowerCase().includes(q);
+  return (
+    <fieldset className="settings-metadata settings-roles">
+      <legend>Metadata roles <span className="hint">({columns.length} columns)</span></legend>
+      {intro}
+      <label className="search"><span className="visually-hidden">Filter metadata columns</span><input type="search" placeholder="Filter columns" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+      <div className="role-panels">
+        {(Object.keys(ROLE_LABELS) as MetadataRole[]).map((role) => {
+          const members = columns.filter((c) => roleOf(c.name) === role);
+          const others = columns.filter((c) => roleOf(c.name) !== role && matches(c.name));
+          const shown = members.filter((c) => matches(c.name));
+          return (
+            <div className="role-panel" key={role} role="group" aria-label={ROLE_LABELS[role]}>
+              <div className="role-panel-head"><strong>{ROLE_LABELS[role]}</strong><span className="count">{members.length}</span></div>
+              <p className="hint">{ROLE_HINTS[role]}</p>
+              {role === "analysis" ? null : (
+                <select aria-label={`Add a column to ${ROLE_LABELS[role]}`} value="" onChange={(e) => { if (e.target.value) onRoles([e.target.value], role); }}>
+                  <option value="">Add a column…</option>
+                  {others.map((c) => <option key={c.name} value={c.name}>{c.name} ({c.kind})</option>)}
+                </select>
+              )}
+              <ul className="role-chips">
+                {shown.map((c) => (
+                  <li key={c.name}>
+                    <span title={c.kind}>{c.name}</span>
+                    {role === "analysis" ? null : <button type="button" aria-label={`Move ${c.name} back to ${ROLE_LABELS.analysis}`} onClick={() => onRoles([c.name], "analysis")}>×</button>}
+                  </li>
+                ))}
+              </ul>
+              {role !== "analysis" && members.length ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onRoles(members.map((c) => c.name), "analysis")}>Clear</button> : null}
+            </div>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 /** Declares the metadata column whose equal values are repeated acquisitions of one physical sample. */
-function RepetitionSetting({ t, columns, current, onApply }: { t: T; columns: string[]; current: RepetitionDeclaration | undefined; onApply: WorkspaceProps["onRepetition"] }) {
-  const [column, setColumn] = useState(current?.column ?? "");
-  const [type, setType] = useState<RepetitionDeclaration["type"]>(current?.type ?? "rescan");
-  const changed = column !== (current?.column ?? "") || (column !== "" && type !== current?.type);
+function RepetitionSetting({ t, columns, column, type, enabled, onColumn, onType }: { t: T; columns: string[]; column: string; type: RepetitionDeclaration["type"]; enabled: boolean; onColumn: (c: string) => void; onType: (k: RepetitionDeclaration["type"]) => void }) {
   return (
     <fieldset className="settings-repetition">
       <label>
         <span>{t("cfgRepetition")}</span>
-        <select value={column} disabled={!onApply} onChange={(e) => setColumn(e.target.value)} aria-describedby="repetition-hint">
+        <select value={column} disabled={!enabled} onChange={(e) => onColumn(e.target.value)} aria-describedby="repetition-hint">
           <option value="">{t("cfgRepetitionNone")}</option>
           {columns.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </label>
       <label>
         <span>{t("cfgRepetitionType")}</span>
-        <select value={type} disabled={!onApply || column === ""} onChange={(e) => setType(e.target.value as RepetitionDeclaration["type"])}>
+        <select value={type} disabled={!enabled || column === ""} onChange={(e) => onType(e.target.value as RepetitionDeclaration["type"])}>
           {DECLARABLE_REPETITIONS.map((k) => <option key={k} value={k}>{t(`repType_${k}` as TextKey)}</option>)}
         </select>
       </label>
-      <button type="button" className="btn btn-outline" disabled={!onApply || !changed} onClick={() => onApply?.(column ? { column, type } : undefined)}>{t("cfgRepetitionApply")}</button>
-      <small id="repetition-hint">{onApply ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
+      <small id="repetition-hint">{enabled ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
     </fieldset>
   );
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Browser demo: Your data states where repeated acquisitions come from (a declared repetition column, or the sample identifier detected by nirs4all-io with an undeclared type).
+- Browser demo: one "Apply and rerun" action applies every setting, including a repetition column, keeps the other settings when the files are reassembled and refreshes Your data.
+- Browser demo: quick analysis families are selected by default (clustering, structure sensitivity and the validation probe are opt-in; domain comparisons run when a retained test set exists), and core checks are shown as a preliminary result while the selected analyses run.
+- Browser demo: categorical metadata with many levels shows its most frequent levels first and expands into a bounded window; beyond ten metadata columns, roles are edited per role.
 - Add per-family analysis selection and metadata roles shared by associations, confounding and domain comparisons; preserve original identity/context fields and record selections in report provenance.
 - Add optional X-only repeat-derived near-duplicate tolerance with explicit method/budgets, plus linear-baseline structure sensitivity through the existing Methods preprocessing pipeline.
 - Revise browser guidance, prioritise control points, show per-section alert counts, support arbitrary metadata and categorical target colours, clarify spectral-event counts and inspection limits, and distinguish clustering assignment from measurement noise.

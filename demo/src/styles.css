@@ -387,3 +387,25 @@ code{font-size:.85em}
 .n4q-reason { font-family: inherit; white-space: normal; }
 .section-exports[hidden] { display: none; }
 .seg { flex-wrap: wrap; max-width: 100%; }
+
+/* Settings: one apply action for every setting. */
+.settings-actions { grid-column: 1 / -1; position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 0 0; border-top: 1px solid var(--border); background: var(--card); }
+.settings-actions [role="status"] { margin-right: auto; font-size: .82rem; }
+/* Metadata roles listed per role when a dataset carries many columns. */
+.settings-roles .search { display: block; margin: 8px 0; max-width: 320px; }
+.settings-roles .search input { width: 100%; }
+.role-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
+.role-panel { display: grid; gap: 8px; align-content: start; padding: 12px; border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+.role-panel-head { display: flex; justify-content: space-between; align-items: center; }
+.role-panel-head .count { font-family: var(--mono); font-size: .72rem; padding: 1px 8px; border-radius: 999px; background: rgba(100,116,139,.12); color: var(--text-2); }
+.role-panel .hint { margin: 0; }
+.role-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; max-height: 12rem; overflow-y: auto; }
+.role-chips li { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; background: rgba(100,116,139,.12); font-size: .78rem; max-width: 100%; }
+.role-chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-chips button { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 2px; font-size: .9rem; line-height: 1; }
+/* Categorical metadata with many levels: bounded window once expanded. */
+.comp-levels { display: grid; gap: 4px; justify-items: start; }
+.comp-levels > .comp { width: 100%; }
+.comp-levels.is-expanded > .comp { max-height: 16rem; overflow-y: auto; padding-right: 4px; }
+.comp-note { margin: -8px 0 0; font-size: .76rem; }
+.alert.alert-info { display: flex; align-items: center; gap: 8px; margin: 0 0 1rem; border-color: rgba(8,145,178,.35); background: rgba(8,145,178,.08); }

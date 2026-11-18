@@ -47,10 +47,15 @@ try {
     { name: 'metadata_train.csv', mimeType: 'text/csv', buffer: Buffer.from(['Sample_ID;site', ...scans.map((_, r) => `p${Math.floor(r / 3)};${Math.floor(r / 3) % 2 ? 'north' : 'south'}`)].join('\n')) },
   ]);
   await page.locator('.ws-status').filter({ hasText: 'Analysis complete' }).waitFor({ timeout: 30000 });
+  // Undeclared, and no shared sample identifier: every row is its own sample.
+  assert.match(await page.locator('.comp-note').innerText(), /No repetition column declared/);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByLabel('Repetition column').selectOption('Sample_ID');
+  assert.match(await page.locator('.settings-actions [role=status]').innerText(), /Changes not applied yet/);
   await page.getByRole('button', { name: 'Apply and rerun', exact: true }).click();
   await page.locator('.ws-status').filter({ hasText: 'Analysis complete' }).waitFor({ timeout: 30000 });
+  // Your data follows the applied declaration.
+  assert.match(await page.locator('.comp-note').innerText(), /grouped by the declared column Sample_ID/);
   // Applying closes the settings; reopened, they show the declaration the rerun used.
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   assert.equal(await page.getByLabel('Repetition column').inputValue(), 'Sample_ID');

@@ -14,6 +14,7 @@ import { translate, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
 import { RepeatSection, StructureSection, type Scope } from "./Sections";
 import { DataView } from "./DataView";
+import { MetadataRoles, ROLE_LIST_MAX } from "./Workspace";
 
 const view = buildQualificationReportView(reportJson as unknown as EngineReport);
 const extended = buildQualificationReportView(extendedJson as unknown as EngineReport);
@@ -139,6 +140,34 @@ describe("0.1.0 capability sections", () => {
     };
     const out = html(<DataView t={scope("en").t} locale="en" input={tableInput} sourceId="nir" targetId={null} report={null} />);
     expect(out).toContain("first 40 of 41 filtered samples (41 total), sorted by sampleId ascending</caption>");
+  });
+
+  it("caps metadata with many levels and says where repeats come from", () => {
+    const sampleIds = Array.from({ length: 24 }, (_, i) => `s${i}`);
+    const many: EngineInput = { ...input,
+      samples: sampleIds.map((sample_id) => ({ sample_id, partition: "development" })),
+      sources: [{ ...input.sources[0]!, observation_ids: sampleIds, sample_ids: sampleIds, x: sampleIds.map(() => axis.map(() => 1)) }],
+      metadata: { columns: [{ name: "field", kind: "categorical" }], values: Object.fromEntries(sampleIds.map((id, i) => [id, { field: `plot ${i % 20}` }])) },
+    };
+    const out = html(<DataView t={scope("en").t} locale="en" input={many} sourceId="nir" targetId={null} report={null} />);
+    expect(out).toContain("Show all 20 levels");
+    expect(out).toContain("each spectrum is its own sample.");
+    // Two scans of one sample, grouped by the detected identifier without a declaration.
+    const grouped: EngineInput = { ...many, sources: [{ ...many.sources[0]!, observation_ids: [...sampleIds, "extra"], sample_ids: [...sampleIds, "s0"], x: [...sampleIds, "s0"].map(() => axis.map(() => 1)) }] };
+    expect(html(<DataView t={scope("en").t} locale="en" input={grouped} sourceId="nir" targetId={null} report={null} />)).toContain("grouped as repeated acquisitions of undeclared type");
+    const declared = html(<DataView t={scope("en").t} locale="en" input={many} sourceId="nir" targetId={null} report={null} repetition={{ column: "Sample_ID", type: "rescan" }} />);
+    expect(declared).toContain("grouped by the declared column Sample_ID");
+    expect(declared).not.toContain("undeclared type");
+  });
+
+  it("edits metadata roles per role beyond ten columns", () => {
+    const few = Array.from({ length: ROLE_LIST_MAX }, (_, i) => ({ name: `m${i}`, kind: "categorical" }));
+    expect(html(<MetadataRoles columns={few} roles={{}} onRoles={() => undefined} />)).toContain('aria-label="Role of m0"');
+    const lots = [...few, { name: "batch_id", kind: "categorical" }];
+    const out = html(<MetadataRoles columns={lots} roles={{ batch_id: "identifier" }} onRoles={() => undefined} />);
+    expect(out).not.toContain('aria-label="Role of m0"');
+    expect(out).toContain('aria-label="Add a column to Excluded"');
+    expect(out).toContain('aria-label="Move batch_id back to Group / covariate"');
   });
 
   it("control points cover the new blocks", () => {

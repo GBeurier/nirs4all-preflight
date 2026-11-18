@@ -3,6 +3,7 @@ import type { Locale } from "nirs4all-ui/lab";
 import { ClassCountBars, PopulationFlow, SCORE_SEQUENTIAL, SpectraExplorer, StatTile, TargetDistribution, type FlowSegment, type QualificationReportView } from "nirs4all-ui/qualification";
 import { categoricalColor, rampAt } from "nirs4all-ui/viz";
 import type { T } from "./App";
+import type { RepetitionDeclaration } from "./dataset";
 import { fill, type TextKey } from "./i18n";
 import { Icon } from "./icons";
 import { metadataValue, type EngineInput } from "./input";
@@ -16,11 +17,13 @@ const TABLE_PAGE = 40;
 const KIND_COLOR: Record<RowKind, string> = { development: "#0d9488", retained_test: "#0891b2", prediction: "#4f46e5", augmented: "#94a3b8", undeclared: "#e11d48" };
 const NONE = "#0d9488";
 const UNEVALUATED = "#cbd5e1";
+/** Levels drawn in a collapsed metadata bar; the rest are pooled until the reader expands it. */
+export const LEVELS_COLLAPSED = 8;
 
 const num = (v: number, locale: Locale) => (Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(4)).toLocaleString(locale));
 
 /** `report` is the engine report once an analysis has run: it enables the quality colouring (atypical T²/Q scans in red). */
-export function DataView({ t, locale, input, sourceId, targetId, report }: { t: T; locale: Locale; input: EngineInput; sourceId: string | null; targetId: string | null; report: QualificationReportView | null }) {
+export function DataView({ t, locale, input, sourceId, targetId, report, repetition }: { t: T; locale: Locale; input: EngineInput; sourceId: string | null; targetId: string | null; report: QualificationReportView | null; repetition?: RepetitionDeclaration | undefined }) {
   const source = input.sources.find((s) => s.source_id === sourceId) ?? input.sources[0];
   const [colorBy, setColorBy] = useState<ColorBy | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -135,10 +138,13 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
             <div className="comp-list">
               <CompBar title={t("compPartitions")} segments={partitionSegments} locale={locale} />
               <CompBar title={t("compRepeats")} segments={repeatSegments} locale={locale} />
+              <p className="hint comp-note">
+                {repetition ? fill(t("repeatsDeclared"), { column: repetition.column, type: t(`repType_${repetition.type}` as TextKey) }) : t(comp.repeats.two + comp.repeats.more ? "repeatsIdentifier" : "repeatsNone")}
+              </p>
               {metadata.filter((c) => c.kind === "categorical").map((column) => {
                 const counts = new Map<string, number>();
                 for (const sample of input.samples) { const value = String(metadataValue(input, sample.sample_id, column.name, sample) ?? "Missing"); counts.set(value, (counts.get(value) ?? 0) + 1); }
-                return <CompBar key={column.name} title={column.name} segments={segments([...counts].map(([label, count]) => ({ label, count })))} locale={locale} />;
+                return <LevelBar key={column.name} t={t} title={column.name} rows={[...counts].map(([label, count]) => ({ label, count }))} toSegments={segments} locale={locale} />;
               })}
             </div>
           </div>
@@ -184,6 +190,27 @@ function CompBar({ title, segments, locale }: { title: string; segments: FlowSeg
   return (
     <div className="comp">
       <Measured min={200}>{(w) => <PopulationFlow stages={[{ id: title, label: title, unit: "", segments }]} title={title} locale={locale} width={w} barHeight={14} showTotal={false} />}</Measured>
+    </div>
+  );
+}
+
+/**
+ * One categorical metadata column. Many levels would make an endless bar and legend: the bar
+ * first shows the most frequent levels and pools the others; expanded, every level is listed
+ * inside a bounded scrolling window.
+ */
+function LevelBar({ t, title, rows, toSegments, locale }: { t: T; title: string; rows: CountRow[]; toSegments: (rows: CountRow[]) => FlowSegment[]; locale: Locale }) {
+  const [expanded, setExpanded] = useState(false);
+  const sorted = [...rows].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, undefined, { numeric: true }));
+  const many = sorted.length > LEVELS_COLLAPSED;
+  const rest = sorted.slice(LEVELS_COLLAPSED - 1);
+  const shown = !many || expanded ? sorted : [...sorted.slice(0, LEVELS_COLLAPSED - 1), { label: fill(t("levelsOther"), { n: rest.length }), count: rest.reduce((n, r) => n + r.count, 0) }];
+  const segs = toSegments(shown);
+  if (many && !expanded) segs[segs.length - 1] = { ...segs[segs.length - 1]!, color: UNEVALUATED, tone: "muted" };
+  return (
+    <div className={`comp-levels${many && expanded ? " is-expanded" : ""}`}>
+      <CompBar title={title} segments={segs} locale={locale} />
+      {many ? <button type="button" className="btn btn-ghost btn-sm" aria-expanded={expanded} onClick={() => setExpanded((e) => !e)}>{expanded ? t("levelsFewer") : fill(t("levelsAll"), { n: sorted.length })}</button> : null}
     </div>
   );
 }

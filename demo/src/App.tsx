@@ -4,7 +4,7 @@ import type { EngineReport } from "nirs4all-ui/qualification";
 import { downloadText } from "./download";
 import { createEngineHost, EngineError, type EngineHost, type EngineValidation } from "./engine";
 import { translate, type TextKey } from "./i18n";
-import { buildEngineInput, defaultConfig, type AnalysisConfig, type EngineInput } from "./input";
+import { ANALYSIS_FAMILIES, NO_FAMILIES, buildEngineInput, carryConfig, defaultConfig, type AnalysisConfig, type EngineInput } from "./input";
 import { Landing } from "./Landing";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
 import { Workspace } from "./Workspace";
@@ -25,8 +25,12 @@ export type Origin = {
   columns?: string[];
   repetition?: RepetitionDeclaration;
 };
-/** A report is only ever shown with the exact input that produced it. */
-export type Result = { report: EngineReport; input: EngineInput; origin: Origin; elapsedMs?: number };
+/**
+ * A report is only ever shown with the exact input that produced it. A preliminary result holds the
+ * core checks only (no optional family) while the run of `requested` — the applied settings — is
+ * still in progress, or after it was cancelled or failed.
+ */
+export type Result = { report: EngineReport; input: EngineInput; requested: EngineInput; origin: Origin; elapsedMs?: number; preliminary?: boolean };
 export type T = (k: TextKey) => string;
 type Theme = "light" | "dark";
 
@@ -82,20 +86,28 @@ export function App() {
     const payload = buildEngineInput(data, cfg);
     setRun({ state: "running" });
     setValidation(null);
+    /** A refused input yields a report without results: show why instead of an empty diagnosis. */
+    const refused = (report: EngineReport) => {
+      const outcome = (report as unknown as { validation?: EngineValidation }).validation;
+      if (!outcome || outcome.valid) return false;
+      setResult(null);
+      setRun({ state: "error", code: "INPUT_REFUSED", message: "" });
+      setValidation(outcome);
+      return true;
+    };
     try {
       const started = performance.now();
+      if (ANALYSIS_FAMILIES.some((family) => cfg.families[family])) {
+        // Core checks first, so the page fills in while the selected analyses run.
+        const core = buildEngineInput(data, { ...cfg, families: NO_FAMILIES });
+        const report = await host.current.analyze(core);
+        if (generation !== job.current || refused(report)) return;
+        setResult({ report, input: core, requested: payload, origin: from, preliminary: true });
+      }
       const report = await host.current.analyze(payload);
       const elapsedMs = performance.now() - started;
-      if (generation !== job.current) return;
-      // A refused input yields a report without results: show why instead of an empty diagnosis.
-      const refused = (report as unknown as { validation?: EngineValidation }).validation;
-      if (refused && !refused.valid) {
-        setResult(null);
-        setRun({ state: "error", code: "INPUT_REFUSED", message: "" });
-        setValidation(refused);
-        return;
-      }
-      setResult({ report, input: payload, origin: from, elapsedMs });
+      if (generation !== job.current || refused(report)) return;
+      setResult({ report, input: payload, requested: payload, origin: from, elapsedMs });
       setRun({ state: "idle" });
     } catch (error) {
       if (generation !== job.current) return;
@@ -114,12 +126,11 @@ export function App() {
     }
   };
 
-  const load = (next: EngineInput, from: Origin) => {
+  const load = (next: EngineInput, from: Origin, cfg: AnalysisConfig = defaultConfig(next)) => {
     if (run.state === "running") {
       job.current += 1;
       host.current?.cancel();
     }
-    const cfg = defaultConfig(next);
     setInput(next);
     setOrigin(from);
     setConfig(cfg);
@@ -129,10 +140,13 @@ export function App() {
     void execute(next, cfg, from);
   };
 
-  /** Re-assembles the dropped files with IO under a new repetition declaration, then reruns (an analysis in progress is cancelled). */
+  /**
+   * Re-assembles the dropped files with IO under a new repetition declaration, then reruns with the
+   * current settings (an analysis in progress is cancelled).
+   */
   const redeclare = async (repetition: RepetitionDeclaration | undefined) => {
     const dropped = files.current;
-    if (!dropped || !origin) return;
+    if (!dropped || !origin || !config) return;
     const generation = ++job.current;
     if (run.state === "running") host.current?.cancel();
     setRun({ state: "running" });
@@ -148,7 +162,7 @@ export function App() {
         // The library keeps the latest declaration; a storage failure never blocks the analysis.
         void saveDataset({ id: from.datasetId, name: from.name, savedAt: new Date().toISOString(), input: next, ...(tables.length ? { tables } : {}), ...(from.columns?.length ? { columns: from.columns } : {}), ...(repetition ? { repetition } : {}) }).catch(() => undefined);
       }
-      load(next, from);
+      load(next, from, carryConfig(config, next));
     } catch (error) {
       if (generation !== job.current) return;
       setRun({ state: "error", code: "IMPORT_ERROR", message: error instanceof Error ? error.message : String(error) });
