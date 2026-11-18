@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- CI runs the browser demo tests, build and both browser smokes (`dataset-smoke.mjs`, `review-smoke.mjs`) on every push and pull request; the review smoke follows the current Diagnostics step and its severity-coloured alert counts.
 - Browser demo: CSV downloads (evidence and chart tables) write one value per cell in a spreadsheet dialect chosen in Export (semicolons with a decimal comma by default for decimal-comma browser languages); nested values are summarised and kept in full in the JSON report. Uses the published nirs4all-ui 0.3.0 from the npm registry (`^0.3.0`, exact integrity in `demo/package-lock.json`) instead of a vendored local build.
 - Browser demo: severity-coloured alert counts in the Diagnostics menu, consistent "Diagnostics" naming, the repeat-derived near-duplicate tolerance made opt-in, and clearer explanations of observation units (instrument × campaign), spike/jump flags, signal-to-noise, distance to the mean spectrum, the raw centred PCA and structure sensitivity, with a variance chart for the baseline correction.
 - Browser demo: Your data states where repeated acquisitions come from (a declared repetition column, or the sample identifier detected by nirs4all-io with an undeclared type).
