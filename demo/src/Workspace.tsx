@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
-import { buildQualificationReportView, evidenceCsv, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import { buildQualificationReportView, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
 import timings from "./data/analysis-timings.json";
 import { DEMO_DATASETS } from "./demo-datasets";
-import { metricKey, selectedReport } from "./export";
+import { csvDialect, downloadEvidenceCsv, metricKey, selectedReport, setCsvDialect, type CsvDialect } from "./export";
 import { baseName, type Origin, type Result, type Run, type T } from "./App";
 import { buildChecks, needsReview } from "./checks";
 import { DataView } from "./DataView";
@@ -119,6 +119,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const [scrollTo, setScrollTo] = useState<string | null>(null);
   const [evidenceQuery, setEvidenceQuery] = useState("");
   const [excludedMetrics, setExcludedMetrics] = useState<ReadonlySet<string>>(new Set());
+  const [dialect, setDialect] = useState<CsvDialect>(csvDialect);
   const report = useMemo(() => (result ? buildQualificationReportView(result.report) : null), [result]);
   const sources = report ? reportSourceIds(report) : input.sources.map((s) => s.source_id);
   const targets = report ? reportTargetIds(report) : input.targets.map((x) => x.target_id);
@@ -333,6 +334,13 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
         {view === "export" && result && !preliminary ? (
           <Section id="export" icon="export" accent="cyan" title={t("exportTitle")}>
             <p className="note">{selected.size} of {report?.metrics.length ?? 0} indicators selected. <button className="btn btn-ghost btn-sm" onClick={() => go("evidence")}>Choose indicators</button></p>
+            <label className="csv-dialect">Spreadsheet format for CSV files
+              <select value={dialect} onChange={(e) => { const next = e.target.value as CsvDialect; setDialect(next); setCsvDialect(next); }}>
+                <option value="decimal-comma">Semicolons, decimal comma (e.g. French Excel)</option>
+                <option value="standard">Commas, decimal point (e.g. English Excel, R, Python)</option>
+              </select>
+              <small>One value per cell; long or nested lists are summarised and kept in full in the JSON report.</small>
+            </label>
             <div className="exports">
               <button className="export-card" onClick={() => downloadText(`${baseName(result)}-report.json`, "application/json", JSON.stringify(filteredReport, null, 2))}>
                 <span className="export-ext">JSON</span><strong>{t("dlJson")}</strong><span>{t("dlJsonDesc")}</span>
@@ -340,7 +348,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               <button className="export-card" onClick={() => { if (filteredReport) onDownloadHtml(filteredReport); }}>
                 <span className="export-ext">HTML</span><strong>{t("dlHtml")}</strong><span>{t("dlHtmlDesc")}</span>
               </button>
-              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-evidence.csv`, "text/csv", `\uFEFF${evidenceCsv(report!.metrics.filter((m) => selected.has(metricKey(m))), locale)}`)}>
+              <button className="export-card" onClick={() => downloadEvidenceCsv(`${baseName(result)}-evidence.csv`, report!.metrics.filter((m) => selected.has(metricKey(m))), locale)}>
                 <span className="export-ext">CSV</span><strong>{t("dlCsv")}</strong><span>{t("dlCsvDesc")}</span>
               </button>
               <button className="export-card" onClick={() => downloadText(`${baseName(result)}-input.json`, "application/json", JSON.stringify(result.input))}>

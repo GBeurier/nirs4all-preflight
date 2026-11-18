@@ -1,4 +1,5 @@
-import type { EngineReport, QualificationMetricView } from "nirs4all-ui/qualification";
+import { CSV_DECIMAL_COMMA, CSV_STANDARD, csvFormatFor, csvRows, evidenceCsv, type EngineReport, type QualificationMetricView } from "nirs4all-ui/qualification";
+import type { Locale } from "nirs4all-ui/lab";
 import { downloadText } from "./download";
 
 export const metricKey = (m: QualificationMetricView) => JSON.stringify([m.id, m.sourceId, m.targetId, m.viewId, m.populationId, m.parameters]);
@@ -11,16 +12,53 @@ export function selectedReport(report: EngineReport, selected: ReadonlySet<strin
   return { ...report, status: metrics.length === report.metrics.length ? report.status ?? "partial" : "partial", metrics, findings: report.findings.filter((f) => f.evidence.every((id) => !omittedIds.has(id))), limitations: [...(report.limitations ?? []), ...(metrics.length < report.metrics.length ? [`This export includes ${metrics.length} of ${report.metrics.length} indicators, retaining analysis.selection provenance. Findings requiring omitted evidence are excluded.`] : [])] };
 }
 
-const cell = (value: string) => `"${(/^[=+@\t\r-]/.test(value) && !Number.isFinite(Number(value)) ? "'" : "") + value.replaceAll('"', '""')}"`;
+/** Spreadsheet dialect of CSV downloads: "decimal-comma" (semicolons) suits French Excel, for instance. */
+export type CsvDialect = "standard" | "decimal-comma";
+const CSV_KEY = "n4pf-csv-dialect";
+
+/** The reader's remembered choice, else the dialect of the browser language. */
+export function csvDialect(): CsvDialect {
+  try {
+    const saved = localStorage.getItem(CSV_KEY);
+    if (saved === "standard" || saved === "decimal-comma") return saved;
+  } catch {
+    // storage unavailable: follow the browser language
+  }
+  return typeof navigator !== "undefined" && csvFormatFor(navigator.language) === CSV_DECIMAL_COMMA ? "decimal-comma" : "standard";
+}
+
+export function setCsvDialect(dialect: CsvDialect): void {
+  try {
+    localStorage.setItem(CSV_KEY, dialect);
+  } catch {
+    // a convenience only
+  }
+}
+
+const csvFormat = () => (csvDialect() === "decimal-comma" ? CSV_DECIMAL_COMMA : CSV_STANDARD);
+
+/** Evidence table for spreadsheets, one value per cell (nirs4all-ui owns the format). */
+export function downloadEvidenceCsv(filename: string, metrics: readonly QualificationMetricView[], locale: Locale): void {
+  downloadText(filename, "text/csv;charset=utf-8", `\uFEFF${evidenceCsv(metrics, locale, csvFormat())}`);
+}
+
+/** A table cell: the exact number a chart table records in data-value, else its text. */
+function tableCell(cell: HTMLTableCellElement): string | number {
+  const exact = cell.getAttribute("data-value");
+  if (exact !== null && exact.trim() !== "" && Number.isFinite(Number(exact))) return Number(exact);
+  return exact ?? cell.textContent?.trim() ?? "";
+}
 
 /** Visible and collapsed chart tables are exported together, with captions and headers. */
 export function exportTables(section: HTMLElement, name: string): void {
   const tables = [...section.querySelectorAll("table")];
-  const text = tables.map((table) => [
-    cell(table.caption?.textContent ?? section.querySelector("h2")?.textContent ?? name),
-    ...[...table.rows].map((row) => [...row.cells].map((c) => cell(c.getAttribute("data-value") ?? c.textContent?.trim() ?? "")).join(",")),
-  ].join("\r\n")).join("\r\n\r\n");
-  downloadText(`${name}-tables.csv`, "text/csv;charset=utf-8", `\uFEFF${text}`);
+  // Each table: its caption, then its rows; an empty row separates tables.
+  const rows = tables.flatMap((table, i) => [
+    ...(i ? [[]] : []),
+    [table.caption?.textContent ?? section.querySelector("h2")?.textContent ?? name],
+    ...[...table.rows].map((row) => [...row.cells].map(tableCell)),
+  ]);
+  downloadText(`${name}-tables.csv`, "text/csv;charset=utf-8", `\uFEFF${csvRows(rows, csvFormat())}`);
 }
 
 /** Resolve theme styles so a downloaded SVG remains readable outside the app. */

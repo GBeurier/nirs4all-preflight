@@ -73,6 +73,15 @@ try {
   await page.locator('.demo-card', { hasText: 'Beer' }).click();
   await page.locator('.ws-status').filter({ hasText: 'Analysis complete' }).waitFor({ timeout: 90000 });
   assert.equal(await page.locator('.ws-title').innerText(), 'Beer — original extract');
+  // Spreadsheet CSV: one value per cell in the chosen dialect, nested values summarised.
+  await page.getByRole('button', { name: /^Export/ }).first().click();
+  await page.getByLabel('Spreadsheet format for CSV files').selectOption('decimal-comma');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.locator('.export-card', { hasText: 'CSV' }).click()]);
+  const csv = await (await import('node:fs/promises')).readFile(await download.path(), 'utf8');
+  const [head, ...lines] = csv.replace(/^\uFEFF/, '').trimEnd().split('\r\n');
+  assert.equal(head.split(';').length, 14, 'Evidence CSV header is not semicolon-separated');
+  assert(!csv.includes('[['), 'Evidence CSV still nests lists');
+  assert(lines.some((line) => /;-?\d+,\d+;/.test(line)), 'Evidence CSV has no decimal-comma number');
   await page.getByRole('button', { name: 'New dataset', exact: true }).click();
   await page.locator('.demo-card', { hasText: 'Anopheles' }).click();
   // Keep the full grid: the released engine's exact diagnostics are slower on this wide matrix.

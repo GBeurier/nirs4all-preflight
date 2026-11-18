@@ -1,0 +1,14 @@
+{
+  "schema_version": "nirs4all.vendored-npm/v1",
+  "package": { "name": "nirs4all-ui", "version": "0.2.7+local.0f62842" },
+  "source": {
+    "kind": "local-build-of-pushed-branch",
+    "repository": "https://github.com/GBeurier/nirs4all-ui",
+    "branch": "fix/excel-friendly-csv-20261118",
+    "commit_sha": "0f62842c92c0e0feeb50b1119c90028e9234845b",
+    "base": "origin/main b62e14a (nirs4all-ui 0.2.7)",
+    "build": "npm pack (prepack: npm run build) with the version labelled 0.2.7+local.0f62842; package.json unchanged in the repository"
+  },
+  "tarball_sha256": "f6a11823096f94895f619280dd8ebf1332cd3e622950d9750ba06e4b8243ab6d",
+  "note": "Not a registry release. Replace with the published nirs4all-ui version after the coordinated release wave."
+}

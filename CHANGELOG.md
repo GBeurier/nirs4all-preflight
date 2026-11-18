@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Browser demo: CSV downloads (evidence and chart tables) write one value per cell in a spreadsheet dialect chosen in Export (semicolons with a decimal comma by default for decimal-comma browser languages); nested values are summarised and kept in full in the JSON report. Uses the vendored nirs4all-ui `0.2.7+local.0f62842` build (SHA-256 `f6a11823096f94895f619280dd8ebf1332cd3e622950d9750ba06e4b8243ab6d`) until the coordinated release.
 - Browser demo: severity-coloured alert counts in the Diagnostics menu, consistent "Diagnostics" naming, the repeat-derived near-duplicate tolerance made opt-in, and clearer explanations of observation units (instrument × campaign), spike/jump flags, signal-to-noise, distance to the mean spectrum, the raw centred PCA and structure sensitivity, with a variance chart for the baseline correction.
 - Browser demo: Your data states where repeated acquisitions come from (a declared repetition column, or the sample identifier detected by nirs4all-io with an undeclared type).
 - Browser demo: one "Apply and rerun" action applies every setting, including a repetition column, keeps the other settings when the files are reassembled and refreshes Your data.
