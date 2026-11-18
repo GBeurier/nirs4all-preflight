@@ -38,11 +38,13 @@ try {
   const alertDots = page.locator('.diag-side .alert-dot');
   assert(await alertDots.count() > 0);
   for (const level of await alertDots.evaluateAll((dots) => dots.map((dot) => dot.dataset.level))) assert(['critical', 'attention'].includes(level));
-  const svg = await download(page.locator('#s-quality').getByRole('button', { name: 'Export plot (SVG)', exact: true }).first());
+  // The T²/Q card carries the reference markers; the per-band event chart precedes it.
+  const monitor = page.locator('#s-quality .card').filter({ has: page.locator('[data-reference]') }).first();
+  const svg = await download(monitor.getByRole('button', { name: 'Export plot (SVG)', exact: true }).first());
   assert.match(svg.name, /\.svg$/);
   assert.match(svg.text, /data-reference="x"/);
   assert.match(svg.text, /Synthetic set with pitfalls/);
-  const csv = await download(page.locator('#s-quality').getByRole('button', { name: 'Export chart table (CSV)', exact: true }).first());
+  const csv = await download(monitor.getByRole('button', { name: 'Export chart table (CSV)', exact: true }).first());
   assert.match(csv.text, /T²/);
   assert.match(csv.text, /Q/);
   await page.screenshot({ path: '/tmp/preflight-review-desktop.png', fullPage: true });
