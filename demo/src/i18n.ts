@@ -371,7 +371,7 @@ const DICT = {
   qualityAtypicalHint: { fr: "T² > {t2} ou Q > {q} (95e centiles)", en: "T² > {t2} or Q > {q} (95th percentiles)" },
   qualitySpikes: { fr: "Pics isolés", en: "Spectra with isolated peaks" },
   qualityJumps: { fr: "Sauts", en: "Spectra with abrupt changes" },
-  qualityEventsHint: { fr: "au-delà de 8 écarts robustes", en: "Each spectrum is compared with its own robust derivative scale, so real narrow absorption bands can also be flagged on smooth or low-resolution spectra. Inspection flags only; review the spectra before excluding data, or raise the threshold in Settings." },
+  qualityEventsHint: { fr: "au-delà de 8 écarts robustes", en: "A spike or jump is a derivative atypical relative to the other spectra at the same band (beyond the threshold in robust deviations), so absorption bands shared by the population are not flagged. Inspection flags only; review the spectra before excluding data." },
   qualitySnr: { fr: "Signal / bruit médian", en: "Estimated signal-to-noise ratio" },
   qualityDistanceHint: { fr: "écart au spectre moyen, 95e centile : {d}", en: "95% of evaluated spectra differ from the mean spectrum by at most {d} (root mean square over bands, signal units). Compare it with the typical signal level, {level}: a distance that is a large share of the signal means the spectra differ strongly in level or shape." },
   qualityMap: { fr: "T² contre Q", en: "T² versus Q" },

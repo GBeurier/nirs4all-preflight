@@ -142,6 +142,14 @@ describe("0.1.0 capability sections", () => {
     expect(out).toContain("first 40 of 41 filtered samples (41 total), sorted by sampleId ascending</caption>");
   });
 
+  it("summarises population-relative events by band", () => {
+    const band = (id: string, counts: number[]) => ({ metric_id: `intrinsic.events.${id}`, protocol_version: "spectral-population-events.v1", status: "computed", reason_code: null, scope: "source", view_id: "native:observations", population_id: "development_real", source_id: "nir", value: { axis, counts, evaluated: axis.map(() => 30) } });
+    const events = buildQualificationReportView({ ...(reportJson as unknown as EngineReport), metrics: [band("global_spike_band_counts", axis.map((_, i) => (i === 5 ? 1 : 0))), band("global_jump_band_counts", axis.map(() => 0))] } as unknown as EngineReport);
+    const out = html(<SpectralQualitySection {...scope("en", { view: events })} />);
+    expect(out).toContain("Spike and jump counts by band");
+    expect(out).toContain("atypical relative to the other spectra at the same band");
+  });
+
   it("caps metadata with many levels and says where repeats come from", () => {
     const sampleIds = Array.from({ length: 24 }, (_, i) => `s${i}`);
     const many: EngineInput = { ...input,
