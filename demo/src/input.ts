@@ -170,13 +170,24 @@ export function defaultMetadataRole(input: EngineInput, name: string): MetadataR
   return values.length > 0 && new Set(values).size === values.length ? "identifier" : "analysis";
 }
 
+/**
+ * Families run by default in the browser: the quick ones. Clustering stability, structure
+ * sensitivity and the validation probe are the slowest on the bundled examples and are opt-in;
+ * domain comparisons run by default only to audit a retained test set against development.
+ */
+export function defaultFamilies(input: EngineInput): AnalysisFamilies {
+  const retainedTest = input.samples.some((s) => s.partition === "retained_test");
+  const quick: Record<AnalysisFamily, boolean> = { spectral_quality: true, sensitivity: false, repeatability: true, clustering: false, association: true, confounding: true, domain_shift: retainedTest, probe: false };
+  return Object.fromEntries(ANALYSIS_FAMILIES.map((name) => [name, input.options.analysis_families?.[name] ?? quick[name]])) as AnalysisFamilies;
+}
+
 export function defaultConfig(input: EngineInput): AnalysisConfig {
   return {
     independenceUnit: input.options.independence_unit ?? "unknown",
     assumeOneObservationPerSample: input.options.assume_one_observation_per_sample ?? false,
     seed: input.options.seed ?? null,
     metadataRoles: Object.fromEntries(metadataColumns(input).map((c) => [c.name, input.options.metadata_roles?.[c.name] ?? defaultMetadataRole(input, c.name)])),
-    families: Object.fromEntries(ANALYSIS_FAMILIES.map((name) => [name, input.options.analysis_families?.[name] ?? true])) as AnalysisFamilies,
+    families: defaultFamilies(input),
     clusterRefit: input.options.clustering?.subsample_refit ?? false,
     fullSpectrumEnergy: input.options.domain_shift?.energy_on_spectra ?? false,
     fullSpectrumMonitor: input.options.domain_shift?.monitor_on_spectra ?? false,
@@ -188,12 +199,26 @@ export function defaultConfig(input: EngineInput): AnalysisConfig {
   };
 }
 
+/**
+ * Settings carried over when the same files are reassembled (e.g. under a new repetition column):
+ * the reader's choices stay, metadata roles are kept for columns that still exist, and the
+ * repeat-derived tolerance default follows the new repetition declaration.
+ */
+export function carryConfig(previous: AnalysisConfig, next: EngineInput): AnalysisConfig {
+  const fresh = defaultConfig(next);
+  const roles = Object.fromEntries(Object.entries(fresh.metadataRoles).map(([name, role]) => [name, previous.metadataRoles[name] ?? role]));
+  const tolerances = Object.fromEntries(Object.entries(previous.referenceTolerances).filter(([id]) => next.targets.some((t) => t.target_id === id)));
+  return { ...previous, metadataRoles: roles, referenceTolerances: tolerances, quasiToleranceFromRepeats: previous.quasiTolerance === null ? fresh.quasiToleranceFromRepeats : previous.quasiToleranceFromRepeats };
+}
+
 /** Decimal strings preserve the complete u64 range without a browser precision caveat. */
 export function parseSeed(text: string): number | string | null | "invalid" {
   if (text.trim() === "") return null;
   if (!/^(0|[1-9][0-9]*)$/.test(text) || text.length > 20 || BigInt(text) > 18446744073709551615n) return "invalid";
   return BigInt(text) <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(text) : text;
 }
+
+export const NO_FAMILIES = Object.fromEntries(ANALYSIS_FAMILIES.map((name) => [name, false])) as AnalysisFamilies;
 
 export function buildEngineInput(input: EngineInput, config: AnalysisConfig): EngineInput {
   const options: InputOptions = {

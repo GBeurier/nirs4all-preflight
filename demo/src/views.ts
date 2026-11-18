@@ -85,6 +85,8 @@ export interface Composition {
   campaigns: CountRow[];
   /** samples with 1, 2, 3+ observations in the source (declared samples with 0 are counted apart) */
   repeats: { one: number; two: number; more: number; none: number };
+  /** rows of the source whose physical identity is shared with another sample record */
+  sharedIdentityRows: number;
 }
 
 const UNDECLARED = "\u2014";
@@ -109,8 +111,15 @@ export function composition(input: EngineInput, source: InputSource | undefined)
     else if (n === 2) repeats.two += 1;
     else repeats.more += 1;
   }
+  const recordsPerPhysical = new Map<string, number>();
+  for (const s of input.samples) if (s.physical_sample_id !== undefined) recordsPerPhysical.set(s.physical_sample_id, (recordsPerPhysical.get(s.physical_sample_id) ?? 0) + 1);
+  const sharedIdentityRows = (source?.sample_ids ?? []).filter((id) => {
+    const physical = samples.get(id)?.physical_sample_id;
+    return physical !== undefined && (recordsPerPhysical.get(physical) ?? 0) > 1;
+  }).length;
   return {
     partitions,
+    sharedIdentityRows,
     instruments: tally(input.samples.map((s) => s.instrument)),
     campaigns: tally(input.samples.map((s) => s.campaign)),
     repeats,

@@ -158,7 +158,9 @@ const io: IoRuntime = ioOwner;
 describe("configured engine protocols", () => {
   it("uses X-only repeat distances for tolerance and includes baseline sensitivity", () => {
     const input = syntheticInput("pitfalls");
-    const report = runtime.analyze(buildEngineInput(input, defaultConfig(input))) as EngineReport;
+    const config = defaultConfig(input);
+    // Structure sensitivity is opt-in in the browser.
+    const report = runtime.analyze(buildEngineInput(input, { ...config, families: { ...config.families, sensitivity: true } })) as EngineReport;
     expect(report.validation?.valid).toBe(true);
     const tolerance = report.metrics.find((m) => m.metric_id === "integrity.quasi_duplicate_pairs");
     expect(tolerance?.status, JSON.stringify(tolerance)).toBe("computed");

@@ -55,12 +55,20 @@ describe("native dataset import → shared builder → preflight", () => {
     expect(input.sources[0]?.axis).toEqual([1000, 1100, 1200]);
   });
 
-  it("keeps all repetitions without declaring their technical type", () => {
+  it("never groups rows sharing a detected identifier without a repetition declaration", () => {
     const input = assemble([file("combined.csv", "sample_id;1000;1100;1200;protein\ns1;0.1;0.2;0.3;11\ns1;0.4;0.5;0.6;11")]);
-    expect(input.samples).toHaveLength(1);
-    expect(input.sources[0]?.sample_ids[0]).toBe(input.sources[0]?.sample_ids[1]);
-    expect(new Set(input.sources[0]?.observation_ids).size).toBe(2);
+    // One sample record per row; the shared identity links them for the engine's independence and reference checks.
+    expect(input.samples).toHaveLength(2);
+    expect(input.samples.map((s) => s.physical_sample_id)).toEqual(["s1", "s1"]);
+    expect(new Set(input.sources[0]?.sample_ids).size).toBe(2);
     expect(input.sources[0]?.repetition_types).toEqual(["unknown", "unknown"]);
+  });
+
+  it("groups those rows once the identifier is declared as the repetition column", () => {
+    const { input } = importFiles([file("combined.csv", "sample_id;1000;1100;1200;protein\ns1;0.1;0.2;0.3;11\ns1;0.4;0.5;0.6;11\ns2;0.7;0.8;0.9;12")], "ids", io, formats, { column: "sample_id", type: "rescan" });
+    expect(input.samples.map((s) => s.physical_sample_id)).toEqual(["s1", "s2"]);
+    expect(new Set(input.sources[0]?.sample_ids).size).toBe(2);
+    expect(input.sources[0]?.repetition_types).toEqual(["rescan", "rescan", "rescan"]);
   });
 
   it("maps categorical targets with their native labels", () => {
@@ -93,12 +101,13 @@ describe("native dataset import → shared builder → preflight", () => {
     expect(input.targets[0]?.values.map((v) => [physical.get(v.sample_id), v.value])).toEqual([["s1", 11], ["s2", 12]]);
   });
 
-  it("joins one reference per sample onto every repeated spectrum through IO", () => {
+  it("joins one reference per sample onto every spectrum sharing its identifier through IO", () => {
     const input = assemble([
       file("Xtrain.csv", "sample_id;1000;1100;1200\ns1;0.1;0.2;0.3\ns1;0.15;0.25;0.35\ns2;0.4;0.5;0.6"),
       file("Ytrain.csv", "sample_id;protein\ns2;12\ns1;11"),
     ]);
-    expect(input.samples).toHaveLength(2);
+    // Undeclared: one record per spectrum, linked by the shared physical identity.
+    expect(input.samples.map((s) => s.physical_sample_id)).toEqual(["s1", "s1", "s2"]);
     expect(input.sources[0]?.x).toHaveLength(3);
     expect(input.targets[0]?.values.map((value) => value.value)).toEqual([11, 11, 12]);
   });

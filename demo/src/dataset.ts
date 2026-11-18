@@ -91,9 +91,14 @@ export function toEngineInput(full: AssembledDataset, sourceIds: readonly string
       const physical = repeated ?? metadata(identity?.sample_id, row);
       const instrument = metadata("instrument", row);
       const campaign = metadata("campaign", row);
+      // Only a declared repetition column groups rows into one sample. An identifier IO detected
+      // stays the row's physical identity (the engine links and compares rows sharing it) but never
+      // turns rows into repeated acquisitions implicitly.
       // Separate records preserve a physical sample appearing in both development and test, or
       // acquired on several instruments or campaigns; they share its physical_sample_id.
-      const sample_id = JSON.stringify(instrument === undefined && campaign === undefined ? [part, physical ?? row] : [part, physical ?? row, instrument ?? null, campaign ?? null]);
+      const sample_id = JSON.stringify(repeated === undefined
+        ? (physical === undefined ? [part, row] : [part, row, physical])
+        : instrument === undefined && campaign === undefined ? [part, repeated] : [part, repeated, instrument ?? null, campaign ?? null]);
       ids.push(sample_id);
       metadataRows.push({ sampleId: sample_id, block, row });
       const sample: InputSample = { sample_id, partition };

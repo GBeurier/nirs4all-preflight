@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEngineInput, defaultConfig, defaultMetadataRole } from "./input";
+import { buildEngineInput, carryConfig, defaultConfig, defaultMetadataRole } from "./input";
 import { syntheticInput } from "./synthetic";
 import { sameConfig } from "./Workspace";
 import { pcaPoints, targetColorValues, varyingMetadata } from "./views";
@@ -72,7 +72,7 @@ describe("analysis controls", () => {
     expect(sameConfig(config, { ...config, quasiToleranceFromRepeats: false })).toBe(false);
     expect(sameConfig({ ...config, quasiToleranceFromRepeats: false }, config)).toBe(false);
     expect(sameConfig(config, { ...config, seed: "42" })).toBe(false);
-    expect(sameConfig(config, { ...config, families: { ...config.families, clustering: false } })).toBe(false);
+    expect(sameConfig(config, { ...config, families: { ...config.families, clustering: !config.families.clustering } })).toBe(false);
     expect(sameConfig(config, { ...config, metadataRoles: { ...config.metadataRoles, campaign: "excluded" } })).toBe(false);
   });
 
@@ -113,5 +113,26 @@ describe("analysis controls", () => {
     expect(selected.findings).toHaveLength(0);
     expect(selected.status).toBe("partial");
     expect(report.metrics).toHaveLength(3);
+  });
+});
+
+describe("browser analysis defaults", () => {
+  it("selects the quick families and audits a retained test set by default", () => {
+    const input = syntheticInput("clean");
+    const families = defaultConfig(input).families;
+    expect(families).toMatchObject({ spectral_quality: true, repeatability: true, association: true, confounding: true, clustering: false, sensitivity: false, probe: false });
+    expect(families.domain_shift).toBe(input.samples.some((s) => s.partition === "retained_test"));
+    input.options.analysis_families = { clustering: true };
+    expect(defaultConfig(input).families.clustering).toBe(true);
+  });
+
+  it("keeps the reader's settings when the files are reassembled", () => {
+    const input = syntheticInput("pitfalls");
+    const previous = { ...defaultConfig(input), seed: 7, families: { ...defaultConfig(input).families, probe: true }, metadataRoles: { ...defaultConfig(input).metadataRoles, campaign: "excluded" as const, gone: "identifier" as const } };
+    const next = carryConfig(previous, input);
+    expect(next.seed).toBe(7);
+    expect(next.families.probe).toBe(true);
+    expect(next.metadataRoles.campaign).toBe("excluded");
+    expect(next.metadataRoles).not.toHaveProperty("gone");
   });
 });
