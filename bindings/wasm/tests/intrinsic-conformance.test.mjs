@@ -6,7 +6,7 @@ import { createQualificationRuntime } from '../index.js';
 const fixture = JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/intrinsic_legacy_v1.json', import.meta.url), 'utf8'));
 const native = JSON.parse(await readFile(new URL('../../../crates/nirs4all-preflight/tests/fixtures/intrinsic_native_v1.json', import.meta.url), 'utf8'));
 // The captured native evidence and the selected WASM provider have independent identities.
-const frozenMethodsVersion = '1.3.13+abi.2.20.0';
+const frozenMethodsVersion = '1.4.1+abi.2.24.0';
 const currentMethodsVersion = '1.4.1+abi.2.24.0';
 const runtime = await createQualificationRuntime({
   wasmModule: await readFile(new URL('../native/nirs4all_preflight_wasm_bg.wasm', import.meta.url)),
