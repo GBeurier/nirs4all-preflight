@@ -45,7 +45,8 @@ const diagMenu = (scope: Scope): { id: string; label: TextKey }[] =>
   [{ id: "s-overview", label: "diagTitle" as TextKey }, ...DIAG_LINKS, ...presentSections(scope)].filter((item) => (item.id !== "s-repeat" || scope.input.options.analysis_families?.repeatability !== false) && (item.id !== "s-target" || scope.targetId !== null)).sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
 
 /** Sticky left menu of the diagnosis sections; the section in view is highlighted. */
-function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Record<string, number>; items: { id: string; label: TextKey }[] }) {
+type Alerts = Record<string, { n: number; critical: boolean }>;
+function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id: string; label: TextKey }[] }) {
   const [active, setActive] = useState(items[0]?.id ?? "");
   const side = useRef<HTMLElement>(null);
   const ids = items.map((i) => i.id).join(" ");
@@ -72,7 +73,7 @@ function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Record<string, numb
         <p className="diag-side-title">{t("diagCharts")}</p>
         <ol>
           {items.map((item) => (
-            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}{alerts[item.id] ? <span className="count" aria-label={`${alerts[item.id]} alerts`}>{alerts[item.id]}</span> : null}</a></li>
+            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}{alerts[item.id] ? <span className="alert-dot" data-level={alerts[item.id]!.critical ? "critical" : "attention"} aria-label={`${alerts[item.id]!.n} ${alerts[item.id]!.critical ? "critical " : ""}alert${alerts[item.id]!.n > 1 ? "s" : ""}`}>{alerts[item.id]!.n}</span> : null}</a></li>
           ))}
         </ol>
       </nav>
@@ -138,10 +139,13 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const choose = (keys: string[], checked: boolean) => setExcludedMetrics((previous) => { const next = new Set(previous); for (const key of keys) { if (checked) next.delete(key); else next.add(key); } return next; });
   const filteredReport = result ? selectedReport(result.report, selected) : null;
   const alertSections: Record<string, string> = { leak: "s-duplicates", duplicates: "s-duplicates", missing: "s-quality", repeats: "s-populations", unit: "s-overview" };
-  const alerts: Record<string, number> = {};
+  // Red when a section holds a critical control point, orange for points to review.
+  const alerts: Alerts = {};
   for (const check of checks.filter((c) => c.status === "attention" || c.status === "critical")) {
     const id = alertSections[check.id] ?? (check.href?.startsWith("#s-") ? check.href.slice(1) : "s-overview");
-    alerts[id] = (alerts[id] ?? 0) + 1;
+    const entry = (alerts[id] ??= { n: 0, critical: false });
+    entry.n += 1;
+    entry.critical ||= check.status === "critical";
   }
 
   const go = (next: View, anchor: string | null = null) => {
@@ -439,7 +443,7 @@ function Settings({ t, input, config, onChange, origin, pending, canRepeat, onAp
       </fieldset>
       <details className="settings-advanced"><summary>Advanced analysis assumptions</summary>
         <label className="check"><input type="checkbox" checked={config.exchangeableUnits} onChange={(e) => onChange({ ...config, exchangeableUnits: e.target.checked })} />Independent units can be exchanged under the null hypothesis</label><p className="hint">Enable permutation tests only when this matches the sampling design. An independence declaration alone does not establish exchangeability.</p>
-        <label className="check"><input type="checkbox" checked={config.quasiToleranceFromRepeats} onChange={(e) => onChange({ ...config, quasiToleranceFromRepeats: e.target.checked })} />Estimate spectral similarity from declared technical repeats (X only)</label><p className="hint">Uses Q3 + 1.5 × IQR of RMS differences between technical repeats, separately for each source. At least three physical repeat groups are required. Target and retained-test data are excluded from estimation. This exploratory convention is not a calibrated duplicate boundary.</p>
+        <label className="check"><input type="checkbox" checked={config.quasiToleranceFromRepeats} onChange={(e) => onChange({ ...config, quasiToleranceFromRepeats: e.target.checked })} />Estimate spectral similarity from declared technical repeats (X only)</label><p className="hint">Uses Q3 + 1.5 × IQR of RMS differences between technical repeats, separately for each source. At least three physical repeat groups are required. Target and retained-test data are excluded from estimation. This exploratory convention is not a calibrated duplicate boundary. Off by default: when repeat scans differ about as much as distinct samples (common with handheld instruments), the tolerance becomes so wide that most pairs are flagged.</p>
         <label>Spectral similarity tolerance (RMS)<input type="number" min={Number.MIN_VALUE} step="any" placeholder="Not declared" disabled={config.quasiToleranceFromRepeats} value={config.quasiTolerance ?? ""} onChange={(e) => { const value = e.target.value === "" ? null : Number(e.target.value); if (value === null || Number.isFinite(value) && value > 0) onChange({ ...config, quasiTolerance: value }); }} /><small>Use acquisition precision or repeat-scan differences, without consulting the target. A universal tolerance inferred from all sample distances would confuse natural similarity with duplication. Declare a value greater than zero. The native-view tolerance uses the signal units.</small></label>
         <fieldset><legend>Conflicting references</legend><p className="hint">Categorical references conflict when their classes differ. For continuous references, declare the largest acceptable difference using reference precision or a domain requirement; it is not inferred from the target distribution.</p>{input.targets.map((target) => {
           const tolerance = config.referenceTolerances[target.target_id];

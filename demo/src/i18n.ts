@@ -171,10 +171,10 @@ const DICT = {
   validationIssues: { fr: "Problèmes de validation", en: "Validation issues" },
 
   // sections
-  popTitle: { fr: "Où vont vos observations", en: "Where your observations go" },
+  popTitle: { fr: "Où vont vos observations ?", en: "Where do your observations go?" },
   popLead: {
     fr: "Chaque barre est une étape de comptage du moteur : seules les observations de développement réelles et complètes entrent dans la structure, moyennées par objet physique × instrument × campagne.",
-    en: "See which observations contribute to each analysis and why others are excluded. Declared technical repeats are combined so the same physical sample does not dominate the PCA.",
+    en: "See which observations contribute to each analysis and why others are excluded. Declared technical repeats are averaged so the same physical sample does not dominate the PCA. Repeats are averaged only within one instrument and one campaign: acquisitions on another instrument or in another campaign stay separate units, because averaging across them would hide instrument or campaign effects. Without declared instruments or campaigns, each unit is simply a physical sample. Metadata groups are never averaged together: they are compared in the association, confounding and domain sections.",
   },
   spectraTitle: { fr: "Spectres de développement", en: "Calibration spectra" },
   spectraLead: {
@@ -198,7 +198,7 @@ const DICT = {
   structTitle: { fr: "Structure spectrale (ACP)", en: "Spectral structure (PCA)" },
   structLead: {
     fr: "Scores et valeurs propres calculés par nirs4all-methods sur la vue centrée ; la page ne fait que les tracer. Les axes ont des échelles indépendantes.",
-    en: "Explore which samples look alike and which stand apart. Colour the PCA map by the target or selected metadata to look for acquisition groups and gaps. The variance chart shows how much each component captures.",
+    en: "Explore which samples look alike and which stand apart. Colour the PCA map by the target or selected metadata to look for acquisition groups and gaps. The variance chart shows how much each component captures. The PCA uses the raw spectra, mean-centred and not scaled, with no preprocessing; declared technical repeats are averaged first. Preprocessing is not chosen here: Structure sensitivity shows how scatter and baseline corrections change this structure, and candidate preprocessing must be validated within calibration folds.",
   },
   axisX: { fr: "Axe horizontal", en: "Horizontal axis" },
   axisY: { fr: "Axe vertical", en: "Vertical axis" },
@@ -258,7 +258,7 @@ const DICT = {
   journey: { fr: "Parcours", en: "Journey" },
   stepData: { fr: "Vos données", en: "Your data" },
   stepDataSub: { fr: "{obs} observations · {bands} bandes", en: "{obs} observations · {bands} bands" },
-  stepDiag: { fr: "Diagnostic", en: "Diagnosis" },
+  stepDiag: { fr: "Diagnostic", en: "Diagnostics" },
   stepDiagRunning: { fr: "analyse en cours…", en: "analysing…" },
   stepDiagNone: { fr: "aucun point à examiner", en: "nothing to review" },
   stepDiagCount: { fr: "{n} point(s) à examiner", en: "{n} point(s) to review" },
@@ -371,9 +371,9 @@ const DICT = {
   qualityAtypicalHint: { fr: "T² > {t2} ou Q > {q} (95e centiles)", en: "T² > {t2} or Q > {q} (95th percentiles)" },
   qualitySpikes: { fr: "Pics isolés", en: "Spectra with isolated peaks" },
   qualityJumps: { fr: "Sauts", en: "Spectra with abrupt changes" },
-  qualityEventsHint: { fr: "au-delà de 8 écarts robustes", en: "Inspection flags; review the spectra before excluding data." },
+  qualityEventsHint: { fr: "au-delà de 8 écarts robustes", en: "Each spectrum is compared with its own robust derivative scale, so real narrow absorption bands can also be flagged on smooth or low-resolution spectra. Inspection flags only; review the spectra before excluding data, or raise the threshold in Settings." },
   qualitySnr: { fr: "Signal / bruit médian", en: "Estimated signal-to-noise ratio" },
-  qualityDistanceHint: { fr: "écart au spectre moyen, 95e centile : {d}", en: "95% of evaluated spectra differ from the mean by at most {d} (RMS, signal units)." },
+  qualityDistanceHint: { fr: "écart au spectre moyen, 95e centile : {d}", en: "95% of evaluated spectra differ from the mean spectrum by at most {d} (root mean square over bands, signal units). Compare it with the typical signal level, {level}: a distance that is a large share of the signal means the spectra differ strongly in level or shape." },
   qualityMap: { fr: "T² contre Q", en: "T² versus Q" },
   qualityMapHint: { fr: "T² : distance dans le plan des composantes ; Q : résidu hors de ce plan. Survolez un point pour l'identifier.", en: "T² measures distance within the PCA space; Q measures what the components do not explain. Dashed lines mark each statistic’s own 95th percentile. About 5% exceed each line by construction; these are inspection limits, not calibrated outlier thresholds." },
   qualityList: { fr: "Spectres les plus atypiques", en: "Most atypical spectra" },
@@ -383,7 +383,7 @@ const DICT = {
   chkUnit: { fr: "Unité d'indépendance", en: "Independence unit" },
   chkUnitOk: { fr: "Déclarée : {u}.", en: "Declared: {u}." },
   chkUnitKo: { fr: "Inconnue : les inférences restent limitées. Réglable dans Paramètres.", en: "Unknown: inferences stay limited. Adjustable in Settings." },
-  diagCharts: { fr: "Graphiques du diagnostic", en: "Diagnostic menu" },
+  diagCharts: { fr: "Graphiques du diagnostic", en: "Diagnostics" },
   techTitle: { fr: "Détails techniques", en: "Technical details" },
 
   // 0.1.0 capability blocks
@@ -418,7 +418,7 @@ const DICT = {
   sensTitle: { fr: "Sensibilité de la structure", en: "Structure sensitivity" },
   sensLead: {
     fr: "La structure ACP tient-elle quand on retire l'effet multiplicatif (SNV) ou quand chaque échantillon garde le même nombre de répétitions ? Un écart signale une structure dominée par l'amplitude, la diffusion ou le plan de mesure, sans en attribuer la cause.",
-    en: "Does the apparent structure change after scatter correction (SNV), linear baseline correction, or balancing repeated measurements? Large changes suggest that acquisition effects may influence the observed differences. Review spectra and acquisition groups, then validate candidate preprocessing within calibration folds; this check does not identify a cause or choose a preprocessing method.",
+    en: "Does the apparent structure change after removing the two most common acquisition effects? SNV removes multiplicative scatter (particle size, path length); a linear baseline correction removes additive offsets and slopes. Repeat balancing keeps the same number of repeat scans for every sample, so samples scanned many times cannot dominate the PCA; it needs declared technical repeats. Large changes suggest that acquisition effects influence the observed differences. This is a sensitivity check, not a preprocessing search: validate candidate preprocessing within calibration folds.",
   },
   sensDimRaw: { fr: "Dimension effective brute", en: "Raw effective dimension" },
   sensDimSnv: { fr: "Dimension effective SNV", en: "SNV effective dimension" },
