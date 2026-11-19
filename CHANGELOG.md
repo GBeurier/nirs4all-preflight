@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-19
+
+Numeric compatibility-breaking release (engine, crates, npm binding and Python
+wheel). Methods 1.5.0 corrects existing wide preflight PCA scores by projecting
+the centered input onto the final loadings. `structure.pca_scores` and downstream
+consumers of those scores, including exploratory clustering, domain-shift
+energies and PCA monitoring, can change numerically. Scientific tolerances,
+fixture oracles, report schemas and the exploratory confidence policy are
+unchanged; Methods ABI remains 2.24.0.
+
+- Adopt the tested Methods 1.5 series: Python `>=1.5.0,<1.6`, npm `~1.5.0`,
+  and native CI source tag `v1.5.0`.
+- Explicitly adopt the DAG-ML 0.5 series in the native and browser validation
+  providers; their grouped PLS/PCR probes retain the independent reference gates.
+- Keep frozen intrinsic fixture provenance at Methods 1.4.1 and check the current
+  Methods 1.5 provider identity separately. Preserve historical release evidence;
+  the 0.3.0 qualification record is `docs/implementation/VALIDATION_0.3.0.md`.
+
 ## 0.2.0 — 2026-11-18
 
 Compatibility-breaking release (engine, crates, npm binding and Python wheel). Spike and jump results change: they now come from the Methods population procedure, so the values of the existing `intrinsic.events.*` spike/jump metrics differ from 0.1.x. `intrinsic.events.protocol_evidence` now carries the `diagnostics.spectral_population_events_qc` evidence, and the declared sensor-clipping evidence of `diagnostics.spectral_events_qc` moves to the new id `intrinsic.events.clip_protocol_evidence`. New metrics `intrinsic.events.global_spike_band_counts` and `intrinsic.events.global_jump_band_counts`. Requires Methods 1.4.1 (ABI 2.24): the manifests declare `nirs4all-methods>=1.4.1,<1.5` (Python) and `@nirs4all/methods` `~1.4.1` (npm); CI builds the native library from the Methods `v1.4.1` tag and the lockfiles select `@nirs4all/methods` 1.4.1.
