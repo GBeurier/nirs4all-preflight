@@ -14,7 +14,7 @@ import { translate, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
 import { RepeatSection, StructureSection, type Scope } from "./Sections";
 import { DataView } from "./DataView";
-import { MetadataRoles, ROLE_LIST_MAX } from "./Workspace";
+import { MetadataRoles } from "./Workspace";
 
 const view = buildQualificationReportView(reportJson as unknown as EngineReport);
 const extended = buildQualificationReportView(extendedJson as unknown as EngineReport);
@@ -168,14 +168,17 @@ describe("0.1.0 capability sections", () => {
     expect(declared).not.toContain("undeclared type");
   });
 
-  it("edits metadata roles per role beyond ten columns", () => {
-    const few = Array.from({ length: ROLE_LIST_MAX }, (_, i) => ({ name: `m${i}`, kind: "categorical" }));
-    expect(html(<MetadataRoles columns={few} roles={{}} onRoles={() => undefined} />)).toContain('aria-label="Role of m0"');
-    const lots = [...few, { name: "batch_id", kind: "categorical" }];
-    const out = html(<MetadataRoles columns={lots} roles={{ batch_id: "identifier" }} onRoles={() => undefined} />);
-    expect(out).not.toContain('aria-label="Role of m0"');
-    expect(out).toContain('aria-label="Add a column to Excluded"');
-    expect(out).toContain('aria-label="Move batch_id back to Group / covariate"');
+  it.each([3, 12])("renders checkable metadata roles for %i columns", (count) => {
+    const columns = Array.from({ length: count }, (_, i) => ({ name: `m${i}`, kind: "categorical" }));
+    const out = html(<MetadataRoles columns={columns} roles={{ m0: "identifier", m1: "excluded" }} onRoles={() => undefined} />);
+    expect(out).not.toContain("<select");
+    expect(out.match(/type="checkbox"/g)).toHaveLength(count * 3);
+    expect(out.match(/checked=""/g)).toHaveLength(count);
+    expect(out).toContain('aria-label="Group / covariate"');
+    expect(out).toContain('aria-label="Identifier"');
+    expect(out).toContain('aria-label="Excluded"');
+    expect(out).toContain("Select shown");
+    expect(out).toContain("Clear shown");
   });
 
   it("control points cover the new blocks", () => {

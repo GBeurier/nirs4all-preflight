@@ -50,6 +50,19 @@ try {
   // Undeclared, and no shared sample identifier: every row is its own sample.
   assert.match(await page.locator('.comp-note').innerText(), /No repetition column declared/);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  // Metadata roles support consecutive edits without reopening a selector.
+  const excluded = page.getByRole('group', { name: 'Excluded', exact: true });
+  const groups = page.getByRole('group', { name: 'Group / covariate', exact: true });
+  await excluded.getByRole('checkbox', { name: 'Sample_ID (categorical)', exact: true }).check();
+  await excluded.getByRole('checkbox', { name: 'site (categorical)', exact: true }).check();
+  assert.equal(await excluded.getByRole('checkbox', { checked: true }).count(), 2);
+  assert.equal(await groups.getByRole('checkbox', { checked: true }).count(), 0);
+  await page.getByRole('searchbox', { name: 'Filter metadata columns' }).fill('site');
+  await groups.getByRole('button', { name: 'Select shown', exact: true }).click();
+  assert(await groups.getByRole('checkbox', { name: 'site (categorical)', exact: true }).isChecked());
+  await page.getByRole('searchbox', { name: 'Filter metadata columns' }).fill('');
+  assert(await excluded.getByRole('checkbox', { name: 'Sample_ID (categorical)', exact: true }).isChecked());
+  await groups.getByRole('button', { name: 'Select shown', exact: true }).click();
   await page.getByLabel('Repetition column').selectOption('Sample_ID');
   assert.match(await page.locator('.settings-actions [role=status]').innerText(), /Changes not applied yet/);
   await page.getByRole('button', { name: 'Apply and rerun', exact: true }).click();

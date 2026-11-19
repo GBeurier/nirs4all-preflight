@@ -387,8 +387,6 @@ type SettingsProps = {
   onClose: () => void;
 };
 
-/** Above this many metadata columns, roles are edited per role instead of per column. */
-export const ROLE_LIST_MAX = 10;
 const ROLE_LABELS: Record<MetadataRole, string> = { analysis: "Group / covariate", identifier: "Identifier", excluded: "Excluded" };
 const ROLE_HINTS: Record<MetadataRole, string> = {
   analysis: "Used by metadata associations, confounding and domain comparisons.",
@@ -469,56 +467,42 @@ function Settings({ t, input, config, onChange, origin, pending, canRepeat, onAp
   );
 }
 
-/**
- * Metadata roles. Up to ROLE_LIST_MAX columns, one role selector per column; beyond, one panel per
- * role listing its columns, where columns are added to the identifier and excluded roles and
- * everything else stays a group or covariate.
- */
+/** Checkable role lists keep every column available for consecutive and bulk edits. */
 export function MetadataRoles({ columns, roles, onRoles }: { columns: readonly { name: string; kind: string }[]; roles: Record<string, MetadataRole>; onRoles: (names: readonly string[], role: MetadataRole) => void }) {
   const [query, setQuery] = useState("");
   const roleOf = (name: string) => roles[name] ?? "analysis";
-  const intro = <p className="hint">Use groups and covariates for analysis. Identifiers and excluded columns stay in the dataset but are omitted from every metadata association, confounding and domain comparison. Physical identities and repeat declarations are preserved.</p>;
-  if (!columns.length) return null;
-  if (columns.length <= ROLE_LIST_MAX) {
-    return (
-      <fieldset className="settings-metadata">
-        <legend>Metadata roles</legend>
-        {intro}
-        {columns.map((column) => <label key={column.name}><span>{column.name} ({column.kind})</span><select aria-label={`Role of ${column.name}`} value={roleOf(column.name)} onChange={(e) => onRoles([column.name], e.target.value as MetadataRole)}>{(Object.keys(ROLE_LABELS) as MetadataRole[]).map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}</select></label>)}
-      </fieldset>
-    );
-  }
   const q = query.trim().toLowerCase();
-  const matches = (name: string) => !q || name.toLowerCase().includes(q);
+  const shown = columns.filter((c) => !q || c.name.toLowerCase().includes(q));
+  if (!columns.length) return null;
   return (
     <fieldset className="settings-metadata settings-roles">
       <legend>Metadata roles <span className="hint">({columns.length} columns)</span></legend>
-      {intro}
+      <p className="hint">Check columns to assign their role. Each column has one role. Identifiers and excluded columns stay in the dataset but are omitted from every metadata association, confounding and domain comparison. Physical identities and repeat declarations are preserved.</p>
       <label className="search"><span className="visually-hidden">Filter metadata columns</span><input type="search" placeholder="Filter columns" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
       <div className="role-panels">
         {(Object.keys(ROLE_LABELS) as MetadataRole[]).map((role) => {
           const members = columns.filter((c) => roleOf(c.name) === role);
-          const others = columns.filter((c) => roleOf(c.name) !== role && matches(c.name));
-          const shown = members.filter((c) => matches(c.name));
+          const fallback = role === "analysis" ? "excluded" : "analysis";
+          const checked = shown.filter((c) => roleOf(c.name) === role);
           return (
             <div className="role-panel" key={role} role="group" aria-label={ROLE_LABELS[role]}>
               <div className="role-panel-head"><strong>{ROLE_LABELS[role]}</strong><span className="count">{members.length}</span></div>
-              <p className="hint">{ROLE_HINTS[role]}</p>
-              {role === "analysis" ? null : (
-                <select aria-label={`Add a column to ${ROLE_LABELS[role]}`} value="" onChange={(e) => { if (e.target.value) onRoles([e.target.value], role); }}>
-                  <option value="">Add a column…</option>
-                  {others.map((c) => <option key={c.name} value={c.name}>{c.name} ({c.kind})</option>)}
-                </select>
-              )}
-              <ul className="role-chips">
+              <p className="hint">{ROLE_HINTS[role]} Uncheck to move to {ROLE_LABELS[fallback].toLowerCase()}.</p>
+              <div className="role-actions">
+                <button type="button" className="btn btn-ghost btn-sm" disabled={checked.length === shown.length} onClick={() => onRoles(shown.map((c) => c.name), role)}>Select shown</button>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={!checked.length} onClick={() => onRoles(checked.map((c) => c.name), fallback)}>Clear shown</button>
+              </div>
+              <ul className="role-checklist">
                 {shown.map((c) => (
                   <li key={c.name}>
-                    <span title={c.kind}>{c.name}</span>
-                    {role === "analysis" ? null : <button type="button" aria-label={`Move ${c.name} back to ${ROLE_LABELS.analysis}`} onClick={() => onRoles([c.name], "analysis")}>×</button>}
+                    <label className="check">
+                      <input type="checkbox" checked={roleOf(c.name) === role} onChange={(e) => onRoles([c.name], e.target.checked ? role : fallback)} />
+                      <span>{c.name} <small>({c.kind})</small></span>
+                    </label>
                   </li>
                 ))}
               </ul>
-              {role !== "analysis" && members.length ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onRoles(members.map((c) => c.name), "analysis")}>Clear</button> : null}
+              {!shown.length ? <p className="hint">No matching columns.</p> : null}
             </div>
           );
         })}

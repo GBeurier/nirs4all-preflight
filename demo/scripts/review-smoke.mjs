@@ -22,8 +22,8 @@ try {
   assert.equal(await page.locator('.sample-details[open]').count(), 0);
   assert.equal(await page.locator('#data-spectra').getByRole('button', { name: 'batch', exact: true }).count(), 1);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  assert.equal(await page.getByLabel('Role of id_sample').inputValue(), 'identifier');
-  await page.getByLabel('Role of batch').selectOption('excluded');
+  assert(await page.getByRole('group', { name: 'Identifier', exact: true }).getByRole('checkbox', { name: /^id_sample \(/ }).isChecked());
+  await page.getByRole('group', { name: 'Excluded', exact: true }).getByRole('checkbox', { name: /^batch \(/ }).check();
   const clustering = page.locator('#settings details').filter({ has: page.getByText('Exploratory groups', { exact: true }) });
   await clustering.locator('summary').click();
   await clustering.getByLabel('Include exploratory groups').uncheck();
