@@ -1,6 +1,7 @@
 // Card, KPI strip, legend, empty state and responsive wrapper of the chart kit.
 import type { CSSProperties, ReactNode } from "react";
 import { useWidth } from "./scale";
+import { exportSvg, exportTables } from "../../../export";
 
 export type Tone = "copper" | "copper-2" | "grey" | "teal-2" | "teal" | "accent" | "muted" | "blue";
 export const toneClass = (tone: Tone | undefined, fallback: Tone = "copper") => `cz-tone-${tone ?? fallback}`;
@@ -92,6 +93,21 @@ export function Legend({ items, className }: { items: readonly LegendItem[]; cla
 /** Renders `children(width)` at the container's pixel width; falls back to `fallback` px before layout (tests, SSR). */
 export function Responsive({ children, fallback = 640, min = 240, className, fixed }: { children: (width: number) => ReactNode; fallback?: number; min?: number; className?: string; fixed?: number }) {
   const [ref, width] = useWidth<HTMLDivElement>();
-  if (fixed) return <div className={className}>{children(fixed)}</div>;
-  return <div ref={ref} className={className} style={{ width: "100%", minWidth: 0 }}>{children(Math.max(min, width || fallback))}</div>;
+  return (
+    <div ref={ref} className={className} style={{ width: "100%", minWidth: 0 }}>
+      {children(fixed ?? Math.max(min, width || fallback))}
+      <ChartExports host={ref} />
+    </div>
+  );
+}
+
+/** Per-chart exports, as on every other demo chart (see Measured): the drawn SVG and the chart's data tables. */
+function ChartExports({ host }: { host: { current: HTMLDivElement | null } }) {
+  const name = () => host.current?.querySelector("svg title")?.textContent?.replace(/[^a-z0-9]+/gi, "-") ?? "preflight-chart";
+  return (
+    <>
+      <button type="button" className="btn btn-ghost btn-sm plot-export" onClick={() => { const svg = host.current?.querySelector("svg"); if (svg) exportSvg(svg, name()); }}>Export plot (SVG)</button>
+      <button type="button" className="btn btn-ghost btn-sm plot-export" onClick={() => { if (host.current) exportTables(host.current, name()); }}>Export chart table (CSV)</button>
+    </>
+  );
 }
