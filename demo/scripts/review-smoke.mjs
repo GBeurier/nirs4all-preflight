@@ -39,7 +39,7 @@ try {
   assert(await alertDots.count() > 0);
   for (const level of await alertDots.evaluateAll((dots) => dots.map((dot) => dot.dataset.level))) assert(['critical', 'attention'].includes(level));
   // The T²/Q card carries the reference markers; the per-band event chart precedes it.
-  const monitor = page.locator('#s-quality .card').filter({ has: page.locator('[data-reference]') }).first();
+  const monitor = page.locator('#s-quality :is(.card, .cz-card)').filter({ has: page.locator('[data-reference]') }).first();
   const svg = await download(monitor.getByRole('button', { name: 'Export plot (SVG)', exact: true }).first());
   assert.match(svg.name, /\.svg$/);
   assert.match(svg.text, /data-reference="x"/);
