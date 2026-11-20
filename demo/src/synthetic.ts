@@ -42,7 +42,7 @@ export function syntheticInput(scenario: SyntheticScenario, seed = 20261012): En
       sample_id: id,
       physical_sample_id: `p${i + 1}`,
       partition: retained ? "retained_test" : "development",
-      instrument: "synthetic-a",
+      instrument: pitfalls && i % 3 === 0 ? "synthetic-b" : "synthetic-a",
       campaign: i % 2 === 0 ? "2026-A" : "2026-B",
     });
     const nRep = pitfalls && !retained ? (i < 8 ? 3 : i === 8 ? 2 : 1) : 1;
@@ -86,6 +86,10 @@ export function syntheticInput(scenario: SyntheticScenario, seed = 20261012): En
     }],
     samples,
     targets: [{ target_id: "concentration", kind: "continuous", values, unit: "g/100g" }],
+    ...(pitfalls ? { metadata: {
+      columns: [{ name: "batch", kind: "categorical" as const }, { name: "id_sample", kind: "categorical" as const }],
+      values: Object.fromEntries(samples.map((sample, i) => [sample.sample_id, { batch: `batch-${i % 3 + 1}`, id_sample: sample.sample_id }])),
+    } } : {}),
     options: { independence_unit: "sample", seed },
   };
 }

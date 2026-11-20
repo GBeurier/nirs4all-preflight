@@ -44,7 +44,17 @@ fn intrinsic_population_preserves_masks_and_excludes_retained_and_augmented_rows
     assert!(validate_input(&input).valid);
     let report = analyze(&input, &provider);
     let calls = provider.0.borrow();
-    assert_eq!(calls.len(), 4);
+    // reference, population events, declared clipping, noise, PCA
+    assert_eq!(calls.len(), 5);
+    assert_eq!(
+        calls[1].method_id,
+        "diagnostics.spectral_population_events_qc"
+    );
+    assert!(matches!(
+        calls[1].parameters.get("min_spectra"),
+        Some(ProcedureParameter::Int(5))
+    ));
+    assert_eq!(calls[2].method_id, "diagnostics.spectral_events_qc");
     // The PCA family sees only the complete development spectra (row 0 has a
     // missing cell); the others keep every row with its mask.
     let pca = calls
@@ -203,22 +213,8 @@ fn native_complete_spectra_conform_to_recorded_legacy_protocols() {
         ("noise", "noise_rms", "intrinsic.noise.global_noise_sigma"),
         ("noise", "snr", "intrinsic.noise.global_signal_noise_ratio"),
         ("noise", "snr_db", "intrinsic.noise.global_signal_noise_db"),
-        ("events", "jump_count", "intrinsic.events.global_jump_count"),
-        (
-            "events",
-            "jump_rate",
-            "intrinsic.events.global_jump_fraction",
-        ),
-        (
-            "events",
-            "spike_count",
-            "intrinsic.events.global_spike_count",
-        ),
-        (
-            "events",
-            "spike_rate",
-            "intrinsic.events.global_spike_fraction",
-        ),
+        // Spikes and jumps no longer follow the legacy row-local protocol:
+        // they are population-relative (see native_population_events_*).
     ] {
         let metric = native_metric(&report, native_id);
         assert!(
@@ -364,4 +360,89 @@ fn native_in_sample_t2_averages_k_times_n_minus_one_over_n() {
     assert!((mean - 2. * (n - 1.) / n).abs() < 1e-9, "{mean}");
     let q = native_metric(&report, "intrinsic.pca.pca_q");
     assert!(matches!(q.status, Availability::Computed));
+}
+
+/// Smooth spectra whose absorption bands vary in intensity, one injected spike.
+fn smooth_population_input() -> QualificationInput {
+    let bands = 60;
+    let n = 30;
+    let axis: Vec<f64> = (0..bands).map(|j| 1000. + 10. * j as f64).collect();
+    let x: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            (0..bands)
+                .map(|j| {
+                    let b1 = (-((j as f64 - 15.) / 3.).powi(2)).exp();
+                    let b2 = (-((j as f64 - 40.) / 4.).powi(2)).exp();
+                    let noise = 1e-4 * (((i * 31 + j * 17) % 13) as f64 - 6.);
+                    let spike = if i == 7 && j == 25 { 0.05 } else { 0. };
+                    0.4 + (0.5 + 0.02 * i as f64) * b1
+                        + (0.3 + 0.01 * (i % 5) as f64) * b2
+                        + noise
+                        + spike
+                })
+                .collect()
+        })
+        .collect();
+    let ids: Vec<String> = (0..n).map(|i| format!("s{i}")).collect();
+    serde_json::from_value(json!({
+        "schema_version": 1,
+        "sources": [{ "source_id": "nir", "observation_ids": ids, "sample_ids": ids, "x": x, "axis": axis, "axis_unit": "nm" }],
+        "samples": ids.iter().map(|id| json!({ "sample_id": id })).collect::<Vec<_>>(),
+        "targets": [],
+        "options": { "intrinsic_qc": { "reference": false, "noise": false, "pca": false, "axis_basis": "physical" } }
+    }))
+    .unwrap()
+}
+
+#[test]
+fn native_population_events_ignore_shared_bands_and_locate_a_spike() {
+    let Ok(path) = std::env::var("N4M_LIBRARY_PATH") else {
+        return;
+    };
+    let provider = native::NativeMethodsProvider::load(path).unwrap();
+    let input = smooth_population_input();
+    assert!(validate_input(&input).valid);
+    let report = analyze(&input, &provider);
+    let spikes = native_metric(&report, "intrinsic.events.spike_count");
+    assert!(
+        matches!(spikes.status, Availability::Computed),
+        "{spikes:?}"
+    );
+    let values = spikes.value.as_ref().unwrap()["values"].as_array().unwrap();
+    let flagged: Vec<usize> = values
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.as_f64().unwrap_or(0.) > 0.)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        flagged,
+        vec![7],
+        "only the spectrum with the injected spike"
+    );
+    let bands = native_metric(&report, "intrinsic.events.global_spike_band_counts");
+    assert!(matches!(bands.status, Availability::Computed), "{bands:?}");
+    let counts = bands.value.as_ref().unwrap()["counts"].as_array().unwrap();
+    assert_eq!(counts.len(), 60);
+    // A spike shifts the three second differences around it: counts stay within ±1 band.
+    let hit: Vec<usize> = (0..60)
+        .filter(|&j| counts[j].as_i64().unwrap() > 0)
+        .collect();
+    assert!(
+        hit.contains(&25) && hit.iter().all(|j| (24..=26).contains(j)),
+        "{hit:?}"
+    );
+    assert_eq!(
+        native_metric(&report, "intrinsic.events.global_jump_band_counts")
+            .value
+            .as_ref()
+            .unwrap()["axis"][25],
+        json!(1250.)
+    );
+    // Declared clipping still comes from the per-spectrum protocol.
+    let clipping = native_metric(&report, "intrinsic.events.global_declared_clip_fraction");
+    assert_eq!(
+        clipping.reason_code.as_deref(),
+        Some("PHYSICAL_SENSOR_BOUNDS_NOT_DECLARED")
+    );
 }

@@ -19,3 +19,6 @@ bindings/wasm/native/
 /openai/
 **/.pytest_cache/
 demo/vendor/
+!/demo/vendor/
+/demo/vendor/*
+!/demo/vendor/io-browser-owner/

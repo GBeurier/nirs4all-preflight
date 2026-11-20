@@ -1,7 +1,7 @@
 // Display joins between the canonical input and engine results. No statistics: rows are
 // selected, labelled and coloured; every number shown comes from the input or the engine.
 import { extractIntrinsic, type IntrinsicSignal, type PcaStructure, type QualificationReportView, type ScorePoint, type TargetPoint } from "nirs4all-ui/qualification";
-import type { EngineInput, InputSample, InputSource } from "./input";
+import { metadataColumns, metadataValue, type EngineInput, type InputSample, type InputSource } from "./input";
 
 export type RowKind = "development" | "augmented" | "retained_test" | "prediction" | "undeclared";
 export const ROW_KINDS: readonly RowKind[] = ["development", "augmented", "retained_test", "prediction", "undeclared"];
@@ -160,40 +160,58 @@ export function sampleRows(input: EngineInput, source: InputSource | undefined):
   });
 }
 
-export type PcaColorBy = "none" | "target" | "campaign" | "instrument" | "quality";
-
-/** Group labels of the quality colouring and the sample ids holding at least one atypical scan. */
+export type PcaColorBy = "none" | "target" | "quality" | "campaign" | "instrument" | `metadata:${string}`;
 export interface QualityColoring { flagged: ReadonlySet<string>; typical: string; atypical: string }
 
-/**
- * Score points joined to declared metadata. A unit is coloured by a target value only when its
- * representative sample is the single development sample of its physical × instrument × campaign key.
- */
+/** Exact, consistent calibration references only. Retained-test Y is never used. */
+export function targetColorValues(input: EngineInput, targetId: string): Map<string, number | string> {
+  const samples = sampleIndex(input);
+  const target = input.targets.find((t) => t.target_id === targetId);
+  const values = new Map<string, number | string>();
+  const conflicts = new Set<string>();
+  for (const v of target?.values ?? []) {
+    const value = target?.kind === "categorical" ? v.category : v.value;
+    if (v.status !== "exact" || value == null || (typeof value === "number" && !Number.isFinite(value)) || rowKind(samples, v.sample_id) !== "development") continue;
+    if (values.has(v.sample_id) && values.get(v.sample_id) !== value) conflicts.add(v.sample_id);
+    values.set(v.sample_id, value);
+  }
+  for (const id of conflicts) values.delete(id);
+  return values;
+}
+
+/** Only varying, selected metadata appears in visual controls. */
+export function varyingMetadata(input: EngineInput) {
+  return metadataColumns(input).filter((c) =>
+    (input.options.metadata_roles?.[c.name] ?? "analysis") === "analysis"
+    && new Set(input.samples.filter((s) => (s.partition ?? "development") === "development" && !s.augmentation_parent_id).map((s) => metadataValue(input, s.sample_id, c.name, s)).filter((v) => v !== null)).size > 1);
+}
+
 export function pcaPoints(input: EngineInput, pca: PcaStructure, xi: number, yi: number, colorBy: PcaColorBy, targetId: string | null, quality?: QualityColoring): ScorePoint[] {
   const samples = sampleIndex(input);
-  const values = targetId ? developmentTargetValues(input, targetId) : new Map<string, number>();
-  const keyOf = (s: InputSample) => `${s.physical_sample_id ?? s.sample_id}|${s.instrument ?? ""}|${s.campaign ?? ""}`;
-  const members = new Map<string, number>();
-  for (const s of input.samples) if (rowKind(samples, s.sample_id) === "development") members.set(keyOf(s), (members.get(keyOf(s)) ?? 0) + 1);
-  // a unit is atypical when any sample aggregated into it holds an atypical scan
-  const flaggedKeys = new Set(input.samples.filter((s) => quality?.flagged.has(s.sample_id)).map(keyOf));
+  const values = targetId ? targetColorValues(input, targetId) : new Map<string, number | string>();
+  // This matches the engine's physical × instrument × campaign aggregation, with collision-safe keys.
+  const keyOf = (s: InputSample) => JSON.stringify([s.physical_sample_id ?? s.sample_id, s.instrument ?? "", s.campaign ?? ""]);
+  const members = new Map<string, InputSample[]>();
+  for (const s of input.samples) if (rowKind(samples, s.sample_id) === "development") {
+    const key = keyOf(s);
+    members.set(key, [...(members.get(key) ?? []), s]);
+  }
+  const name = colorBy.startsWith("metadata:") ? colorBy.slice(9) : colorBy;
+  const continuous = colorBy === "target" ? input.targets.find((t) => t.target_id === targetId)?.kind === "continuous" : metadataColumns(input).find((c) => c.name === name)?.kind === "continuous";
   const points = pca.sampleIds.map((id, i) => {
-    const s = samples.get(id);
+    const sample = samples.get(id);
+    const unit = sample ? members.get(keyOf(sample)) ?? [] : [];
     const row = pca.scores[i] ?? [];
-    const single = s ? members.get(keyOf(s)) === 1 : false;
-    const point: ScorePoint = {
-      id,
-      x: row[xi] ?? Number.NaN,
-      y: row[yi] ?? Number.NaN,
-      details: [pca.aggregationKeys[i] ?? "", s?.instrument ? `instrument: ${s.instrument}` : "", s?.campaign ? `campaign: ${s.campaign}` : ""].filter(Boolean),
-    };
-    if (colorBy === "campaign") point.group = s?.campaign ?? null;
-    if (colorBy === "instrument") point.group = s?.instrument ?? null;
-    if (colorBy === "target") point.value = single ? (values.get(id) ?? null) : null;
-    if (colorBy === "quality" && quality) point.group = s && flaggedKeys.has(keyOf(s)) ? quality.atypical : quality.typical;
+    const point: ScorePoint = { id, x: row[xi] ?? Number.NaN, y: row[yi] ?? Number.NaN, details: [pca.aggregationKeys[i] ?? ""] };
+    if (colorBy === "quality" && quality) point.group = unit.some((s) => quality.flagged.has(s.sample_id)) ? quality.atypical : quality.typical;
+    else if (colorBy !== "none") {
+      const unitValues = unit.map((s) => colorBy === "target" ? values.get(s.sample_id) ?? null : metadataValue(input, s.sample_id, name, s));
+      const value = unitValues.length && unitValues.every((v) => v !== null && v === unitValues[0]) ? unitValues[0] : null;
+      if (continuous) point.value = typeof value === "number" ? value : null;
+      else point.group = value === null || value === undefined ? null : String(value);
+    }
     return point;
   });
-  // atypical units drawn last, on top
   return colorBy === "quality" && quality ? [...points.filter((p) => p.group === quality.typical), ...points.filter((p) => p.group !== quality.typical)] : points;
 }
 

@@ -8,7 +8,7 @@ import { DEMO_DATASETS, readDemoFiles, assembleDemoDataset, type DemoDataset } f
 import { importFiles, loadDatasetRuntime, type DetectedTable } from "./dataset-io";
 import { listDatasets, removeDataset, saveDataset } from "./dataset-store";
 import { parseCanonicalInput, type EngineInput } from "./input";
-import type { NamedFile } from "@nirs4all/io-wasm/types";
+import type { NamedFile } from "../vendor/io-browser-owner/types/nirs4all-io";
 import type { SyntheticScenario } from "./synthetic";
 
 /** What a re-import needs: the library record, IO's metadata columns and, in this session only, the files. */

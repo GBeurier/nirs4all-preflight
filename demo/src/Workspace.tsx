@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
-import { buildQualificationReportView, evidenceCsv, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import { buildQualificationReportView, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import timings from "./data/analysis-timings.json";
+import { DEMO_DATASETS } from "./demo-datasets";
+import { csvDialect, downloadEvidenceCsv, metricKey, selectedReport, setCsvDialect, type CsvDialect } from "./export";
 import { baseName, type Origin, type Result, type Run, type T } from "./App";
 import { buildChecks, needsReview } from "./checks";
 import { DataView } from "./DataView";
@@ -8,12 +11,15 @@ import { downloadText } from "./download";
 import type { EngineValidation } from "./engine";
 import { fill, type TextKey } from "./i18n";
 import { Icon, type IconName } from "./icons";
-import { countIndependenceGroups, defaultConfig, parseSeed, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
+import { countIndependenceGroups, defaultConfig, parseSeed, ANALYSIS_FAMILIES, metadataColumns, type MetadataRole, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
 import { DECLARABLE_REPETITIONS, type RepetitionDeclaration } from "./dataset";
 import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
+import { CharacterizationOverview, CharacterizationProvider, PHASES, PhaseHeading, SpectralQualityMap, hasQualityMap } from "./characterization/overview";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
 type View = "data" | "diagnosis" | "evidence" | "export";
+const FAMILY_LABELS = { spectral_quality: "Spectral quality", sensitivity: "Structure sensitivity", repeatability: "Technical repeatability", clustering: "Exploratory groups", association: "Metadata and target", confounding: "Confounding factors", domain_shift: "Domain comparisons", probe: "Validation probe" };
+const FAMILY_HINTS = { spectral_quality: "Locate unusual spectra, isolated peaks and abrupt changes before calibration.", sensitivity: "Check how scatter correction and repeat balancing change the spectral structure.", repeatability: "Measure agreement between declared repeat acquisitions of the same sample.", clustering: "Look for groups of similar samples and check whether those groups persist.", association: "Check whether the target changes with selected metadata.", confounding: "Check whether selected metadata effects can be separated from one another.", domain_shift: "Check whether selected groups cover similar spectral populations.", probe: "Estimate whether a simple grouped calibration can predict the target better than the training mean." };
 const UNITS: readonly IndependenceUnit[] = ["unknown", "sample", "reference_group", "group"];
 const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-populations", label: "navPopulations" },
@@ -21,6 +27,14 @@ const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-repeat", label: "navRepeat" },
   { id: "s-target", label: "navTarget" },
 ];
+/** Characterization sections (not in the shared i18n table): menu entries with their own English labels. */
+const CHARACTERIZATION_LINKS: readonly { id: string; label: string }[] = [
+  { id: "s-characterization", label: "Characterization overview" },
+  { id: "s-preprocessing", label: PHASES.preprocessingNav },
+  { id: "s-quality-map", label: PHASES.mapNav },
+];
+/** The explorer loads the Methods WASM and its worker: fetched only when the diagnosis page opens. */
+const PreprocessingExplorer = lazy(() => import("./characterization/preprocessing/PreprocessingExplorer").then((m) => ({ default: m.PreprocessingExplorer })));
 
 /** One line per issue code: an input can repeat the same issue on thousands of values. */
 function issueGroups(validation: EngineValidation) {
@@ -34,13 +48,24 @@ function issueGroups(validation: EngineValidation) {
   return [...groups.values()].sort((a, b) => Number(b.blocking) - Number(a.blocking));
 }
 
-/** Diagnosis sections in display order; the menu lists those present in the report. */
-const DIAG_ORDER = ["s-overview", "s-populations", "s-quality", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-repeat", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
-const diagMenu = (scope: Scope): { id: string; label: TextKey }[] =>
-  [{ id: "s-overview", label: "diagTitle" as TextKey }, ...DIAG_LINKS, ...presentSections(scope)].sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
+/**
+ * Diagnosis sections in display order; the menu lists those present in the report. The page follows the
+ * characterization mockup: overview, detailed diagnostics (spectral quality, repeatability), preprocessing
+ * explorer, spectral quality map, then the remaining analyses.
+ */
+const DIAG_ORDER = ["s-overview", "s-populations", "s-characterization", "s-quality", "s-repeat", "s-preprocessing", "s-quality-map", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
+const diagMenu = (scope: Scope, qualityMap: boolean): { id: string; label: string }[] =>
+  [
+    { id: "s-overview", label: scope.t("diagTitle" as TextKey) },
+    ...[...DIAG_LINKS, ...presentSections(scope)].map((item) => ({ id: item.id, label: scope.t(item.label) })),
+    ...CHARACTERIZATION_LINKS.filter((item) => item.id !== "s-quality-map" || qualityMap),
+  ]
+    .filter((item) => (item.id !== "s-repeat" || scope.input.options.analysis_families?.repeatability !== false) && (item.id !== "s-target" || scope.targetId !== null))
+    .sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
 
 /** Sticky left menu of the diagnosis sections; the section in view is highlighted. */
-function DiagnosisMenu({ t, items }: { t: T; items: { id: string; label: TextKey }[] }) {
+type Alerts = Record<string, { n: number; critical: boolean }>;
+function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id: string; label: string }[] }) {
   const [active, setActive] = useState(items[0]?.id ?? "");
   const side = useRef<HTMLElement>(null);
   const ids = items.map((i) => i.id).join(" ");
@@ -67,7 +92,7 @@ function DiagnosisMenu({ t, items }: { t: T; items: { id: string; label: TextKey
         <p className="diag-side-title">{t("diagCharts")}</p>
         <ol>
           {items.map((item) => (
-            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}</a></li>
+            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{item.label}{alerts[item.id] ? <span className="alert-dot" data-level={alerts[item.id]!.critical ? "critical" : "attention"} aria-label={`${alerts[item.id]!.n} ${alerts[item.id]!.critical ? "critical " : ""}alert${alerts[item.id]!.n > 1 ? "s" : ""}`}>{alerts[item.id]!.n}</span> : null}</a></li>
           ))}
         </ol>
       </nav>
@@ -97,19 +122,23 @@ interface WorkspaceProps {
   htmlError: string | null;
   onRun: () => void;
   onCancel: () => void;
-  onDownloadHtml: () => void;
+  onDownloadHtml: (report: EngineReport) => void;
   /** Re-imports the dropped files with this repetition column; absent when the files are not in memory. */
   onRepetition?: (repetition: RepetitionDeclaration | undefined) => void;
 }
 
-const sameConfig = (a: AnalysisConfig, b: AnalysisConfig) =>
-  a.independenceUnit === b.independenceUnit && a.assumeOneObservationPerSample === b.assumeOneObservationPerSample && a.seed === b.seed && a.fullComputation === b.fullComputation;
+// Remembered declared tolerance is inactive while inference is enabled.
+export const sameConfig = (a: AnalysisConfig, b: AnalysisConfig) =>
+  JSON.stringify({ ...a, quasiTolerance: a.quasiToleranceFromRepeats ? null : a.quasiTolerance }) ===
+  JSON.stringify({ ...b, quasiTolerance: b.quasiToleranceFromRepeats ? null : b.quasiTolerance });
 
 export function Workspace({ t, locale, input, origin, config, onConfig, run, result, validation, htmlError, onRun, onCancel, onDownloadHtml, onRepetition }: WorkspaceProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setView] = useState<View>("data");
   const [scrollTo, setScrollTo] = useState<string | null>(null);
   const [evidenceQuery, setEvidenceQuery] = useState("");
+  const [excludedMetrics, setExcludedMetrics] = useState<ReadonlySet<string>>(new Set());
+  const [dialect, setDialect] = useState<CsvDialect>(csvDialect);
   const report = useMemo(() => (result ? buildQualificationReportView(result.report) : null), [result]);
   const sources = report ? reportSourceIds(report) : input.sources.map((s) => s.source_id);
   const targets = report ? reportTargetIds(report) : input.targets.map((x) => x.target_id);
@@ -118,13 +147,32 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const source = sourceId && sources.includes(sourceId) ? sourceId : (sources[0] ?? input.sources[0]?.source_id ?? null);
   const target = targetId && targets.includes(targetId) ? targetId : (targets[0] ?? input.targets[0]?.target_id ?? null);
   const running = run.state === "running";
-  const dirty = result !== null && !sameConfig(config, defaultConfig(result.input));
+  const dirty = result !== null && !sameConfig(config, defaultConfig(result.requested));
+  const preliminary = result?.preliminary === true;
   const synthetic = origin.kind === "synthetic" || input.data_origin === "synthetic";
   const observations = input.sources.reduce((n, s) => n + s.observation_ids.length, 0);
   const bands = input.sources.reduce((n, s) => n + s.axis.length, 0);
   const scope: Scope | null = report && result ? { t, locale, view: report, input: result.input, sourceId: source, targetId: target } : null;
+  // The quality map is listed only when at least one local diagnostic exists for the selected source.
+  const qualityMapPresent = useMemo(() => (report && result ? hasQualityMap({ view: report, input: result.input, sourceId: source }) : false), [report, result, source]);
+  const openSettings = () => {
+    setSettingsOpen(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const checks = scope ? buildChecks(scope.view, scope.input, source, target, t, locale) : [];
   const review = needsReview(checks);
+  const selected = new Set(report?.metrics.map(metricKey).filter((key) => !excludedMetrics.has(key)) ?? []);
+  const choose = (keys: string[], checked: boolean) => setExcludedMetrics((previous) => { const next = new Set(previous); for (const key of keys) { if (checked) next.delete(key); else next.add(key); } return next; });
+  const filteredReport = result ? selectedReport(result.report, selected) : null;
+  const alertSections: Record<string, string> = { leak: "s-duplicates", duplicates: "s-duplicates", missing: "s-quality", repeats: "s-populations", unit: "s-overview" };
+  // Red when a section holds a critical control point, orange for points to review.
+  const alerts: Alerts = {};
+  for (const check of checks.filter((c) => c.status === "attention" || c.status === "critical")) {
+    const id = alertSections[check.id] ?? (check.href?.startsWith("#s-") ? check.href.slice(1) : "s-overview");
+    const entry = (alerts[id] ??= { n: 0, critical: false });
+    entry.n += 1;
+    entry.critical ||= check.status === "critical";
+  }
 
   const go = (next: View, anchor: string | null = null) => {
     setView(next);
@@ -163,7 +211,8 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
       disabled: !report,
     },
     { id: "evidence", icon: "evidence", label: t("stepEvidence"), sub: report ? fill(t("stepEvidenceSub"), { n: report.metrics.length }) : t("stepDiagWait"), disabled: !report },
-    { id: "export", icon: "export", label: t("stepExport"), sub: t("stepExportSub"), disabled: !report },
+    // A preliminary report lacks the selected analyses: it is shown, never exported as the run.
+    { id: "export", icon: "export", label: t("stepExport"), sub: preliminary ? t("stepExportWait") : t("stepExportSub"), disabled: !report || preliminary },
   ];
 
   return (
@@ -177,6 +226,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               {synthetic ? <span className="tag tag-synth">{t("synthetic")}</span> : null}
             </div>
             {synthetic ? <p className="ws-sub">{t("demoLabel")}</p> : null}
+            {DEMO_DATASETS.filter((d) => d.name === origin.name).map((d) => <p className="ws-sub" key={d.id}>Source: <a href={d.source} target="_blank" rel="noreferrer">{d.attribution}</a> · {d.license}. Original demonstration split; see <a href={`${import.meta.env.BASE_URL}data/demo/SOURCES.md`} target="_blank" rel="noreferrer">dataset provenance</a>.</p>)}
             {origin.tables?.length ? (
               <p className="ws-sub ws-files">
                 {t("detectedFiles")}{" "}
@@ -188,9 +238,10 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </div>
           <div className="ws-actions">
             <div className="ws-status" role="status" aria-live="polite">
-              {running ? <><span className="spinner" aria-hidden="true" />{t("running")}</> : null}
+              {running ? <><span className="spinner" aria-hidden="true" />{t(preliminary ? "runningSelected" : "running")}</> : null}
               {run.state === "cancelled" ? t("cancelled") : null}
-              {run.state === "idle" && result && !dirty ? <><span className="ok-dot" aria-hidden="true" />{t("done")}</> : null}
+              {run.state === "idle" && result && !dirty && !preliminary ? <><span className="ok-dot" aria-hidden="true" />{t("done")}{result.elapsedMs !== undefined ? ` · ${(result.elapsedMs / 1000).toFixed(1)} s` : ""}</> : null}
+              {preliminary && !running ? <span className="warn-text">{t("preliminaryStopped")}</span> : null}
               {dirty && !running ? <span className="warn-text">{t("settingsChanged")}</span> : null}
             </div>
             <button className="btn btn-outline" aria-expanded={settingsOpen} aria-controls="settings" onClick={() => setSettingsOpen((o) => !o)}>
@@ -200,12 +251,17 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
             {running ? (
               <button className="btn btn-danger" onClick={onCancel}>{t("cancel")}</button>
             ) : (
-              <button className={dirty || run.state !== "idle" ? "btn btn-primary" : "btn btn-outline"} onClick={onRun}>{t("rerun")}</button>
+              <button className={dirty || run.state !== "idle" ? "btn btn-primary" : "btn btn-outline"} onClick={() => { setSettingsOpen(false); onRun(); }}>{t("rerun")}</button>
             )}
           </div>
         </div>
         <div className="container">
-          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} onRepetition={onRepetition && ((r) => { setSettingsOpen(false); onRepetition(r); })} /> : null}
+          {settingsOpen ? <Settings t={t} input={input} config={config} onChange={onConfig} origin={origin} pending={dirty} canRepeat={Boolean(onRepetition)} onClose={() => setSettingsOpen(false)} onApply={(repetition) => {
+            setSettingsOpen(false);
+            // A new repetition column reassembles the files with IO, then reruns with these settings.
+            if (repetition && onRepetition) onRepetition(repetition.value);
+            else onRun();
+          }} /> : null}
           {run.state === "error" ? (
             <div role="alert" className="alert">
               {run.code === "INPUT_REFUSED" ? null : <p>{run.code === "ENGINE_UNAVAILABLE" ? t("engineUnavailable") : run.code === "CELL_BUDGET_EXCEEDED" ? `${t("tooManyCells")} (${run.message})` : `${t("engineError")} (${run.code}) : ${run.message}`}</p>}
@@ -223,12 +279,12 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
       <nav className="journey" aria-label={t("journey")}>
         <div className="container journey-inner">
           <ol>
-            {steps.map((s, i) => (
+            {steps.map((s) => (
               <li key={s.id}>
                 <button className="journey-step" aria-current={view === s.id ? "step" : undefined} disabled={s.disabled} onClick={() => go(s.id)}>
                   <span className="journey-icon"><Icon name={s.icon} size={18} />{s.badge ? <span className="journey-badge" data-kind={s.badge} aria-hidden="true" /> : null}</span>
                   <span className="journey-text">
-                    <span className="journey-label"><span className="journey-num">{i + 1}</span>{s.label}</span>
+                    <span className="journey-label">{s.label}</span>
                     <span className="journey-sub">{s.sub}</span>
                   </span>
                 </button>
@@ -262,27 +318,38 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
                 <span className="ready-text"><strong>{t("running")}</strong><span>{t("runningDetail")}</span></span>
               </div>
             ) : null}
-            <DataView key={source ?? ""} t={t} locale={locale} input={result?.input ?? input} sourceId={source} targetId={target} report={report} />
+            <DataView key={source ?? ""} t={t} locale={locale} input={result?.input ?? input} sourceId={source} targetId={target} report={report} repetition={(result?.origin ?? origin).repetition} />
           </>
         ) : null}
 
         {view === "diagnosis" && scope ? (
           <div className="diag-layout">
-            <DiagnosisMenu t={t} items={diagMenu(scope)} />
+            <DiagnosisMenu t={t} items={diagMenu(scope, qualityMapPresent)} alerts={alerts} />
             <div className="diag-main">
+            {preliminary ? <p className="alert alert-info" role="status">{running ? <span className="spinner" aria-hidden="true" /> : null}{t(running ? "preliminaryRunning" : "preliminaryStopped")}</p> : null}
+            <CharacterizationProvider>
             <DiagnosisSummary {...scope} checks={checks} />
             <PopulationsSection {...scope} />
-            <SpectralQualitySection {...scope} />
+            <CharacterizationOverview key={`char-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
+            <PhaseHeading id="s-detailed" index="2 / 4" title={PHASES.detailedTitle} lead={PHASES.detailedLead} />
+            <SpectralQualitySection key={`quality-${source ?? ""}`} {...scope} />
+            <RepeatSection key={`repeat-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
+            <Section id="s-preprocessing" index="3 / 4" icon="flow" accent="cyan" title={PHASES.preprocessingNav}>
+              <Suspense fallback={<p className="note" role="status">Loading the preprocessing explorer…</p>}>
+                <PreprocessingExplorer key={`pre-${source ?? ""}`} scope={scope} />
+              </Suspense>
+            </Section>
+            <SpectralQualityMap key={`map-${source ?? ""}`} {...scope} />
             <DuplicatesSection {...scope} />
             <StructureSection key={`pca-${source ?? ""}`} {...scope} />
             <SensitivitySection {...scope} />
             <ClusteringSection {...scope} />
-            <RepeatSection {...scope} />
             <TargetSection {...scope} />
             <AssociationSection {...scope} />
             <ConfoundingSection {...scope} />
             <DomainShiftSection {...scope} />
             <ProbeSection {...scope} />
+            </CharacterizationProvider>
             <NextStep label={t("stepEvidence")} t={t} onClick={() => go("evidence")} />
             </div>
           </div>
@@ -290,7 +357,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
 
         {view === "evidence" && scope ? (
           <>
-            <EvidenceSection key={evidenceQuery} {...scope} initialQuery={evidenceQuery} fileName={`${baseName(result!)}-evidence.csv`} />
+            <EvidenceSection key={evidenceQuery} {...scope} initialQuery={evidenceQuery} fileName={`${baseName(result!)}-evidence.csv`} selected={selected} onToggle={(key) => choose([key], !selected.has(key))} onSelect={choose} />
             <CapabilitiesSection {...scope} />
             <Section id="s-technical" icon="data" accent="amber" title={t("techTitle")}>
               <TechnicalSection {...scope} />
@@ -299,16 +366,24 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
           </>
         ) : null}
 
-        {view === "export" && result ? (
+        {view === "export" && result && !preliminary ? (
           <Section id="export" icon="export" accent="cyan" title={t("exportTitle")}>
+            <p className="note">{selected.size} of {report?.metrics.length ?? 0} indicators selected. <button className="btn btn-ghost btn-sm" onClick={() => go("evidence")}>Choose indicators</button></p>
+            <label className="csv-dialect">Spreadsheet format for CSV files
+              <select value={dialect} onChange={(e) => { const next = e.target.value as CsvDialect; setDialect(next); setCsvDialect(next); }}>
+                <option value="decimal-comma">Semicolons, decimal comma (e.g. French Excel)</option>
+                <option value="standard">Commas, decimal point (e.g. English Excel, R, Python)</option>
+              </select>
+              <small>One value per cell; long or nested lists are summarised and kept in full in the JSON report.</small>
+            </label>
             <div className="exports">
-              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-report.json`, "application/json", JSON.stringify(result.report, null, 2))}>
+              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-report.json`, "application/json", JSON.stringify(filteredReport, null, 2))}>
                 <span className="export-ext">JSON</span><strong>{t("dlJson")}</strong><span>{t("dlJsonDesc")}</span>
               </button>
-              <button className="export-card" onClick={onDownloadHtml}>
+              <button className="export-card" onClick={() => { if (filteredReport) onDownloadHtml(filteredReport); }}>
                 <span className="export-ext">HTML</span><strong>{t("dlHtml")}</strong><span>{t("dlHtmlDesc")}</span>
               </button>
-              <button className="export-card" onClick={() => downloadText(`${baseName(result)}-evidence.csv`, "text/csv", `\uFEFF${evidenceCsv(report!.metrics, locale)}`)}>
+              <button className="export-card" onClick={() => downloadEvidenceCsv(`${baseName(result)}-evidence.csv`, report!.metrics.filter((m) => selected.has(metricKey(m))), locale)}>
                 <span className="export-ext">CSV</span><strong>{t("dlCsv")}</strong><span>{t("dlCsvDesc")}</span>
               </button>
               <button className="export-card" onClick={() => downloadText(`${baseName(result)}-input.json`, "application/json", JSON.stringify(result.input))}>
@@ -332,14 +407,41 @@ function NextStep({ label, t, onClick }: { label: string; t: T; onClick: () => v
   );
 }
 
-type SettingsProps = { t: T; input: EngineInput; config: AnalysisConfig; onChange: (c: AnalysisConfig) => void; origin: Origin; onRepetition: WorkspaceProps["onRepetition"] };
+type SettingsProps = {
+  t: T;
+  input: EngineInput;
+  config: AnalysisConfig;
+  onChange: (c: AnalysisConfig) => void;
+  origin: Origin;
+  /** Settings differ from those of the last applied run. */
+  pending: boolean;
+  /** The dropped files are in memory, so a repetition column can be (re)declared. */
+  canRepeat: boolean;
+  /** Applies every setting and reruns; `repetition` is set only when the declaration changed. */
+  onApply: (repetition?: { value: RepetitionDeclaration | undefined }) => void;
+  onClose: () => void;
+};
 
-function Settings({ t, input, config, onChange, origin, onRepetition }: SettingsProps) {
+const ROLE_LABELS: Record<MetadataRole, string> = { analysis: "Group / covariate", identifier: "Identifier", excluded: "Excluded" };
+const ROLE_HINTS: Record<MetadataRole, string> = {
+  analysis: "Used by metadata associations, confounding and domain comparisons.",
+  identifier: "Names samples or rows; never treated as a factor.",
+  excluded: "Kept in the dataset, left out of every metadata analysis.",
+};
+
+function Settings({ t, input, config, onChange, origin, pending, canRepeat, onApply, onClose }: SettingsProps) {
   const [seedText, setSeedText] = useState(config.seed === null ? "" : String(config.seed));
   const seed = parseSeed(seedText);
+  const [column, setColumn] = useState(origin.repetition?.column ?? "");
+  const [type, setType] = useState<RepetitionDeclaration["type"]>(origin.repetition?.type ?? "rescan");
+  const repetitionChanged = column !== (origin.repetition?.column ?? "") || (column !== "" && type !== origin.repetition?.type);
+  const changes = pending || repetitionChanged;
+  const setRoles = (names: readonly string[], role: MetadataRole) => onChange({ ...config, metadataRoles: { ...config.metadataRoles, ...Object.fromEntries(names.map((name) => [name, role])) } });
   return (
-    <form id="settings" className="settings" onSubmit={(e) => e.preventDefault()}>
-      {origin.columns?.length ? <RepetitionSetting key={`${origin.repetition?.column ?? ""}:${origin.repetition?.type ?? ""}`} t={t} columns={origin.columns} current={origin.repetition} onApply={onRepetition} /> : null}
+    // Every field validates its own value on change; native constraint checks (e.g. a step
+    // mismatch on the threshold) must never silently block applying the settings.
+    <form id="settings" className="settings" noValidate onSubmit={(e) => { e.preventDefault(); onApply(repetitionChanged ? { value: column ? { column, type } : undefined } : undefined); }}>
+      {origin.columns?.length ? <RepetitionSetting t={t} columns={origin.columns} column={column} type={type} enabled={canRepeat} onColumn={setColumn} onType={setType} /> : null}
       <label>
         <span>{t("cfgUnit")}</span>
         <select value={config.independenceUnit} onChange={(e) => onChange({ ...config, independenceUnit: e.target.value as IndependenceUnit })} aria-describedby="unit-hint">
@@ -347,6 +449,7 @@ function Settings({ t, input, config, onChange, origin, onRepetition }: Settings
         </select>
         <small id="unit-hint">{config.independenceUnit === "group" ? `${t("groupHint")} ${countIndependenceGroups(input)} / ${input.samples.length}` : t("unitHint")}</small>
       </label>
+      <details className="settings-advanced"><summary>Reproducibility seed</summary>
       <label>
         <span>{t("cfgSeed")}</span>
         <input
@@ -363,42 +466,110 @@ function Settings({ t, input, config, onChange, origin, onRepetition }: Settings
         />
         <small id="seed-hint">{seed === "invalid" ? t("seedInvalid") : t("seedHint")}</small>
       </label>
+      </details>
       <label className="check">
         <input type="checkbox" checked={config.assumeOneObservationPerSample} onChange={(e) => onChange({ ...config, assumeOneObservationPerSample: e.target.checked })} />
         <span>{t("cfgOneObs")}</span>
       </label>
-      <label className="check">
-        <input type="checkbox" checked={config.fullComputation} aria-describedby="full-hint" onChange={(e) => onChange({ ...config, fullComputation: e.target.checked })} />
-        <span>{t("cfgFull")}</span>
-      </label>
-      <small id="full-hint">{t("cfgFullHint")}</small>
+      <MetadataRoles columns={metadataColumns(input)} roles={config.metadataRoles} onRoles={setRoles} />
+      <fieldset className="settings-families">
+        <legend>Analysis menu</legend>
+        <p className="hint">Integrity, sample counts, PCA and target descriptions always run, and appear first; the selected analyses follow. The quick analyses are selected by default; clustering, structure sensitivity and the validation probe take longer. Exports can be refined in Evidence. Timings are browser measurements on the bundled examples.</p>
+        {ANALYSIS_FAMILIES.map((family) => <details key={family}><summary><span>{FAMILY_LABELS[family]}</span><span>{config.families[family] ? "Enabled" : "Off"}</span></summary><label className="check"><input type="checkbox" checked={config.families[family]} onChange={(e) => onChange({ ...config, families: { ...config.families, [family]: e.target.checked } })} />Include {FAMILY_LABELS[family].toLowerCase()}</label><p className="hint">{FAMILY_HINTS[family]}</p>
+          <FamilyTiming family={family} />
+          {family === "clustering" ? <label className="check"><input type="checkbox" checked={config.clusterRefit} disabled={!config.families.clustering} onChange={(e) => onChange({ ...config, clusterRefit: e.target.checked })} />Refit PCA for each stability subsample (slower)</label> : null}
+          {family === "domain_shift" ? <><label className="check"><input type="checkbox" checked={config.fullSpectrumEnergy} disabled={!config.families.domain_shift} onChange={(e) => onChange({ ...config, fullSpectrumEnergy: e.target.checked })} />Compare distributions using all spectral bands</label><label className="check"><input type="checkbox" checked={config.fullSpectrumMonitor} disabled={!config.families.domain_shift} onChange={(e) => onChange({ ...config, fullSpectrumMonitor: e.target.checked })} />Fit coverage monitors using all spectral bands</label></> : null}
+          {family === "spectral_quality" ? <label>Spike and jump inspection threshold<input type="number" min="0.1" step="0.5" value={config.eventThreshold} onChange={(e) => { const value = Number(e.target.value); if (Number.isFinite(value) && value > 0) onChange({ ...config, eventThreshold: value }); }} /><small>Robust deviations. A lower threshold flags more events; no calibrated cutoff is available.</small></label> : null}
+        </details>)}
+      </fieldset>
+      <details className="settings-advanced"><summary>Advanced analysis assumptions</summary>
+        <label className="check"><input type="checkbox" checked={config.exchangeableUnits} onChange={(e) => onChange({ ...config, exchangeableUnits: e.target.checked })} />Independent units can be exchanged under the null hypothesis</label><p className="hint">Enable permutation tests only when this matches the sampling design. An independence declaration alone does not establish exchangeability.</p>
+        <label className="check"><input type="checkbox" checked={config.quasiToleranceFromRepeats} onChange={(e) => onChange({ ...config, quasiToleranceFromRepeats: e.target.checked })} />Estimate spectral similarity from declared technical repeats (X only)</label><p className="hint">Uses Q3 + 1.5 × IQR of RMS differences between technical repeats, separately for each source. At least three physical repeat groups are required. Target and retained-test data are excluded from estimation. This exploratory convention is not a calibrated duplicate boundary. Off by default: when repeat scans differ about as much as distinct samples (common with handheld instruments), the tolerance becomes so wide that most pairs are flagged.</p>
+        <label>Spectral similarity tolerance (RMS)<input type="number" min={Number.MIN_VALUE} step="any" placeholder="Not declared" disabled={config.quasiToleranceFromRepeats} value={config.quasiTolerance ?? ""} onChange={(e) => { const value = e.target.value === "" ? null : Number(e.target.value); if (value === null || Number.isFinite(value) && value > 0) onChange({ ...config, quasiTolerance: value }); }} /><small>Use acquisition precision or repeat-scan differences, without consulting the target. A universal tolerance inferred from all sample distances would confuse natural similarity with duplication. Declare a value greater than zero. The native-view tolerance uses the signal units.</small></label>
+        <fieldset><legend>Conflicting references</legend><p className="hint">Categorical references conflict when their classes differ. For continuous references, declare the largest acceptable difference using reference precision or a domain requirement; it is not inferred from the target distribution.</p>{input.targets.map((target) => {
+          const tolerance = config.referenceTolerances[target.target_id];
+          const remove = () => { const next = { ...config.referenceTolerances }; delete next[target.target_id]; onChange({ ...config, referenceTolerances: next }); };
+          return target.kind === "categorical" ? <label className="check" key={target.target_id}><input type="checkbox" checked={Boolean(tolerance)} onChange={(e) => e.target.checked ? onChange({ ...config, referenceTolerances: { ...config.referenceTolerances, [target.target_id]: { kind: "different_class" } } }) : remove()} />Compare classes for {target.target_id}</label> : <label key={target.target_id}>Acceptable reference difference for {target.target_id}{target.unit ? ` (${target.unit})` : ""}<input type="number" min="0" step="any" value={tolerance && "value" in tolerance ? tolerance.value : ""} placeholder="Not declared" onChange={(e) => { if (e.target.value === "") remove(); else { const value = Number(e.target.value); if (Number.isFinite(value) && value >= 0) onChange({ ...config, referenceTolerances: { ...config.referenceTolerances, [target.target_id]: { kind: tolerance?.kind === "relative" ? "relative" : "absolute", value } } }); } }} /><small>{tolerance?.kind === "relative" ? "Relative difference, as a fraction of the larger absolute reference." : "Absolute difference in the target units."}</small></label>;
+        })}</fieldset>
+      </details>
       <p className="note settings-scope">{t("cfgScope")}</p>
+      <div className="settings-actions">
+        <span className={changes ? "warn-text" : "hint"} role="status">{t(changes ? "settingsPending" : "settingsApplied")}</span>
+        <button type="button" className="btn btn-ghost" onClick={onClose}>{t("close")}</button>
+        <button type="submit" className="btn btn-primary">{t("applyRerun")}</button>
+      </div>
     </form>
   );
 }
 
+/** Checkable role lists keep every column available for consecutive and bulk edits. */
+export function MetadataRoles({ columns, roles, onRoles }: { columns: readonly { name: string; kind: string }[]; roles: Record<string, MetadataRole>; onRoles: (names: readonly string[], role: MetadataRole) => void }) {
+  const [query, setQuery] = useState("");
+  const roleOf = (name: string) => roles[name] ?? "analysis";
+  const q = query.trim().toLowerCase();
+  const shown = columns.filter((c) => !q || c.name.toLowerCase().includes(q));
+  if (!columns.length) return null;
+  return (
+    <fieldset className="settings-metadata settings-roles">
+      <legend>Metadata roles <span className="hint">({columns.length} columns)</span></legend>
+      <p className="hint">Check columns to assign their role. Each column has one role. Identifiers and excluded columns stay in the dataset but are omitted from every metadata association, confounding and domain comparison. Physical identities and repeat declarations are preserved.</p>
+      <label className="search"><span className="visually-hidden">Filter metadata columns</span><input type="search" placeholder="Filter columns" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+      <div className="role-panels">
+        {(Object.keys(ROLE_LABELS) as MetadataRole[]).map((role) => {
+          const members = columns.filter((c) => roleOf(c.name) === role);
+          const fallback = role === "analysis" ? "excluded" : "analysis";
+          const checked = shown.filter((c) => roleOf(c.name) === role);
+          return (
+            <div className="role-panel" key={role} role="group" aria-label={ROLE_LABELS[role]}>
+              <div className="role-panel-head"><strong>{ROLE_LABELS[role]}</strong><span className="count">{members.length}</span></div>
+              <p className="hint">{ROLE_HINTS[role]} Uncheck to move to {ROLE_LABELS[fallback].toLowerCase()}.</p>
+              <div className="role-actions">
+                <button type="button" className="btn btn-ghost btn-sm" disabled={checked.length === shown.length} onClick={() => onRoles(shown.map((c) => c.name), role)}>Select shown</button>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={!checked.length} onClick={() => onRoles(checked.map((c) => c.name), fallback)}>Clear shown</button>
+              </div>
+              <ul className="role-checklist">
+                {shown.map((c) => (
+                  <li key={c.name}>
+                    <label className="check">
+                      <input type="checkbox" checked={roleOf(c.name) === role} onChange={(e) => onRoles([c.name], e.target.checked ? role : fallback)} />
+                      <span>{c.name} <small>({c.kind})</small></span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              {!shown.length ? <p className="hint">No matching columns.</p> : null}
+            </div>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 /** Declares the metadata column whose equal values are repeated acquisitions of one physical sample. */
-function RepetitionSetting({ t, columns, current, onApply }: { t: T; columns: string[]; current: RepetitionDeclaration | undefined; onApply: WorkspaceProps["onRepetition"] }) {
-  const [column, setColumn] = useState(current?.column ?? "");
-  const [type, setType] = useState<RepetitionDeclaration["type"]>(current?.type ?? "rescan");
-  const changed = column !== (current?.column ?? "") || (column !== "" && type !== current?.type);
+function RepetitionSetting({ t, columns, column, type, enabled, onColumn, onType }: { t: T; columns: string[]; column: string; type: RepetitionDeclaration["type"]; enabled: boolean; onColumn: (c: string) => void; onType: (k: RepetitionDeclaration["type"]) => void }) {
   return (
     <fieldset className="settings-repetition">
       <label>
         <span>{t("cfgRepetition")}</span>
-        <select value={column} disabled={!onApply} onChange={(e) => setColumn(e.target.value)} aria-describedby="repetition-hint">
+        <select value={column} disabled={!enabled} onChange={(e) => onColumn(e.target.value)} aria-describedby="repetition-hint">
           <option value="">{t("cfgRepetitionNone")}</option>
           {columns.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </label>
       <label>
         <span>{t("cfgRepetitionType")}</span>
-        <select value={type} disabled={!onApply || column === ""} onChange={(e) => setType(e.target.value as RepetitionDeclaration["type"])}>
+        <select value={type} disabled={!enabled || column === ""} onChange={(e) => onType(e.target.value as RepetitionDeclaration["type"])}>
           {DECLARABLE_REPETITIONS.map((k) => <option key={k} value={k}>{t(`repType_${k}` as TextKey)}</option>)}
         </select>
       </label>
-      <button type="button" className="btn btn-outline" disabled={!onApply || !changed} onClick={() => onApply?.(column ? { column, type } : undefined)}>{t("cfgRepetitionApply")}</button>
-      <small id="repetition-hint">{onApply ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
+      <small id="repetition-hint">{enabled ? t("cfgRepetitionHint") : t("cfgRepetitionNoFiles")}</small>
     </fieldset>
   );
+}
+
+function FamilyTiming({ family }: { family: string }) {
+  const measurements = timings.measurements as { dataset: string; family: string; milliseconds: number; computedMetrics?: number; unavailableMetrics?: number }[];
+  const rows = measurements.filter((row) => row.family === family);
+  return rows.length ? <div className="table-wrap"><table><caption>Example browser timings, including shared checks</caption><thead><tr><th scope="col">Dataset</th><th scope="col">Time (s)</th><th scope="col">Indicators computed</th></tr></thead><tbody>{rows.map((row) => <tr key={row.dataset}><th scope="row">{row.dataset}</th><td>{(row.milliseconds / 1000).toFixed(2)}</td><td>{row.computedMetrics ?? "—"}{row.unavailableMetrics ? ` · ${row.unavailableMetrics} unavailable` : ""}</td></tr>)}</tbody></table><p className="hint">{timings.method}</p></div> : <p className="hint">No recorded benchmark for this configuration.</p>;
 }

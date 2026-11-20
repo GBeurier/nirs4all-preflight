@@ -138,6 +138,20 @@ export async function createQualificationRuntime(options = {}) {
         result = { outputs, backend_version };
         break;
       }
+      case 'preprocess': {
+        const x = matrix(request.matrix);
+        const ctx = methods.Context.create();
+        let pipeline;
+        try {
+          pipeline = methods.NativePreprocessingPipeline.fit(ctx, request.steps, x);
+          const out = pipeline.transform(x);
+          result = { matrix: nested(out.data, out.cols), backend_version };
+        } finally {
+          pipeline?.destroy();
+          ctx.destroy();
+        }
+        break;
+      }
       case 'pca': {
         const output = methods.preflightPca(matrix(request.matrix), request.n_components);
         result = { eigenvalues: Array.from(output.eigenvalues), scores: nested(output.scores.data, output.scores.cols), full_moments: output.fullMoments, resolution: output.resolution, unresolved: Array.from(output.unresolved, Boolean), backend_version };

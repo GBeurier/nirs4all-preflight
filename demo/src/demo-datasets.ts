@@ -1,4 +1,4 @@
-import type { NamedFile } from "@nirs4all/io-wasm/types";
+import type { NamedFile } from "../vendor/io-browser-owner/types/nirs4all-io";
 import { importFiles, type IoRuntime, type FormatsRuntime } from "./dataset-io";
 import type { EngineInput } from "./input";
 

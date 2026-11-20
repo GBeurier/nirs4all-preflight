@@ -238,6 +238,12 @@ impl QualificationInput {
                 unit: c.unit.as_deref(),
                 origin: MetadataOrigin::Declared,
             }))
+            .filter(|f| {
+                self.options
+                    .metadata_roles
+                    .get(f.name)
+                    .is_none_or(|role| *role == MetadataRole::Analysis)
+            })
             .collect()
     }
 
@@ -394,9 +400,51 @@ pub enum ReferenceStatus {
     Composite,
 }
 
+/// A column's analytical role never changes declared physical or independence identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataRole {
+    Analysis,
+    Identifier,
+    Excluded,
+}
+
+/// Optional protocol families. Integrity, populations, canonical PCA and target
+/// descriptions always run; downstream families reuse their geometry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnalysisFamilies {
+    pub spectral_quality: bool,
+    pub sensitivity: bool,
+    pub repeatability: bool,
+    pub clustering: bool,
+    pub association: bool,
+    pub confounding: bool,
+    pub domain_shift: bool,
+    pub probe: bool,
+}
+impl Default for AnalysisFamilies {
+    fn default() -> Self {
+        Self {
+            spectral_quality: true,
+            sensitivity: true,
+            repeatability: true,
+            clustering: true,
+            association: true,
+            confounding: true,
+            domain_shift: true,
+            probe: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Options {
+    #[serde(default)]
+    pub metadata_roles: BTreeMap<String, MetadataRole>,
+    #[serde(default)]
+    pub analysis_families: AnalysisFamilies,
     #[serde(default)]
     pub independence_unit: IndependenceUnit,
     #[serde(default)]
@@ -421,6 +469,10 @@ pub struct Options {
     /// Quasi-identity runs only with a declared tolerance; none is invented.
     #[serde(default)]
     pub quasi_duplicates: Option<QuasiDuplicateOptions>,
+    /// X-only exploratory tolerance from declared technical repeat pairs;
+    /// Q3 + 1.5 IQR of their RMS distances. Requires at least three repeat groups.
+    #[serde(default)]
+    pub quasi_tolerance_from_repeats: bool,
     #[serde(default)]
     pub domain_shift: DomainShiftOptions,
     /// Subsample resampling of the clustering stability.
@@ -443,6 +495,8 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            metadata_roles: BTreeMap::new(),
+            analysis_families: AnalysisFamilies::default(),
             independence_unit: IndependenceUnit::Unknown,
             assume_one_observation_per_sample: false,
             exchangeable_units: false,
@@ -452,6 +506,7 @@ impl Default for Options {
             noise_proxy: NoiseProxyOptions::default(),
             snv_sensitivity: true,
             quasi_duplicates: None,
+            quasi_tolerance_from_repeats: false,
             domain_shift: DomainShiftOptions::default(),
             clustering: ClusteringOptions::default(),
             validation_probe: ValidationProbeOptions::default(),
@@ -832,6 +887,30 @@ pub fn validate_input(input: &QualificationInput) -> ValidationResult {
             "Quasi-duplicate tolerance must be finite and positive",
             true,
         );
+    }
+    if input.options.quasi_tolerance_from_repeats && input.options.quasi_duplicates.is_some() {
+        out.add(
+            "CONFLICTING_QUASI_DUPLICATE_TOLERANCE",
+            "options.quasi_duplicates",
+            "Declare a quasi-duplicate tolerance or infer it from technical repeats, not both",
+            true,
+        );
+    }
+    for name in input.options.metadata_roles.keys() {
+        if !SAMPLE_METADATA_FIELDS.contains(&name.as_str())
+            && !input
+                .metadata
+                .columns
+                .iter()
+                .any(|column| column.name == *name)
+        {
+            out.add(
+                "UNKNOWN_METADATA_COLUMN",
+                format!("options.metadata_roles.{name}"),
+                "Metadata role must name a declared column, instrument or campaign",
+                true,
+            );
+        }
     }
     let probe = &input.options.validation_probe;
     if probe.estimators.is_empty()
@@ -2442,7 +2521,32 @@ pub struct ProcedureDiagnostics {
     pub backend_version: String,
 }
 
+/// Thin transport to the existing Methods fitted preprocessing pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreprocessingRequest {
+    pub matrix: Vec<Vec<f64>>,
+    pub steps: Vec<PreprocessingStep>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreprocessingStep {
+    pub kind: i32,
+    pub params: Vec<f64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreprocessingDiagnostics {
+    pub matrix: Vec<Vec<f64>>,
+    pub backend_version: String,
+}
+
 pub trait MethodsProvider {
+    fn preprocess(
+        &self,
+        _request: &PreprocessingRequest,
+    ) -> Result<PreprocessingDiagnostics, ProviderError> {
+        Err(ProviderError::unsupported(
+            "PREPROCESSING_PROVIDER_NOT_CONFIGURED",
+        ))
+    }
     fn capabilities(&self) -> Vec<Capability>;
     fn procedure(
         &self,

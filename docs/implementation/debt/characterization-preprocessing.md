@@ -1,0 +1,18 @@
+# Characterization debt — preprocessing explorer (demo, agent C)
+
+Scope: `demo/src/characterization/preprocessing/`. Every transform and per-spectrum/per-band
+diagnostic already runs on `@nirs4all/methods` 1.4.1 WASM (`methodsKernel.ts`); the items below are
+the places that should move to an owner.
+
+| What | Where (file:symbol) | Target owner | Why | Migration |
+| --- | --- | --- | --- | --- |
+| Median filter, despiking unavailable | `catalog.ts:UNAVAILABLE_STEPS` | Methods (transformer kernels + generated JS roles) | Requested steps; not in the 1.4.1 catalog, not hand-rolled | Add `preprocessing.smoothing.median_filter` and a despiking transformer in Methods; add `StepSpec` entries mapping to them |
+| Relative RMSE, spectral angle, per-band SD, band envelopes (median/P5/P95), residual, distortion profile | `metrics.ts:relativeRmsePercent`, `spectralAngleDeg`, `bandSd`, `bandEnvelope`, `residual`, `distortionProfile` | Methods (a `diagnostics.preprocessing_distortion` procedure) | Small interim descriptive kernels in TS | Methods procedure returning per-spectrum RMSE/angle and per-band SD/quantiles of X and X−Y; kernel calls it |
+| Band position/height/FWHM descriptor | `metrics.ts:bandDescriptor` | Methods (band/peak descriptor kernel) | Interim local-baseline maximum + half-height width on the median spectrum | Methods peak descriptor with declared baseline/width convention |
+| SNR gain, fine-scale reduction, diversity retention, Pareto front (aggregation of owner values) | `metrics.ts:snrGainDb`, `fineScaleReductionPercent`, `diversityRetentionPercent`, `paretoFront` | Preflight engine report (preprocessing-impact block) or nirs4all-ui selectors | Display aggregation; definitions should be versioned with the report | Engine `preprocessing_impact` family over a declared recipe, UI selectors read it |
+| Deterministic subset (≤ 300 spectra, replicate groups kept) | `data.ts:sampleRows`, `prepareExplorerData` | Preflight engine / IO population selection | Interactive cap; events are population-relative, so subset counts differ from the full report | Engine-declared explorer population with recorded denominators |
+| Repeatability before/after uses balanced `preflightRepeatability` on replicated rows only (ICC withheld when unbalanced) | `methodsKernel.ts:repeatability` | Preflight engine (`measurement.icc_1_reml` path) | Engine uses REML for unbalanced designs | Re-run the engine measurement family on the processed matrix, or expose REML per band from Methods |
+| Grid of benchmark configurations, comparability classes | `evaluate.ts:benchmarkGrid`, `catalog.ts:STEP_SPECS` (`comparability`, `preservesUnits`) | Repository (recipes/presets) + Methods manifest (unit-preservation metadata) | Hard-coded here | Methods manifest declares unit/scale preservation; Repository supplies benchmark presets |
+| Chemometric (Y) comparison placeholder | `strings.ts:S.chemometricNote` | DAG-ML (leak-free nested CV, preprocessing fitted per fold) | Future; nothing computed | DAG-ML recipe with preprocessing inside folds, explorer reads its scores |
+| New graphical components: `PreprocessingExplorer`, `PairedHistogram`, `BenchmarkScatter`, `BandTable`, `preprocessing.css` | `PreprocessingExplorer.tsx`, `charts.tsx` | nirs4all-ui | Demo-local interim components | Move to `nirs4all-ui/qualification` (or `/lab`) over owner DTOs |
+| Distortion profile shared via a module store | `distortion.ts:publishDistortionProfile`, `useDistortionProfile` | Host state / engine report | Cross-component channel to the quality map | Replace by an engine/report field once the impact block exists |

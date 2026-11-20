@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import {
+  SpectraExplorer,
   AvailabilityBadge,
   ChartDataTable,
   CheckList,
@@ -30,6 +31,7 @@ import {
   hasBlock,
   metricHelp,
   metricLabel,
+  reasonLabel,
   statisticLabel,
   unavailableMetrics,
   type EngineNumber,
@@ -43,18 +45,20 @@ import { fill, isTextKey, type TextKey } from "./i18n";
 import { Measured } from "./Measured";
 import { Section, type Scope } from "./Sections";
 import { atypicalSpectra } from "./views";
+import { DiversityPanel, IntegrityPanel, SnrPanel } from "./characterization/integrity";
+import { NoiseProxyPanel } from "./characterization/repeatability";
 
 /** Counts exactly; other engine numbers with `digits` significant digits, exponent form outside [1e-4, 1e6). */
 const n = (v: number | null | undefined, locale: Locale, digits = 3) =>
   v === null || v === undefined || !Number.isFinite(v) ? "—" : Number.isInteger(v) && Math.abs(v) < 1e15 ? v.toLocaleString(locale) : (formatEngineNumber(v, locale, digits) ?? "—");
-/** Table cell: engine number shortened to 6 significant digits (display only). */
-const c6 = (v: number | null | undefined): number | null => (v === null || v === undefined || !Number.isFinite(v) ? null : Number(v.toPrecision(6)));
+/** Table cell: keep the raw engine value; the shared table handles display formatting. */
+const cellNumber = (v: number | null | undefined): number | null => (v === null || v === undefined || !Number.isFinite(v) ? null : v);
 const pc = (v: number | null | undefined, locale: Locale) => (v === null || v === undefined || !Number.isFinite(v) ? "—" : `${n(v * 100, locale, 3)} %`);
 const en = (v: EngineNumber | null, locale: Locale) => (v ? (formatEngineNumber(v.kind === "double" ? v.value : { significand: v.significand, exponent: v.exponent, representation: "significand_times_2_pow_exponent" }, locale) ?? "—") : "—");
 
 /** Sections present in the report, in display order (drives the chip navigation). */
 export const BLOCK_SECTIONS: readonly { id: string; label: TextKey; prefixes: readonly string[] }[] = [
-  { id: "s-sensitivity", label: "navSensitivity", prefixes: ["structure.snv_", "structure.balanced_repeat_sensitivity"] },
+  { id: "s-sensitivity", label: "navSensitivity", prefixes: ["structure.snv_", "structure.detrend_", "structure.balanced_repeat_sensitivity"] },
   { id: "s-duplicates", label: "navDuplicates", prefixes: ["integrity.quasi_duplicate_pairs", "integrity.cross_partition_quasi_duplicate_pairs", "reference."] },
   { id: "s-clustering", label: "navClustering", prefixes: ["clustering."] },
   { id: "s-confounding", label: "navConfounding", prefixes: ["confounding."] },
@@ -119,6 +123,8 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
   if (!sourceId || !hasBlock(view, BLOCK_SECTIONS[0]!.prefixes)) return null;
   const sens = extractStructureSensitivity(view, sourceId);
   const snv = sens.find((c) => c.id === "structure.snv_sensitivity");
+  const baseline = view.metrics.find((m) => m.sourceId === sourceId && m.id === "structure.detrend_sensitivity");
+  const baselineValue = baseline?.value as { canonical?: { effective_dimension?: number; eigenvalue_shares?: number[] }; detrended?: { effective_dimension?: number; eigenvalue_shares?: number[] } } | undefined;
   const balanced = sens.find((c) => c.id === "structure.balanced_repeat_sensitivity");
   return (
     <Section id="s-sensitivity" icon="structure" accent="indigo" title={t("sensTitle")} lead={t("sensLead")}>
@@ -130,7 +136,7 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
               <>
                 <div className="stats stats-2">
                   <StatTile label={t("sensDimRaw")} value={n(snv.reference.effectiveDimension, locale)} hint={t("kpiDimHint")} />
-                  <StatTile label={t("sensDimSnv")} value={n(snv.compared.effectiveDimension, locale)} hint={`Δ ${n(snv.deltaEffectiveDimension, locale)}`} tone={(snv.deltaEffectiveDimension ?? 0) > 0.5 ? "warning" : "neutral"} />
+                  <StatTile label={t("sensDimSnv")} value={n(snv.compared.effectiveDimension, locale)} hint={`Δ ${n(snv.deltaEffectiveDimension, locale)}`} tone="neutral" />
                   <StatTile label={t("sensPc1")} value={pc(snv.compared.firstComponentShare, locale)} hint={`${t("sensRaw")} ${pc(snv.reference.firstComponentShare, locale)}`} />
                 </div>
                 <Measured>{(w) => (
@@ -151,7 +157,7 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
                   locale={locale}
                   caption={t("sensShares")}
                   columns={[t("component"), t("sensRaw"), t("sensSnv")]}
-                  rows={snv.compared.eigenvalueShares.map((v, i) => [`PC${i + 1}`, c6(snv.reference!.eigenvalueShares[i]), c6(v)])}
+                  rows={snv.compared.eigenvalueShares.map((v, i) => [`PC${i + 1}`, cellNumber(snv.reference!.eigenvalueShares[i]), cellNumber(v)])}
                 />
               </>
             ) : <p className="empty"><StateBadge state={snv.state} locale={locale} /></p>}
@@ -175,6 +181,7 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
           </div>
         ) : null}
       </div>
+      {baseline ? <div className="card"><h3 className="card-title">Linear baseline correction</h3><p className="hint">A straight baseline is removed from each acquisition before repeats are averaged. Compare the remaining variance with raw spectra. A change suggests baseline effects deserve inspection; it does not establish their cause.</p>{baseline.status === "computed" ? <><div className="stats"><StatTile label="Raw effective dimension" value={n(baselineValue?.canonical?.effective_dimension, locale)} /><StatTile label="After linear baseline correction" value={n(baselineValue?.detrended?.effective_dimension, locale)} /></div>{baselineValue?.detrended?.eigenvalue_shares?.length ? <Measured>{(w) => <MeasureBars width={w} format="fraction" title="Variance shares per component" valueLabel="after baseline correction" compareLabel={t("sensRaw")} locale={locale} rows={baselineValue.detrended!.eigenvalue_shares!.slice(0, 6).map((v, i) => ({ id: `pc${i}`, label: `PC${i + 1}`, value: v, compare: baselineValue.canonical?.eigenvalue_shares?.[i] ?? null }))} />}</Measured> : null}<ChartDataTable locale={locale} caption="Raw and baseline-corrected structure" columns={["Component", "Raw variance share", "After baseline correction"]} rows={(baselineValue?.detrended?.eigenvalue_shares ?? []).map((v, i) => [`PC${i + 1}`, baselineValue?.canonical?.eigenvalue_shares?.[i] ?? null, v])} /></> : <AvailabilityBadge status={baseline.status} reason={baseline.reasonCode} locale={locale} />}</div> : null}
       <Unavailable metrics={unavailableMetrics(view, ["structure.snv_"], sourceId)} locale={locale} />
     </Section>
   );
@@ -182,27 +189,22 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
 
 // --- repeatability uncertainty extras (rendered inside the repeatability section) --------------
 
-export function NoiseProxyCard({ t, locale, view, sourceId, axis }: Scope & { axis: readonly number[] }) {
+export function NoiseProxyCard(scope: Scope & { axis: readonly number[] }) {
+  const { locale, view, sourceId } = scope;
   if (!sourceId) return null;
   const contexts = extractNoiseProxy(view, sourceId);
   const missing = unavailableMetrics(view, ["measurement.noise_proxy"], sourceId);
   if (!contexts.length && !missing.length) return null;
   return (
-    <div className="card">
-      <CardTitle id="measurement.noise_proxy" locale={locale} />
-      <div className="stats">
-        {contexts.map((c) => <StatTile key={c.id} label={`${metricLabel("measurement.noise_proxy_pooled", locale)}${c.id.replace(/[·\s]/g, "") ? ` · ${c.id}` : ""}`} value={n(c.pooled, locale)} suffix={c.unit ?? undefined} hint={fill(t("noiseHint"), { w: c.windowBands ?? "—", p: c.polyorder ?? "—", n: c.nEvaluableBands ?? "—" })} />)}
-      </div>
-      {contexts.length ? (
-        <ChartDataTable
-          locale={locale}
-          caption={metricLabel("measurement.noise_proxy", locale)}
-          columns={[t("bandCol"), ...contexts.map((c) => c.id)]}
-          rows={axis.map((x, i) => [c6(x), ...contexts.map((c) => c6(c.values[i]))])}
-        />
+    <>
+      {contexts.length ? <NoiseProxyPanel {...scope} /> : null}
+      {missing.length ? (
+        <div className="card">
+          <CardTitle id="measurement.noise_proxy" locale={locale} />
+          <Unavailable metrics={missing} locale={locale} />
+        </div>
       ) : null}
-      <Unavailable metrics={missing} locale={locale} />
-    </div>
+    </>
   );
 }
 
@@ -234,9 +236,9 @@ export function DuplicatesSection({ t, locale, view, sourceId }: Scope) {
             <ChartDataTable
               open
               locale={locale}
-              caption={`${metricLabel(d.id, locale)}${d.truncated ? ` (${t("truncated")})` : ""}`}
+              caption={`${metricLabel(d.id, locale)}${d.truncated ? d.pairs !== null ? ` — first ${d.listed.length} of ${d.pairs} pairs` : ` (${t("truncated")}; total unavailable)` : ""}`}
               columns={d.id.startsWith("integrity.") ? [t("dupA"), t("dupB"), t("dupRms")] : [t("dupA"), t("dupB"), t("dupRefA"), t("dupRefB"), t("dupDiff"), t("dupRms")]}
-              rows={d.listed.map((p) => (d.id.startsWith("integrity.") ? [p.a, p.b, c6(p.distance)] : [p.a, p.b, c6(p.referenceA), c6(p.referenceB), c6(p.difference), c6(p.distance)]))}
+              rows={d.listed.map((p) => (d.id.startsWith("integrity.") ? [p.a, p.b, cellNumber(p.distance)] : [p.a, p.b, cellNumber(p.referenceA), cellNumber(p.referenceB), cellNumber(p.difference), cellNumber(p.distance)]))}
             />
           </div>
         ))}
@@ -281,7 +283,7 @@ export function ClusteringSection({ t, locale, view, sourceId }: Scope) {
         <>
           <div className="stats">
             <StatTile label={metricLabel("clustering.candidate_cluster_count", locale)} value={n(c.candidateCount, locale)} hint={t("clusNotFirm")} href="#ev-clustering.candidate_cluster_count" />
-            <StatTile label={metricLabel("clustering.noise_fraction", locale)} value={pc(c.noiseFraction, locale)} suffix={c.nNoise !== null ? `${c.nNoise} / ${c.nEligible ?? "—"}` : undefined} />
+            {(c.candidateCount ?? 0) > 0 ? <StatTile label="Outside candidate groups" value={pc(c.noiseFraction, locale)} suffix={c.nNoise !== null ? `${c.nNoise} / ${c.nEligible ?? "—"}` : undefined} hint="Samples not assigned to a candidate group; this is unrelated to measurement noise." /> : null}
             <StatTile label={t("verdict")} value={c.assessment?.verdict ? t(VERDICT[c.assessment.verdict] ?? "verdictUncertain") : "—"} hint={t("verdictHint")} tone={c.assessment?.verdict === "stable_candidate_versus_fitted_gaussian" ? "good" : "neutral"} href="#ev-clustering.partition_assessment" />
           </div>
           <div className="grid-3-2">
@@ -294,7 +296,7 @@ export function ClusteringSection({ t, locale, view, sourceId }: Scope) {
                 locale={locale}
                 caption={metricLabel("clustering.partition", locale)}
                 columns={[t("unitId"), t("navClustering"), t("membership"), "GLOSH"]}
-                rows={c.partition.sampleIds.map((id, i) => [id, label(c.partition!.labels[i] ?? -1), c6(c.partition!.membership[i]), c6(c.partition!.outlierScores[i])])}
+                rows={c.partition.sampleIds.map((id, i) => [id, label(c.partition!.labels[i] ?? -1), cellNumber(c.partition!.membership[i]), cellNumber(c.partition!.outlierScores[i])])}
               />
             </div>
             <div className="fit-row">
@@ -429,7 +431,7 @@ export function ConfoundingSection({ t, locale, view, sourceId }: Scope) {
                 compareLabel={t("r2Unique")}
                 reference={c.partition!.r2AllFactorCells !== null ? { value: c.partition!.r2AllFactorCells, label: t("r2Joint") } : null}
                 locale={locale}
-                rows={c.partition!.shares.map((s) => ({ id: s.factor, label: s.factor, value: s.r2Marginal, compare: s.r2UniqueGivenOtherFactors, note: s.reasonCode ?? undefined }))}
+                rows={c.partition!.shares.map((s) => ({ id: s.factor, label: s.factor, value: s.r2Marginal, compare: s.r2UniqueGivenOtherFactors, note: s.reasonCode ? reasonLabel(s.reasonCode) : undefined }))}
               />
             )}</Measured>
             <p className="hint">{t("notAdditive")}</p>
@@ -446,7 +448,7 @@ export function ConfoundingSection({ t, locale, view, sourceId }: Scope) {
           locale={locale}
           caption={metricLabel("confounding.dispersion", locale)}
           columns={[t("factor"), t("level"), t("meanDistance"), t("units")]}
-          rows={c.dispersion.flatMap((d) => d.levels.map((l) => [d.factor, l.level, c6(l.meanDistance), l.nUnits]))}
+          rows={c.dispersion.flatMap((d) => d.levels.map((l) => [d.factor, l.level, cellNumber(l.meanDistance), l.nUnits]))}
         />
       ) : null}
       <Unavailable metrics={missing} locale={locale} />
@@ -539,7 +541,7 @@ export function AssociationSection({ t, locale, view, targetId }: Scope) {
           locale={locale}
           caption={t("assocLevels")}
           columns={[t("metadata"), t("level"), t("units"), t("median"), "Q1", "Q3"]}
-          rows={withLevels.flatMap((a) => a.levels.map((l) => [a.metadata, l.level, l.nUnits, c6(l.target?.median), c6(l.target?.q25), c6(l.target?.q75)]))}
+          rows={withLevels.flatMap((a) => a.levels.map((l) => [a.metadata, l.level, l.nUnits, cellNumber(l.target?.median), cellNumber(l.target?.q25), cellNumber(l.target?.q75)]))}
         />
       ) : null}
       <p className="hint">{t("assocNotCausal")}</p>
@@ -583,7 +585,7 @@ export function ProbeSection({ t, locale, view, sourceId, targetId }: Scope) {
                     {points.length ? (
                       <Measured>{(w) => <ScoreMap width={w} height={Math.min(420, Math.max(280, w * 0.7))} points={points} colorBy="group" identityLine xLabel={`${t("observed")}${unit}`} yLabel={`${t("predicted")}${unit}`} colorLabel={t("fold")} title={metricLabel("probe.oof_predictions", locale)} locale={locale} />}</Measured>
                     ) : <Unavailable metrics={view.metrics.filter((m) => m.id === "probe.oof_predictions" && m.sourceId === p.sourceId && m.targetId === p.targetId && m.status !== "computed")} locale={locale} />}
-                    {oof ? <ChartDataTable locale={locale} caption={metricLabel("probe.oof_predictions", locale)} columns={[t("unitId"), t("fold"), t("observed"), t("predicted"), t("trainMean")]} rows={oof.sampleIds.map((id, i) => [id, oof.foldIds[i] ?? null, c6(oof.observed[i]), c6(oof.predicted[i]), c6(oof.trainMean[i])])} /> : null}
+                    {oof ? <ChartDataTable locale={locale} caption={metricLabel("probe.oof_predictions", locale)} columns={[t("unitId"), t("fold"), t("observed"), t("predicted"), t("trainMean")]} rows={oof.sampleIds.map((id, i) => [id, oof.foldIds[i] ?? null, cellNumber(oof.observed[i]), cellNumber(oof.predicted[i]), cellNumber(oof.trainMean[i])])} /> : null}
                   </div>
                   <div className="stack">
                     <div className="card">
@@ -610,7 +612,7 @@ export function ProbeSection({ t, locale, view, sourceId, targetId }: Scope) {
                         <dt>{t("grid")}</dt><dd>{p.componentGrid.join(", ") || "—"}</dd>
                         <dt>{t("fits")}</dt><dd>{p.nFits ?? p.plannedFits ?? "—"}</dd>
                       </dl>
-                      {p.folds.length ? <ChartDataTable locale={locale} caption={metricLabel("probe.folds", locale)} columns={[t("fold"), t("fitN"), t("evalN"), t("components"), t("trainMean")]} rows={p.folds.map((f) => [f.foldId, f.nFit, f.nEval, f.selectedComponents, c6(f.trainMean)])} /> : null}
+                      {p.folds.length ? <ChartDataTable locale={locale} caption={metricLabel("probe.folds", locale)} columns={[t("fold"), t("fitN"), t("evalN"), t("components"), t("trainMean")]} rows={p.folds.map((f) => [f.foldId, f.nFit, f.nEval, f.selectedComponents, cellNumber(f.trainMean)])} /> : null}
                     </div>
                   </div>
                 </div>
@@ -637,7 +639,8 @@ function scanLabel(observationId: string): string {
   }
 }
 
-export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
+export function SpectralQualitySection(scope: Scope) {
+  const { t, locale, view, sourceId } = scope;
   const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
   if (!intrinsic) return null;
   const t2 = intrinsic.signals["pca.pca_t2"];
@@ -653,18 +656,15 @@ export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
       return [{ id: scanLabel(id), details: [t2.sampleIds[i] ?? ""], x: value, y: residual, group: flagged.has(t2.observationIds[i] ?? "") ? t("qualityAtypical") : t("qualityTypical") }];
     })
     : [];
-  const g = intrinsic.globals;
-  const snr = intrinsic.signals["noise.signal_noise_db"];
-  const distance = intrinsic.signals["reference.rms"];
   const unavailable = Object.values(intrinsic.signals).filter((s) => s.state.status !== "computed" && /^(pca|events|noise|reference)\./.test(s.id));
   return (
     <Section id="s-quality" icon="data" accent="rose" title={t("qualityTitle")} lead={t("qualityLead")}>
       <div className="stats">
         <StatTile label={t("qualityAtypicalCount")} value={pcaReady ? n(atypical.length, locale) : "—"} hint={pcaReady ? fill(t("qualityAtypicalHint"), { t2: n(t2.p95, locale), q: n(q.p95, locale) }) : "—"} tone={atypical.length ? "warning" : "neutral"} />
-        <StatTile label={t("qualitySpikes")} value={n(g["events.global_spike_count"], locale)} hint={t("qualityEventsHint")} tone={(g["events.global_spike_count"] ?? 0) > 0 ? "warning" : "neutral"} />
-        <StatTile label={t("qualityJumps")} value={n(g["events.global_jump_count"], locale)} hint={t("qualityEventsHint")} tone={(g["events.global_jump_count"] ?? 0) > 0 ? "warning" : "neutral"} />
-        <StatTile label={t("qualitySnr")} value={snr?.median !== null && snr?.median !== undefined ? `${n(snr.median, locale)} dB` : "—"} hint={distance?.p95 !== null && distance?.p95 !== undefined ? fill(t("qualityDistanceHint"), { d: n(distance.p95, locale) }) : "—"} />
       </div>
+      <IntegrityPanel {...scope} />
+      <SnrPanel {...scope} />
+      <DiversityPanel {...scope} />
       {pcaReady ? (
         <div className="grid-3-2">
           <div className="card">
@@ -677,6 +677,8 @@ export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
               groupColors={{ [t("qualityTypical")]: "#0d9488", [t("qualityAtypical")]: "#e11d48" }}
               xLabel="T²"
               yLabel="Q"
+              xReference={t2.p95 === null ? null : { value: t2.p95, label: "T² 95th percentile" }}
+              yReference={q.p95 === null ? null : { value: q.p95, label: "Q 95th percentile" }}
               colorLabel={t("qualityMap")}
               title={t("qualityMap")}
               locale={locale}
@@ -688,9 +690,9 @@ export function SpectralQualitySection({ t, locale, view, sourceId }: Scope) {
             {atypical.length ? (
               <ChartDataTable
                 locale={locale}
-                caption={t("qualityList")}
+                caption={`${t("qualityList")}${atypical.length > ATYPICAL_MAX ? ` — first ${ATYPICAL_MAX} of ${atypical.length} atypical spectra` : ""}`}
                 columns={[t("sampleCol"), t("scanCol"), "T²", "Q"]}
-                rows={atypical.slice(0, ATYPICAL_MAX).map((a) => [a.sampleId, scanLabel(a.observationId), c6(a.t2), c6(a.q)])}
+                rows={atypical.slice(0, ATYPICAL_MAX).map((a) => [a.sampleId, scanLabel(a.observationId), cellNumber(a.t2), cellNumber(a.q)])}
               />
             ) : <p className="note">{t("qualityNone")}</p>}
             {atypical.length > ATYPICAL_MAX ? <p className="note">{t("tableCap")} {ATYPICAL_MAX} / {atypical.length}</p> : null}

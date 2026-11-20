@@ -1,7 +1,7 @@
 {
   "name": "nirs4all-preflight-demo",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Browser dataset qualification with nirs4all IO/Formats and the Rust/WASM preflight engine.",
   "scripts": {
@@ -13,11 +13,12 @@
     "test:browser": "node scripts/dataset-smoke.mjs"
   },
   "dependencies": {
-    "@nirs4all/formats-wasm": "0.2.14",
-    "@nirs4all/io-wasm": "0.2.14",
-    "@nirs4all/preflight": "0.1.6",
+    "@nirs4all/formats-wasm": "^0.2.0",
+    "@nirs4all/io-wasm": "^0.3.0",
+    "@nirs4all/methods": "~1.4.1",
+    "@nirs4all/preflight": "file:../bindings/wasm",
     "idb-keyval": "6.2.2",
-    "nirs4all-ui": "0.2.0",
+    "nirs4all-ui": "^0.3.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },

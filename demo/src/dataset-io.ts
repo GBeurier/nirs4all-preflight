@@ -1,12 +1,12 @@
 import { autoDetectSource, buildExportConfig, type DatasetExportConfig, type DatasetRole, type DatasetSource } from "nirs4all-ui/datasetBuilder";
-import type { DatasetPlan, DatasetSpec, NamedFile, RecordSet, SourceSpec } from "@nirs4all/io-wasm/types";
+import type { DatasetPlan, DatasetSpec, NamedFile, RecordSet, SourceSpec } from "../vendor/io-browser-owner/types/nirs4all-io";
 import { toEngineInput, type AssembledDataset, type RepetitionDeclaration } from "./dataset";
 import type { EngineInput } from "./input";
 
 export interface IoRuntime {
-  inferDataset: typeof import("@nirs4all/io-wasm").inferDataset;
-  assembleDataset: typeof import("@nirs4all/io-wasm").assembleDataset;
-  validate: typeof import("@nirs4all/io-wasm").validate;
+  inferDataset: typeof import("../vendor/io-browser-owner/nirs4all_io_wasm").inferDataset;
+  assembleDataset: typeof import("../vendor/io-browser-owner/nirs4all_io_wasm").assembleDataset;
+  validate: typeof import("../vendor/io-browser-owner/nirs4all_io_wasm").validate;
 }
 export interface FormatsRuntime { openWithSidecars: typeof import("@nirs4all/formats-wasm").openWithSidecars }
 export interface DatasetDraft {
@@ -21,8 +21,8 @@ export interface DatasetDraft {
 
 let runtime: Promise<{ io: IoRuntime; formats: FormatsRuntime }> | undefined;
 export function loadDatasetRuntime() {
-  return runtime ??= Promise.all([import("virtual:nirs4all-io"), import("virtual:nirs4all-formats")]).then(async ([io, formats]) => {
-    await Promise.all([io.init(), formats.init()]);
+  return runtime ??= Promise.all([import("../vendor/io-browser-owner/nirs4all_io_wasm.js"), import("virtual:nirs4all-formats")]).then(async ([io, formats]) => {
+    await Promise.all([io.default(), formats.init()]);
     return { io, formats };
   }).catch((error) => { runtime = undefined; throw error; });
 }
@@ -112,10 +112,11 @@ export function prepareDataset(files: NamedFile[], io: IoRuntime, formats: Forma
         const metadata = block?.metadata?.columns.find((c) => c.name === name)?.values[0];
         const xcol = block?.feature_headers[sourceIndex]?.indexOf(name) ?? -1;
         const ycol = block?.y_headers.indexOf(name) ?? -1;
-        const cell = xcol >= 0 ? block?.x[sourceIndex]?.data[xcol] : ycol >= 0 ? block?.y?.data[ycol] : undefined;
+        const cell = xcol >= 0 ? (block?.x[sourceIndex]?.validity[xcol] ? block.x[sourceIndex]?.data[xcol] : undefined)
+          : ycol >= 0 ? (block?.y?.columns[ycol]?.block.validity[0] ? block.y.data[ycol] : undefined) : undefined;
         const rawValue = metadata ?? (cell === undefined || Number.isNaN(cell) ? null : cell);
         const categories = block?.y_categorical?.[name]?.categories;
-        const value = categories && typeof rawValue === "number" ? categories[rawValue] ?? null : rawValue;
+        const value = categories && typeof rawValue === "number" ? categories[rawValue] ?? null : typeof rawValue === "boolean" ? String(rawValue) : rawValue;
         return { id: `${s.id}:${i}`, name, assignedRole, manual: true, detectedType: typeof value === "number" ? "float" as const : typeof value === "string" ? "text" as const : "unknown" as const, previewValue: value };
       }),
     };

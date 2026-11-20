@@ -3,8 +3,8 @@ import type { Locale } from "nirs4all-ui/lab";
 import type { EngineReport } from "nirs4all-ui/qualification";
 import { downloadText } from "./download";
 import { createEngineHost, EngineError, type EngineHost, type EngineValidation } from "./engine";
-import { initialLocale, translate, type TextKey } from "./i18n";
-import { buildEngineInput, defaultConfig, type AnalysisConfig, type EngineInput } from "./input";
+import { translate, type TextKey } from "./i18n";
+import { ANALYSIS_FAMILIES, NO_FAMILIES, buildEngineInput, carryConfig, defaultConfig, type AnalysisConfig, type EngineInput } from "./input";
 import { Landing } from "./Landing";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
 import { Workspace } from "./Workspace";
@@ -12,7 +12,7 @@ import { importFiles, loadDatasetRuntime, type DetectedTable } from "./dataset-i
 import type { RepetitionDeclaration } from "./dataset";
 import { nextPaint, type LoadContext } from "./DatasetPicker";
 import { saveDataset } from "./dataset-store";
-import type { NamedFile } from "@nirs4all/io-wasm/types";
+import type { NamedFile } from "../vendor/io-browser-owner/types/nirs4all-io";
 
 export type Run = { state: "idle" } | { state: "running" } | { state: "cancelled" } | { state: "error"; code: string; message: string };
 export type Origin = {
@@ -25,8 +25,12 @@ export type Origin = {
   columns?: string[];
   repetition?: RepetitionDeclaration;
 };
-/** A report is only ever shown with the exact input that produced it. */
-export type Result = { report: EngineReport; input: EngineInput; origin: Origin };
+/**
+ * A report is only ever shown with the exact input that produced it. A preliminary result holds the
+ * core checks only (no optional family) while the run of `requested` — the applied settings — is
+ * still in progress, or after it was cancelled or failed.
+ */
+export type Result = { report: EngineReport; input: EngineInput; requested: EngineInput; origin: Origin; elapsedMs?: number; preliminary?: boolean };
 export type T = (k: TextKey) => string;
 type Theme = "light" | "dark";
 
@@ -44,7 +48,7 @@ function initialTheme(): Theme {
 }
 
 export function App() {
-  const [locale, setLocale] = useState<Locale>(initialLocale);
+  const locale: Locale = "en";
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const t: T = (key) => translate(key, locale);
   const [origin, setOrigin] = useState<Origin | null>(null);
@@ -82,18 +86,28 @@ export function App() {
     const payload = buildEngineInput(data, cfg);
     setRun({ state: "running" });
     setValidation(null);
+    /** A refused input yields a report without results: show why instead of an empty diagnosis. */
+    const refused = (report: EngineReport) => {
+      const outcome = (report as unknown as { validation?: EngineValidation }).validation;
+      if (!outcome || outcome.valid) return false;
+      setResult(null);
+      setRun({ state: "error", code: "INPUT_REFUSED", message: "" });
+      setValidation(outcome);
+      return true;
+    };
     try {
-      const report = await host.current.analyze(payload);
-      if (generation !== job.current) return;
-      // A refused input yields a report without results: show why instead of an empty diagnosis.
-      const refused = (report as unknown as { validation?: EngineValidation }).validation;
-      if (refused && !refused.valid) {
-        setResult(null);
-        setRun({ state: "error", code: "INPUT_REFUSED", message: "" });
-        setValidation(refused);
-        return;
+      const started = performance.now();
+      if (ANALYSIS_FAMILIES.some((family) => cfg.families[family])) {
+        // Core checks first, so the page fills in while the selected analyses run.
+        const core = buildEngineInput(data, { ...cfg, families: NO_FAMILIES });
+        const report = await host.current.analyze(core);
+        if (generation !== job.current || refused(report)) return;
+        setResult({ report, input: core, requested: payload, origin: from, preliminary: true });
       }
-      setResult({ report, input: payload, origin: from });
+      const report = await host.current.analyze(payload);
+      const elapsedMs = performance.now() - started;
+      if (generation !== job.current || refused(report)) return;
+      setResult({ report, input: payload, requested: payload, origin: from, elapsedMs });
       setRun({ state: "idle" });
     } catch (error) {
       if (generation !== job.current) return;
@@ -112,12 +126,11 @@ export function App() {
     }
   };
 
-  const load = (next: EngineInput, from: Origin) => {
+  const load = (next: EngineInput, from: Origin, cfg: AnalysisConfig = defaultConfig(next)) => {
     if (run.state === "running") {
       job.current += 1;
       host.current?.cancel();
     }
-    const cfg = defaultConfig(next);
     setInput(next);
     setOrigin(from);
     setConfig(cfg);
@@ -127,10 +140,13 @@ export function App() {
     void execute(next, cfg, from);
   };
 
-  /** Re-assembles the dropped files with IO under a new repetition declaration, then reruns (an analysis in progress is cancelled). */
+  /**
+   * Re-assembles the dropped files with IO under a new repetition declaration, then reruns with the
+   * current settings (an analysis in progress is cancelled).
+   */
   const redeclare = async (repetition: RepetitionDeclaration | undefined) => {
     const dropped = files.current;
-    if (!dropped || !origin) return;
+    if (!dropped || !origin || !config) return;
     const generation = ++job.current;
     if (run.state === "running") host.current?.cancel();
     setRun({ state: "running" });
@@ -146,7 +162,7 @@ export function App() {
         // The library keeps the latest declaration; a storage failure never blocks the analysis.
         void saveDataset({ id: from.datasetId, name: from.name, savedAt: new Date().toISOString(), input: next, ...(tables.length ? { tables } : {}), ...(from.columns?.length ? { columns: from.columns } : {}), ...(repetition ? { repetition } : {}) }).catch(() => undefined);
       }
-      load(next, from);
+      load(next, from, carryConfig(config, next));
     } catch (error) {
       if (generation !== job.current) return;
       setRun({ state: "error", code: "IMPORT_ERROR", message: error instanceof Error ? error.message : String(error) });
@@ -171,11 +187,11 @@ export function App() {
     setRun({ state: "idle" });
   };
 
-  const downloadHtml = async () => {
+  const downloadHtml = async (report: EngineReport) => {
     if (!result || !host.current) return;
     setHtmlError(null);
     try {
-      downloadText(`${baseName(result)}-report.html`, "text/html", await host.current.reportHtml(result.report));
+      downloadText(`${baseName(result)}-report.html`, "text/html", await host.current.reportHtml(report));
     } catch (error) {
       setHtmlError(error instanceof Error ? error.message : String(error));
     }
@@ -194,11 +210,6 @@ export function App() {
           <div className="nav-actions">
             {input ? <button className="btn btn-ghost" onClick={reset} aria-label={t("newDataset")}><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg><span className="hide-sm">{t("newDataset")}</span></button> : null}
             <a className="btn btn-ghost hide-sm" href="https://github.com/GBeurier/nirs4all-preflight/blob/main/docs/SPECIFICATION.md" target="_blank" rel="noreferrer">{t("docs")}</a>
-            <div className="seg" role="group" aria-label={t("language")}>
-              {(["fr", "en"] as const).map((l) => (
-                <button key={l} aria-pressed={locale === l} onClick={() => setLocale(l)} lang={l}>{l.toUpperCase()}</button>
-              ))}
-            </div>
             <button className="icon-btn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label={`${t("theme")}: ${t(theme === "dark" ? "themeDark" : "themeLight")}`} title={t("theme")}>
               {theme === "dark" ? (
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" /></svg>
@@ -224,7 +235,7 @@ export function App() {
             htmlError={htmlError}
             onRun={() => void execute(input, config, origin)}
             onCancel={cancel}
-            onDownloadHtml={() => void downloadHtml()}
+            onDownloadHtml={(report) => void downloadHtml(report)}
             {...(files.current ? { onRepetition: (repetition: RepetitionDeclaration | undefined) => void redeclare(repetition) } : {})}
           />
         ) : (

@@ -455,3 +455,55 @@ fn identity_keys_are_structured_and_cannot_collide() {
     assert!(!result.valid);
     assert!(result.issues.iter().any(|i| i.code == "REFERENCE_LEAKAGE"));
 }
+
+#[test]
+fn quasi_duplicate_tolerance_modes_are_mutually_exclusive() {
+    let mut input = fixture();
+    input.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.01,
+        view: QuasiDuplicateView::Snv,
+        context: ComparisonContext::Source,
+    });
+    assert!(validate_input(&input).valid);
+    input.options.quasi_tolerance_from_repeats = true;
+    assert!(codes(&input).iter().any(|(code, path, blocking)| code
+        == "CONFLICTING_QUASI_DUPLICATE_TOLERANCE"
+        && path == "options.quasi_duplicates"
+        && *blocking));
+    assert!(!validate_input(&input).valid);
+    input.options.quasi_duplicates = None;
+    assert!(validate_input(&input).valid);
+    input.options.quasi_tolerance_from_repeats = false;
+    input.options.quasi_duplicates = Some(QuasiDuplicateOptions {
+        tolerance: 0.0,
+        view: QuasiDuplicateView::Native,
+        context: ComparisonContext::Source,
+    });
+    assert!(codes(&input)
+        .iter()
+        .any(|(code, _, blocking)| code == "INVALID_QUASI_DUPLICATE_TOLERANCE" && *blocking));
+}
+
+#[test]
+fn metadata_roles_require_declared_columns_or_builtin_context() {
+    let mut input = with_metadata(serde_json::json!({
+        "columns": [{"name": "batch_id", "kind": "categorical"}], "values": {}
+    }));
+    for name in ["batch_id", "instrument", "campaign"] {
+        input
+            .options
+            .metadata_roles
+            .insert(name.into(), MetadataRole::Analysis);
+    }
+    assert!(validate_input(&input).valid);
+    input
+        .options
+        .metadata_roles
+        .insert("batch_typo".into(), MetadataRole::Excluded);
+    assert!(!validate_input(&input).valid);
+    assert!(codes(&input)
+        .iter()
+        .any(|(code, path, blocking)| code == "UNKNOWN_METADATA_COLUMN"
+            && path == "options.metadata_roles.batch_typo"
+            && *blocking));
+}

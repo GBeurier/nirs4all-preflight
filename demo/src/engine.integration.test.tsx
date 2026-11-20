@@ -1,3 +1,5 @@
+import * as ioOwner from "../vendor/io-browser-owner/nirs4all_io_wasm.js";
+import { readFileSync as readIoBytes } from "node:fs";
 import { createRequire } from "node:module";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -8,6 +10,7 @@ import { importFiles, type FormatsRuntime, type IoRuntime } from "./dataset-io";
 import { buildChecks } from "./checks";
 import { ClusteringSection, ConfoundingSection, DomainShiftSection, ProbeSection, presentSections } from "./Blocks";
 import { translate, type TextKey } from "./i18n";
+import { buildEngineInput, defaultConfig } from "./input";
 import type { Scope } from "./Sections";
 import { syntheticInput, type SyntheticScenario } from "./synthetic";
 
@@ -19,7 +22,7 @@ const fs = (await import(/* @vite-ignore */ fsName)) as { readFile(path: URL): P
 const modules = new URL("../node_modules/", import.meta.url);
 const runtime = await createQualificationRuntime({
   wasmModule: await fs.readFile(new URL("@nirs4all/preflight/native/nirs4all_preflight_wasm_bg.wasm", modules)),
-  dagMlWasmModule: await fs.readFile(new URL("dag-ml-wasm/dag_ml_wasm_bg.wasm", modules)),
+  dagMlWasmModule: await fs.readFile(new URL("../bindings/wasm/node_modules/dag-ml-wasm/dag_ml_wasm_bg.wasm", new URL("../", import.meta.url))),
 });
 
 interface Metric { metric_id: string; status: string; reason_code?: string; parameters?: Record<string, unknown> }
@@ -41,8 +44,8 @@ const html = (node: ReactElement) => renderToStaticMarkup(node);
 describe("real engine on the demo synthetic sets", () => {
   const { report, scope } = analyze("clean");
 
-  it("is the 0.1.3 engine and labels the synthetic origin", () => {
-    expect(report.engine_version).toBe("0.1.6");
+  it("is the 0.3.0 engine and labels the synthetic origin", () => {
+    expect(report.engine_version).toBe("0.3.0");
     expect(report.data_origin).toBe("synthetic");
     expect(presentSections(scope).map((s) => s.id)).toEqual(["s-sensitivity", "s-duplicates", "s-clustering", "s-confounding", "s-shift", "s-association", "s-probe"]);
   });
@@ -90,7 +93,8 @@ describe("real engine on the demo synthetic sets", () => {
 
 describe("real engine on dropped X/y/metadata files", () => {
   const require = createRequire(import.meta.url);
-  const io = require("@nirs4all/io-wasm") as IoRuntime;
+  ioOwner.initSync({ module: readIoBytes(new URL("../vendor/io-browser-owner/nirs4all_io_wasm_bg.wasm", import.meta.url)) });
+const io: IoRuntime = ioOwner;
   const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
 
   it("accepts the IO metadata table and analyses its associations", () => {
@@ -122,11 +126,14 @@ describe("real engine on dropped X/y/metadata files", () => {
     const checks = buildChecks(buildQualificationReportView(report), input, input.sources[0]!.source_id, "protein", (k: TextKey) => translate(k, "en"), "en");
     const target = checks.find((c) => c.id === "target");
     expect(target?.status).toBe("attention");
-    expect(target?.detail).toContain(`1 of ${n} development samples without a reference`);
+    expect(target?.detail).toContain(`1 of ${n} calibration samples without a reference`);
+    // T²/Q ranks by the dataset's own p95 (about 5% exceed it by construction): never a control point
+    expect(checks.some((c) => c.id === "atypical")).toBe(false);
     const events = checks.find((c) => c.id === "events");
-    // four bands are too few for the spike detector: its count stays unevaluated, never zero
+    // most rows share the same first difference, so the population spread of jumps is zero:
+    // the jump order is undefined and its count stays unevaluated, never zero
     expect(events?.status).not.toBe("ok");
-    expect(events?.detail).toMatch(/^— isolated spikes/);
+    expect(events?.detail).toMatch(/^0 isolated spikes and — jumps/);
   });
 
   it("measures technical repeatability once the repetition column is declared", () => {
@@ -147,3 +154,36 @@ describe("real engine on dropped X/y/metadata files", () => {
   });
 });
 
+
+
+describe("configured engine protocols", () => {
+  it("uses X-only repeat distances for tolerance and includes baseline sensitivity", () => {
+    const input = syntheticInput("pitfalls");
+    const config = defaultConfig(input);
+    // Structure sensitivity and the repeat-derived tolerance are opt-in in the browser.
+    const report = runtime.analyze(buildEngineInput(input, { ...config, quasiToleranceFromRepeats: true, families: { ...config.families, sensitivity: true } })) as EngineReport;
+    expect(report.validation?.valid).toBe(true);
+    const tolerance = report.metrics.find((m) => m.metric_id === "integrity.quasi_duplicate_pairs");
+    expect(tolerance?.status, JSON.stringify(tolerance)).toBe("computed");
+    expect(tolerance?.parameters?.tolerance_source).toBe("technical_repeat_rms_Q3_plus_1.5_IQR_X_only");
+    expect(tolerance?.parameters?.tolerance_repeat_groups).toBe(8);
+    expect(report.metrics.find((m) => m.metric_id === "structure.detrend_sensitivity")?.status).toBe("computed");
+  });
+
+  it("omits identifier metadata across associations, confounding and domain comparisons", () => {
+    const input = syntheticInput("pitfalls");
+    const config = defaultConfig(input);
+    config.metadataRoles = { instrument: "identifier", campaign: "excluded", batch: "analysis", id_sample: "identifier" };
+    const report = runtime.analyze(buildEngineInput(input, config)) as EngineReport;
+    expect(report.validation?.valid).toBe(true);
+    const linked = report.metrics.filter((m) => /^(association|confounding|domain_shift)\./.test(m.metric_id));
+    expect(linked.length).toBeGreaterThan(0);
+    for (const metric of linked) {
+      if (metric.parameters?.factor) expect(["instrument", "campaign", "id_sample"]).not.toContain(metric.parameters.factor);
+      if (metric.parameters?.metadata) expect(["instrument", "campaign", "id_sample"]).not.toContain(metric.parameters.metadata);
+    }
+    const design = report.metrics.find((m) => m.metric_id === "confounding.design");
+    expect(JSON.stringify(design?.value)).toContain("batch");
+    expect(JSON.stringify(design?.value)).not.toContain('"factor":"instrument"');
+  });
+});

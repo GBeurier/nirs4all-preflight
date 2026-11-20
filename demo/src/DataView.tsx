@@ -3,24 +3,27 @@ import type { Locale } from "nirs4all-ui/lab";
 import { ClassCountBars, PopulationFlow, SCORE_SEQUENTIAL, SpectraExplorer, StatTile, TargetDistribution, type FlowSegment, type QualificationReportView } from "nirs4all-ui/qualification";
 import { categoricalColor, rampAt } from "nirs4all-ui/viz";
 import type { T } from "./App";
+import type { RepetitionDeclaration } from "./dataset";
 import { fill, type TextKey } from "./i18n";
 import { Icon } from "./icons";
-import type { EngineInput } from "./input";
+import { metadataValue, type EngineInput } from "./input";
 import { Measured } from "./Measured";
 import { ATYPICAL_RED, Section, TYPICAL_GREY } from "./Sections";
-import { ROW_KINDS, atypicalScans, composition, developmentTargetPoints, developmentTargetValues, rowKind, sampleIndex, sampleRows, spectraPreview, type CountRow, type RowKind } from "./views";
+import { ROW_KINDS, atypicalScans, composition, developmentTargetPoints, rowKind, sampleIndex, sampleRows, spectraPreview, targetColorValues, varyingMetadata, type CountRow, type RowKind } from "./views";
 
-type ColorBy = "target" | "campaign" | "instrument" | "quality" | "none";
+type ColorBy = "target" | "quality" | "none" | `metadata:${string}`;
 const EXPLORER_MAX = 200;
 const TABLE_PAGE = 40;
 const KIND_COLOR: Record<RowKind, string> = { development: "#0d9488", retained_test: "#0891b2", prediction: "#4f46e5", augmented: "#94a3b8", undeclared: "#e11d48" };
 const NONE = "#0d9488";
 const UNEVALUATED = "#cbd5e1";
+/** Levels drawn in a collapsed metadata bar; the rest are pooled until the reader expands it. */
+export const LEVELS_COLLAPSED = 8;
 
 const num = (v: number, locale: Locale) => (Number.isInteger(v) ? v.toLocaleString(locale) : Number(v.toPrecision(4)).toLocaleString(locale));
 
 /** `report` is the engine report once an analysis has run: it enables the quality colouring (atypical T²/Q scans in red). */
-export function DataView({ t, locale, input, sourceId, targetId, report }: { t: T; locale: Locale; input: EngineInput; sourceId: string | null; targetId: string | null; report: QualificationReportView | null }) {
+export function DataView({ t, locale, input, sourceId, targetId, report, repetition }: { t: T; locale: Locale; input: EngineInput; sourceId: string | null; targetId: string | null; report: QualificationReportView | null; repetition?: RepetitionDeclaration | undefined }) {
   const source = input.sources.find((s) => s.source_id === sourceId) ?? input.sources[0];
   const [colorBy, setColorBy] = useState<ColorBy | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -31,26 +34,28 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
   // drawn scans the in-sample T²/Q could not use (incomplete spectra) are neither typical nor atypical
   const unevaluated = preview && scan ? preview.rows.filter((r) => !scan.evaluated.has(r.observationId)).length : 0;
   // atypical scans in red by default once the report flags any; otherwise the reader's choice
-  const fallback: ColorBy = atypical?.length ? "quality" : targetId ? "target" : "campaign";
+  const fallback: ColorBy = atypical?.length ? "quality" : targetId ? "target" : "none";
   const mode: ColorBy = colorBy === null || (colorBy === "quality" && !atypical) ? fallback : colorBy;
   const comp = useMemo(() => composition(input, source), [input, source]);
-  const values = useMemo(() => (targetId ? developmentTargetValues(input, targetId) : new Map<string, number>()), [input, targetId]);
+  const values = useMemo(() => (targetId ? targetColorValues(input, targetId) : new Map<string, number | string>()), [input, targetId]);
   const samples = useMemo(() => sampleIndex(input), [input]);
   const observations = input.sources.reduce((n, s) => n + s.observation_ids.length, 0);
 
-  const known = [...values.values()];
+  const metadata = varyingMetadata(input);
+  const metadataName = mode.startsWith("metadata:") ? mode.slice(9) : null;
+  const continuous = mode === "target" ? input.targets.find((x) => x.target_id === targetId)?.kind === "continuous" : metadata.find((c) => c.name === metadataName)?.kind === "continuous";
+  const colorValue = (sampleId: string) => mode === "target" ? values.get(sampleId) ?? null : metadataName ? metadataValue(input, sampleId, metadataName, samples.get(sampleId)) : null;
+  const known = (preview?.rows ?? []).map((r) => colorValue(r.sampleId)).filter((v): v is number => typeof v === "number");
   const lo = known.length ? Math.min(...known) : 0;
   const hi = known.length ? Math.max(...known) : 1;
-  const groupKey = (sampleId: string) => (mode === "campaign" ? samples.get(sampleId)?.campaign : mode === "instrument" ? samples.get(sampleId)?.instrument : undefined) ?? "—";
+  const groupKey = (sampleId: string) => String(colorValue(sampleId) ?? "Missing");
   const groups = [...new Set((preview?.rows ?? []).map((r) => groupKey(r.sampleId)))].sort((a, b) => a.localeCompare(b));
   const colorOf = (sampleId: string, observationId: string) => {
     if (mode === "none") return NONE;
     if (mode === "quality") return flagged.has(observationId) ? ATYPICAL_RED : scan?.evaluated.has(observationId) ? TYPICAL_GREY : UNEVALUATED;
-    if (mode === "target") {
-      const v = values.get(sampleId);
-      return v === undefined ? "#94a3b8" : rampAt(SCORE_SEQUENTIAL, (v - lo) / (hi - lo || 1));
-    }
-    return categoricalColor(groups.indexOf(groupKey(sampleId)));
+    const value = colorValue(sampleId);
+    if (value === null) return UNEVALUATED;
+    return continuous && typeof value === "number" ? rampAt(SCORE_SEQUENTIAL, (value - lo) / (hi - lo || 1)) : categoricalColor(groups.indexOf(groupKey(sampleId)));
   };
   const selectedObs = preview?.rows.filter((r) => r.sampleId === selected).map((r) => r.observationId) ?? [];
   const sampleOfObs = (obsId: string | null) => preview?.rows.find((r) => r.observationId === obsId)?.sampleId ?? null;
@@ -82,8 +87,8 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
             <div className="card-head">
               <h3 className="card-title"><span className="card-icon" data-accent="cyan"><Icon name="spectra" size={18} /></span>{t("explorerTitle")}</h3>
               <div className="seg" role="group" aria-label={t("colorBy")}>
-                {(["target", "campaign", "instrument", "quality", "none"] as const).filter((m) => (m !== "target" || targetId) && (m !== "quality" || atypical)).map((m) => (
-                  <button key={m} aria-pressed={mode === m} onClick={() => setColorBy(m)}>{t(`color_${m}` as TextKey)}</button>
+                {(["target", "quality", "none", ...metadata.map((c) => `metadata:${c.name}` as const)] as const).filter((m) => (m !== "target" || targetId) && (m !== "quality" || atypical)).map((m) => (
+                  <button key={m} aria-pressed={mode === m} onClick={() => setColorBy(m)}>{m.startsWith("metadata:") ? m.slice(9) : t(`color_${m}` as TextKey)}</button>
                 ))}
               </div>
             </div>
@@ -93,7 +98,7 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
                 axis={source.axis}
                 axisUnit={source.axis_unit ?? ""}
                 yLabel={source.signal_unit ?? ""}
-                series={(mode === "quality" ? [...preview.rows.filter((r) => !flagged.has(r.observationId)), ...preview.rows.filter((r) => flagged.has(r.observationId))] : preview.rows).map((r) => ({ id: r.observationId, values: r.values, color: colorOf(r.sampleId, r.observationId), label: `${r.sampleId}${targetId && values.has(r.sampleId) ? ` · ${targetId} ${num(values.get(r.sampleId) as number, locale)}` : ""}` }))}
+                series={(mode === "quality" ? [...preview.rows.filter((r) => !flagged.has(r.observationId)), ...preview.rows.filter((r) => flagged.has(r.observationId))] : preview.rows).map((r) => ({ id: r.observationId, values: r.values, color: colorOf(r.sampleId, r.observationId), label: `${r.sampleId}${targetId && values.has(r.sampleId) ? ` · ${targetId} ${String(values.get(r.sampleId))}` : ""}` }))}
                 selected={selectedObs}
                 onSelect={(obs) => setSelected(sampleOfObs(obs))}
                 title={`${t("explorerTitle")} — ${source.source_id}`}
@@ -103,9 +108,9 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
               />
             )}</Measured>
             <div className="explorer-foot">
-              {mode === "target" && known.length ? (
+              {continuous && known.length ? (
                 <div className="n4q-colorbar">
-                  <span className="n4q-legend-title">{targetId}</span>
+                  <span className="n4q-legend-title">{mode === "target" ? targetId : metadataName}</span>
                   <span>{num(lo, locale)}</span>
                   <span className="n4q-colorbar-ramp" style={{ background: `linear-gradient(90deg, ${SCORE_SEQUENTIAL.join(", ")})` }} aria-hidden="true" />
                   <span>{num(hi, locale)}</span>
@@ -118,7 +123,7 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
                   {unevaluated ? <li><span className="n4q-key-line" style={{ background: UNEVALUATED }} aria-hidden="true" />{t("qualityUnevaluated")} <strong>{unevaluated}</strong></li> : null}
                 </ul>
               ) : null}
-              {mode === "campaign" || mode === "instrument" ? (
+              {!continuous && (mode === "target" || metadataName !== null) ? (
                 <ul className="n4q-legend">{groups.map((g, i) => <li key={g}><span className="n4q-key-line" style={{ background: categoricalColor(i) }} aria-hidden="true" />{g}</li>)}</ul>
               ) : null}
               {selected ? (
@@ -133,8 +138,14 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
             <div className="comp-list">
               <CompBar title={t("compPartitions")} segments={partitionSegments} locale={locale} />
               <CompBar title={t("compRepeats")} segments={repeatSegments} locale={locale} />
-              <CompBar title={t("compCampaigns")} segments={segments(comp.campaigns)} locale={locale} />
-              <CompBar title={t("compInstruments")} segments={segments(comp.instruments)} locale={locale} />
+              <p className="hint comp-note">
+                {repetition ? fill(t("repeatsDeclared"), { column: repetition.column, type: t(`repType_${repetition.type}` as TextKey) }) : t(comp.repeats.two + comp.repeats.more ? "repeatsIdentifier" : "repeatsNone")}
+              </p>
+              {metadata.filter((c) => c.kind === "categorical").map((column) => {
+                const counts = new Map<string, number>();
+                for (const sample of input.samples) { const value = String(metadataValue(input, sample.sample_id, column.name, sample) ?? "Missing"); counts.set(value, (counts.get(value) ?? 0) + 1); }
+                return <LevelBar key={column.name} t={t} title={column.name} rows={[...counts].map(([label, count]) => ({ label, count }))} toSegments={segments} locale={locale} />;
+              })}
             </div>
           </div>
         </div>
@@ -168,7 +179,9 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
         </Section>
       ) : null}
 
+      <details className="sample-details"><summary>Inspect individual samples and their spectra</summary><p className="note">Select a sample to highlight its scans in the explorer. Retained-test references stay hidden.</p>
       <SampleTable t={t} locale={locale} input={input} sourceIndex={Math.max(0, input.sources.indexOf(source!))} selected={selected} onSelect={setSelected} />
+      </details>
     </>
   );
 }
@@ -176,7 +189,28 @@ export function DataView({ t, locale, input, sourceId, targetId, report }: { t: 
 function CompBar({ title, segments, locale }: { title: string; segments: FlowSegment[]; locale: Locale }) {
   return (
     <div className="comp">
-      <Measured min={200}>{(w) => <PopulationFlow stages={[{ id: title, label: title, unit: "", segments }]} title={title} locale={locale} width={w} barHeight={14} />}</Measured>
+      <Measured min={200}>{(w) => <PopulationFlow stages={[{ id: title, label: title, unit: "", segments }]} title={title} locale={locale} width={w} barHeight={14} showTotal={false} />}</Measured>
+    </div>
+  );
+}
+
+/**
+ * One categorical metadata column. Many levels would make an endless bar and legend: the bar
+ * first shows the most frequent levels and pools the others; expanded, every level is listed
+ * inside a bounded scrolling window.
+ */
+function LevelBar({ t, title, rows, toSegments, locale }: { t: T; title: string; rows: CountRow[]; toSegments: (rows: CountRow[]) => FlowSegment[]; locale: Locale }) {
+  const [expanded, setExpanded] = useState(false);
+  const sorted = [...rows].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, undefined, { numeric: true }));
+  const many = sorted.length > LEVELS_COLLAPSED;
+  const rest = sorted.slice(LEVELS_COLLAPSED - 1);
+  const shown = !many || expanded ? sorted : [...sorted.slice(0, LEVELS_COLLAPSED - 1), { label: fill(t("levelsOther"), { n: rest.length }), count: rest.reduce((n, r) => n + r.count, 0) }];
+  const segs = toSegments(shown);
+  if (many && !expanded) segs[segs.length - 1] = { ...segs[segs.length - 1]!, color: UNEVALUATED, tone: "muted" };
+  return (
+    <div className={`comp-levels${many && expanded ? " is-expanded" : ""}`}>
+      <CompBar title={title} segments={segs} locale={locale} />
+      {many ? <button type="button" className="btn btn-ghost btn-sm" aria-expanded={expanded} onClick={() => setExpanded((e) => !e)}>{expanded ? t("levelsFewer") : fill(t("levelsAll"), { n: sorted.length })}</button> : null}
     </div>
   );
 }
@@ -229,12 +263,13 @@ function SampleTable({ t, locale, input, sourceIndex, selected, onSelect }: { t:
       <div className="card card-flush">
         <div className="table-wrap" role="region" tabIndex={0} aria-label={t("tableTitle")}>
           <table className="samples">
+            <caption>{t("tableTitle")} — {visible.length < shown.length ? `first ${visible.length} of ${shown.length}` : `${shown.length} of ${shown.length}`} filtered samples ({rows.length} total), sorted by {sort.key} {sort.dir === 1 ? "ascending" : "descending"}</caption>
             <thead>
               <tr>
                 {head("sampleId", t("colSample"))}
                 {head("kind", t("colPartition"))}
-                {head("instrument", t("colInstrument"))}
-                {head("campaign", t("colCampaign"))}
+                {varyingMetadata(input).some((c) => c.name === "instrument") ? head("instrument", t("colInstrument")) : null}
+                {varyingMetadata(input).some((c) => c.name === "campaign") ? head("campaign", t("colCampaign")) : null}
                 {head("observations", t("colObs"))}
                 {input.targets.map((x) => <th key={x.target_id} scope="col" className="num">{x.target_id}</th>)}
               </tr>
@@ -246,8 +281,8 @@ function SampleTable({ t, locale, input, sourceIndex, selected, onSelect }: { t:
                     <button className="row-btn" onClick={(e) => { e.stopPropagation(); onSelect(selected === r.sampleId ? null : r.sampleId); document.getElementById("data-spectra")?.scrollIntoView({ behavior: "smooth", block: "center" }); }}>{r.sampleId}</button>
                   </th>
                   <td><span className="kind-chip" style={{ ["--kind" as string]: KIND_COLOR[r.kind] }}>{t(`kind_${r.kind}` as TextKey)}</span></td>
-                  <td>{r.instrument ?? "—"}</td>
-                  <td>{r.campaign ?? "—"}</td>
+                  {varyingMetadata(input).some((c) => c.name === "instrument") ? <td>{r.instrument ?? "—"}</td> : null}
+                  {varyingMetadata(input).some((c) => c.name === "campaign") ? <td>{r.campaign ?? "—"}</td> : null}
                   <td className="num">{r.observations}{r.incomplete ? <span className="warn-dot" title={fill(t("incompleteRows"), { n: r.incomplete })}> ●</span> : null}</td>
                   {input.targets.map((x) => <td key={x.target_id} className="num">{fmtRef(r.targets[x.target_id] ?? "hidden")}</td>)}
                 </tr>

@@ -218,6 +218,7 @@ fn html_escapes_untrusted_content() {
     assert!(html.contains("<th scope=\"col\">Metric / protocol</th>"));
     assert!(html.contains("insufficient_data") || html.contains("unsupported"));
     assert!(html.contains("Protocol bundle:"));
+    assert!(html.contains("scope: source_target<br>source:"));
     assert!(html.contains("confidence") || html.contains("unknown"));
 }
 

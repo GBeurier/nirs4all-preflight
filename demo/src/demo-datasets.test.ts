@@ -1,10 +1,13 @@
+import * as ioOwner from "../vendor/io-browser-owner/nirs4all_io_wasm.js";
+import { readFileSync as readIoBytes } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { DEMO_DATASETS, readDemoFiles, assembleDemoDataset } from "./demo-datasets";
 import type { IoRuntime, FormatsRuntime } from "./dataset-io";
 
 const require = createRequire(import.meta.url);
-const io = require("@nirs4all/io-wasm") as IoRuntime;
+ioOwner.initSync({ module: readIoBytes(new URL("../vendor/io-browser-owner/nirs4all_io_wasm_bg.wasm", import.meta.url)) });
+const io: IoRuntime = ioOwner;
 const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
 
 describe("real demo datasets reuse Web's CSVs through native IO", () => {

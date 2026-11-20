@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: GBeurier/nirs4all-methods
-          ref: fa8ff57603ec23bce95f73d52170285e8f3e2861 # Methods v1.3.13
+          ref: v1.5.0 # Methods 1.5.0 (ABI 2.24): corrected wide PCA scores
           path: upstream-methods
       - run: cmake --preset dev-release && cmake --build --preset dev-release --target n4m_c --parallel 2
         working-directory: upstream-methods
@@ -38,3 +38,15 @@ jobs:
       - run: npm ci --prefix bindings/wasm
       - run: npm run build:native --prefix bindings/wasm
       - run: npm test --prefix bindings/wasm
+      - run: npm ci --prefix demo
+      - run: npm test --prefix demo
+      - run: npm run build --prefix demo
+      - name: Demo browser smokes
+        env:
+          CHROME: /usr/bin/google-chrome
+          SMOKE_URL: http://127.0.0.1:4173/nirs4all-preflight/
+        run: |
+          npm run preview --prefix demo -- --port 4173 --strictPort --host 127.0.0.1 &
+          for attempt in $(seq 1 60); do curl -sf "$SMOKE_URL" > /dev/null && break; sleep 1; done
+          npm run test:browser --prefix demo
+          node demo/scripts/review-smoke.mjs

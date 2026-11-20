@@ -1,3 +1,5 @@
+import * as ioOwner from "../vendor/io-browser-owner/nirs4all_io_wasm.js";
+import { readFileSync as readIoBytes } from "node:fs";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
@@ -7,8 +9,9 @@ import { toEngineInput } from "./dataset";
 import { parseCanonicalInput } from "./input";
 
 const require = createRequire(import.meta.url);
-// Exercise the exact distributed native IO/Formats binaries used in the browser.
-const io = require("@nirs4all/io-wasm") as IoRuntime;
+// Exercise the browser-owner IO build and installed Formats binary.
+ioOwner.initSync({ module: readIoBytes(new URL("../vendor/io-browser-owner/nirs4all_io_wasm_bg.wasm", import.meta.url)) });
+const io: IoRuntime = ioOwner;
 const formats = require("@nirs4all/formats-wasm") as FormatsRuntime;
 const file = (name: string, text: string) => ({ name, bytes: new TextEncoder().encode(text) });
 const assemble = (files: ReturnType<typeof file>[]) => {
@@ -120,7 +123,7 @@ describe("native dataset import → shared builder → preflight", () => {
   });
 
   it("rejects incompatible schema versions", () => {
-    expect(() => toEngineInput({ assembled_schema_version: 1, name: "old", blocks: {} })).toThrow(/v2/);
+    expect(() => toEngineInput({ assembled_schema_version: 1, name: "old", blocks: {} } as unknown as import("./dataset").AssembledDataset)).toThrow(/v3/);
   });
 
   it("imports the nirs4all-io sample files with their metadata and identities", () => {
