@@ -45,6 +45,8 @@ import { fill, isTextKey, type TextKey } from "./i18n";
 import { Measured } from "./Measured";
 import { Section, type Scope } from "./Sections";
 import { atypicalSpectra } from "./views";
+import { DiversityPanel, IntegrityPanel, SnrPanel } from "./characterization/integrity";
+import { NoiseProxyPanel } from "./characterization/repeatability";
 
 /** Counts exactly; other engine numbers with `digits` significant digits, exponent form outside [1e-4, 1e6). */
 const n = (v: number | null | undefined, locale: Locale, digits = 3) =>
@@ -187,53 +189,22 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
 
 // --- repeatability uncertainty extras (rendered inside the repeatability section) --------------
 
-export function NoiseProxyCard({ t, locale, view, sourceId, axis }: Scope & { axis: readonly number[] }) {
+export function NoiseProxyCard(scope: Scope & { axis: readonly number[] }) {
+  const { locale, view, sourceId } = scope;
   if (!sourceId) return null;
   const contexts = extractNoiseProxy(view, sourceId);
   const missing = unavailableMetrics(view, ["measurement.noise_proxy"], sourceId);
   if (!contexts.length && !missing.length) return null;
   return (
-    <div className="card">
-      <CardTitle id="measurement.noise_proxy" locale={locale} />
-      <div className="stats">
-        {contexts.map((c) => <StatTile key={c.id} label={`${metricLabel("measurement.noise_proxy_pooled", locale)}${c.id.replace(/[·\s]/g, "") ? ` · ${c.id}` : ""}`} value={n(c.pooled, locale)} suffix={c.unit ?? undefined} hint={fill(t("noiseHint"), { w: c.windowBands ?? "—", p: c.polyorder ?? "—", n: c.nEvaluableBands ?? "—" })} />)}
-      </div>
-      {contexts.length ? (
-        <ChartDataTable
-          locale={locale}
-          caption={metricLabel("measurement.noise_proxy", locale)}
-          columns={[t("bandCol"), ...contexts.map((c) => c.id)]}
-          rows={axis.map((x, i) => [cellNumber(x), ...contexts.map((c) => cellNumber(c.values[i]))])}
-        />
+    <>
+      {contexts.length ? <NoiseProxyPanel {...scope} /> : null}
+      {missing.length ? (
+        <div className="card">
+          <CardTitle id="measurement.noise_proxy" locale={locale} />
+          <Unavailable metrics={missing} locale={locale} />
+        </div>
       ) : null}
-      <Unavailable metrics={missing} locale={locale} />
-    </div>
-  );
-}
-
-/** Event counts by band (population-relative spikes and jumps), drawn against the spectral axis. */
-function EventBands({ t, locale, view, sourceId, unit }: Pick<Scope, "t" | "locale" | "view" | "sourceId"> & { unit: string }) {
-  const read = (id: string) => {
-    const metric = view.metrics.find((m) => m.sourceId === sourceId && m.id === `intrinsic.events.${id}` && m.status === "computed");
-    const value = metric?.value as { axis?: number[]; counts?: number[] } | undefined;
-    return value?.axis && value.counts && value.axis.length === value.counts.length ? { axis: value.axis, counts: value.counts } : null;
-  };
-  const spikes = read("global_spike_band_counts");
-  const jumps = read("global_jump_band_counts");
-  const axis = spikes?.axis ?? jumps?.axis;
-  if (!axis) return null;
-  const series = [
-    ...(spikes ? [{ id: t("qualitySpikes"), values: spikes.counts, color: "#e11d48", label: t("qualitySpikes") }] : []),
-    ...(jumps ? [{ id: t("qualityJumps"), values: jumps.counts, color: "#d97706", label: t("qualityJumps") }] : []),
-  ];
-  return (
-    <div className="card">
-      <h3 className="card-title">Where events occur</h3>
-      <Measured>{(w) => <SpectraExplorer axis={axis} axisUnit={unit} yLabel="spectra with an event" series={series} selected={[]} onSelect={() => undefined} title="Spike and jump counts by band" locale={locale} width={w} height={Math.min(260, Math.max(200, w * 0.32))} />}</Measured>
-      <ul className="n4q-legend">{series.map((s) => <li key={s.id}><span className="n4q-key-line" style={{ background: s.color }} aria-hidden="true" />{s.label}</li>)}</ul>
-      <p className="hint">Number of spectra with an event at each band. A narrow peak points to one wavelength region (a detector or splice artefact, a contaminant); events spread over the whole range point to individual noisy spectra. A spike also counts on its two neighbouring bands.</p>
-      <ChartDataTable locale={locale} caption="Spike and jump counts by band" columns={[t("bandCol"), t("qualitySpikes"), t("qualityJumps")]} rows={axis.map((x, i) => [cellNumber(x), cellNumber(spikes?.counts[i] ?? null), cellNumber(jumps?.counts[i] ?? null)])} />
-    </div>
+    </>
   );
 }
 
@@ -668,7 +639,8 @@ function scanLabel(observationId: string): string {
   }
 }
 
-export function SpectralQualitySection({ t, locale, view, input, sourceId }: Scope) {
+export function SpectralQualitySection(scope: Scope) {
+  const { t, locale, view, sourceId } = scope;
   const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
   if (!intrinsic) return null;
   const t2 = intrinsic.signals["pca.pca_t2"];
@@ -684,27 +656,15 @@ export function SpectralQualitySection({ t, locale, view, input, sourceId }: Sco
       return [{ id: scanLabel(id), details: [t2.sampleIds[i] ?? ""], x: value, y: residual, group: flagged.has(t2.observationIds[i] ?? "") ? t("qualityAtypical") : t("qualityTypical") }];
     })
     : [];
-  const g = intrinsic.globals;
-  const affected = (id: string) => {
-    const signal = intrinsic.signals[id];
-    return signal?.state.status === "computed" ? `${signal.values.filter((v) => v !== null && v > 0).length} / ${signal.values.filter((v) => v !== null).length}` : "—";
-  };
-  const eventHint = (count: number | undefined) => `${n(count, locale)} events across all spectra · threshold ${input.options.intrinsic_qc?.outlier_threshold ?? 8} robust deviations. ${t("qualityEventsHint")}`;
-  const snr = intrinsic.signals["noise.signal_noise_db"];
-  const distance = intrinsic.signals["reference.rms"];
-  const level = intrinsic.signals["noise.signal_mean_abs"];
-  const unit = input.sources.find((s) => s.source_id === sourceId)?.signal_unit ?? "signal units";
   const unavailable = Object.values(intrinsic.signals).filter((s) => s.state.status !== "computed" && /^(pca|events|noise|reference)\./.test(s.id));
   return (
     <Section id="s-quality" icon="data" accent="rose" title={t("qualityTitle")} lead={t("qualityLead")}>
       <div className="stats">
         <StatTile label={t("qualityAtypicalCount")} value={pcaReady ? n(atypical.length, locale) : "—"} hint={pcaReady ? fill(t("qualityAtypicalHint"), { t2: n(t2.p95, locale), q: n(q.p95, locale) }) : "—"} tone={atypical.length ? "warning" : "neutral"} />
-        <StatTile label={t("qualitySpikes")} value={affected("events.spike_count")} hint={eventHint(g["events.global_spike_count"])} tone={(g["events.global_spike_count"] ?? 0) > 0 ? "warning" : "neutral"} />
-        <StatTile label={t("qualityJumps")} value={affected("events.jump_count")} hint={eventHint(g["events.global_jump_count"])} tone={(g["events.global_jump_count"] ?? 0) > 0 ? "warning" : "neutral"} />
-        <StatTile label={t("qualitySnr")} value={snr?.median !== null && snr?.median !== undefined ? `${n(snr.median, locale)} dB` : "—"} hint="Median over spectra of the mean absolute signal divided by its fine-scale noise estimate, in dB; higher means less fine-scale variation relative to the signal level. It depends on the instrument, band count, preprocessing and sample type, so compare it only between datasets acquired and processed alike. No calibrated reference values for named instruments are available." />
-        <StatTile label="Distance from the mean spectrum (95th percentile)" value={n(distance?.p95, locale)} suffix={unit} hint={distance?.p95 != null ? fill(t("qualityDistanceHint"), { d: n(distance.p95, locale), level: level?.median != null ? `median mean absolute signal ${n(level.median, locale)} ${unit}` : "not available" }) : "—"} />
       </div>
-      <EventBands {...{ t, locale, view, sourceId }} unit={input.sources.find((s) => s.source_id === sourceId)?.axis_unit ?? ""} />
+      <IntegrityPanel {...scope} />
+      <SnrPanel {...scope} />
+      <DiversityPanel {...scope} />
       {pcaReady ? (
         <div className="grid-3-2">
           <div className="card">

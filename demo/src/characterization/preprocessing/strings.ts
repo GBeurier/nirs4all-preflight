@@ -1,0 +1,52 @@
+// English UI text of the preprocessing explorer (kept here, not in demo/src/i18n.ts).
+export const S = {
+  title: "Interactive spectral preprocessing explorer",
+  lead: "Explore how preprocessing affects spectral noise, localized anomalies, measurement repeatability and sample diversity while monitoring potential loss or distortion of spectral information.",
+  noData: "The explorer needs at least two complete spectra with five or more bands in the selected source.",
+  denominators: (used: number, complete: number, total: number, cap: number) =>
+    `Computed on ${used} of ${total} spectra: complete spectra only (${complete} complete), a deterministic subset of at most ${cap} spectra with replicate groups kept together. The original dataset is never modified; every indicator is recomputed on these same spectra and bands.`,
+  fixedDiagnostics: (threshold: number, window: number, polyorder: number) =>
+    `Diagnostic parameters are fixed for every comparison and are not preprocessing parameters: noise σ = MAD(second differences)·1.4826/√6 (Methods spectral_noise_proxy); events relative to the other spectra at the same band (threshold ${threshold}, at least 5 spectra; computed within this subset, so counts can differ from the full-dataset report); noise proxy profile = Savitzky–Golay residual (window ${window}, order ${polyorder}).`,
+  irregularAxis: "The spectral axis is irregular: derivatives are scaled by the median axis step and the windows count bands, not axis units.",
+  pipeline: "Preprocessing pipeline",
+  addStep: "Add a step",
+  remove: "Remove",
+  up: "Move up",
+  down: "Move down",
+  emptyPipeline: "No step: processed = raw.",
+  unavailable: "Unavailable in this build",
+  computing: "Recomputing…",
+  shownSpectra: "Spectra drawn",
+  comparability: {
+    comparable: "Smoothing / denoising / despiking: the processed spectra keep the raw scale, so before/after noise indicators are comparable under the usual assumptions. A smaller smoothing residual is not independent evidence of lower instrumental noise.",
+    caution: "Scatter or baseline correction (SNV, MSC, detrending): the signal is rescaled or shifted. SNR and fine-scale changes are shown but must be interpreted with caution; unit-based metrics are withheld when the scale changes.",
+    not_comparable: "Derivative: the processed signal lives in a different spectral space (signal unit per axis unit). SNR gains and percentage changes are disabled because they are not meaningful in the new spectral space.",
+  },
+  neverImprovement: "A higher SNR or a lower diversity is not necessarily an analytical improvement; no configuration is designated as optimal without a defined analytical objective.",
+  metrics: "Before/after metrics",
+  definitions: "Metric definitions",
+  table: "Raw / Preprocessed / Delta",
+  bandWindow: "Band position / amplitude / width (select a band range on any track)",
+  bandHint: "Drag across a band on the tracks to describe it on the median spectrum before and after.",
+  benchmark: "Preprocessing benchmark",
+  benchmarkLead: "Automatic evaluation of comparable smoothing and denoising configurations on the same spectra. One point per configuration; click a point to load it into the explorer. Distortion and variation reduction trade off: the chart does not identify an optimal setting.",
+  runBenchmark: (n: number) => `Run benchmark (${n} configurations)`,
+  cancel: "Cancel",
+  pareto: "Highlight non-dominated configurations (Pareto: lower distortion, higher reduction)",
+  nominalNote: "Nominal = the configuration currently loaded in the explorer, when it is a single smoothing/denoising step.",
+  chemometric: "Chemometric validation (future, not available)",
+  chemometricNote: "When a target Y is declared, a later extension may compare preprocessing by PLS RMSECV/RMSEP, bias and latent variables under leak-free cross-validation (preprocessing fitted inside each fold). That scheduling belongs to the DAG-ML owner; it is not computed here.",
+  syntheticNote: "Synthetic noise scenarios (dataset picker) remain available only as an optional validation of the noise estimator, not as the main exploration.",
+};
+
+export const DEFINITIONS: readonly { term: string; text: string }[] = [
+  { term: "SNR (per spectrum)", text: "20·log10(mean|x| / σ), σ = MAD(second differences)·1.4826/√6 — Methods diagnostics.spectral_noise_proxy, same estimator as the engine. Descriptive amplitude ratio, not an instrument specification." },
+  { term: "SNR gain (dB)", text: "Median over spectra of (SNR_processed − SNR_raw), paired spectrum by spectrum; n = spectra evaluable on both sides. Disabled for derivatives." },
+  { term: "Fine-scale variation reduction (%)", text: "100·(1 − median_i σ_processed,i / σ_raw,i), σ the fixed second-difference estimator above. Negative = more fine-scale variation after processing. Measures smoothness, not removal of instrumental noise only. Disabled for derivatives and when the signal unit or scale changes (SNV)." },
+  { term: "Relative spectral RMSE (%)", text: "Median over spectra of 100·‖x_raw − x_processed‖₂ / ‖x_raw‖₂ over all bands. Only when the processing keeps the signal unit and scale." },
+  { term: "Spectral angle (°)", text: "Median over spectra of arccos(⟨x_raw, x_processed⟩ / (‖x_raw‖‖x_processed‖)): shape change insensitive to a global gain, sensitive to offsets. Disabled for derivatives." },
+  { term: "Between-sample diversity retention (%)", text: "100·sqrt(Σ_b SD_b(processed)² / Σ_b SD_b(raw)²), SD_b the sample SD across spectra at band b. 100 % = same total between-spectrum variance. Lower is not an improvement by itself." },
+  { term: "Transformation residual", text: "r(λ) = x_raw(λ) − x_processed(λ), median and P5–P95 across spectra. Structured residual shaped like absorption bands suggests that useful signal is removed." },
+  { term: "Band descriptors", text: "Within the selected range, on the median spectrum: maximum above the straight line joining the range ends (position), its height (amplitude) and its full width at half height (null if the band is not closed in the range)." },
+  { term: "Distortion profile (quality map)", text: "Per band |mean_i r_ib| / mean_i |x_raw,ib| for the configuration loaded in the explorer." },
+];

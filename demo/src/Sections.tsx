@@ -13,13 +13,11 @@ import {
   MeasureBars,
   PopulationFlow,
   ProfileStatusBadge,
-  RepeatabilityProfile,
   ScoreMap,
   StatTile,
   TargetDistribution,
   extractObservationFlow,
   extractPca,
-  extractRepeatability,
   extractRepeatabilityUncertainty,
   extractSamplePopulations,
   extractTarget,
@@ -31,9 +29,9 @@ import {
   samplePopulationStage,
   type CheckItem,
   type QualificationReportView,
-  withRepeatabilityUncertainty,
 } from "nirs4all-ui/qualification";
 import { NoiseProxyCard, presentSections } from "./Blocks";
+import { RepeatabilityPanel } from "./characterization/repeatability";
 import { downloadEvidenceCsv, exportTables, metricKey } from "./export";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
@@ -245,31 +243,18 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
 
 // --- 05 repeatability -------------------------------------------------------------------------
 
-export function RepeatSection(scope: Scope) {
+export function RepeatSection(scope: Scope & { onOpenSettings?: () => void }) {
   const { t, locale, view, input, sourceId } = scope;
   if (input.options.analysis_families?.repeatability === false) return null;
   const source = input.sources.find((s) => s.source_id === sourceId);
   const uncertainty = sourceId ? extractRepeatabilityUncertainty(view, sourceId) : [];
-  const contexts = sourceId ? withRepeatabilityUncertainty(extractRepeatability(view, sourceId), uncertainty) : [];
   const reasons = view.metrics.filter((m) => m.sourceId === sourceId && m.id.startsWith("measurement.") && !m.id.startsWith("measurement.noise_proxy") && m.status !== "computed");
   const counts = uncertainty.filter((u) => u.repeatCounts?.histogram.length);
   return (
     <Section id="s-repeat" icon="repeat" accent="green" title={t("repeatTitle")} lead={t("repeatLead")}>
-      <p className="note">Repeatability SD uses the signal units: smaller values mean closer repeat scans. ICC compares differences between samples with variation between their repeats; values near 1 mean repeats agree relative to the sample differences.</p>
-      <div className="card">
-        {contexts.length && source ? (
-          <>
-            <Measured>{(w) => <RepeatabilityProfile axis={source.axis} axisUnit={source.axis_unit ?? ""} contexts={contexts} title={`${t("repeatTitle")} — ${source.source_id}`} locale={locale} width={w} />}</Measured>
-            <p className="hint">{t("hoverHint")}{contexts.some((c) => c.sdInterval || c.iccInterval) ? ` ${t("repeatUncertaintyHint")}` : ""}</p>
-          </>
-        ) : (
-          <div className="empty">
-            <p>{t("repeatNone")}</p>
-          </div>
-        )}
-        {reasons.length ? <ul className="plain small unavailable">{reasons.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul> : null}
-      </div>
-      {counts.length || source ? (
+      {source ? <RepeatabilityPanel {...scope} /> : null}
+      {reasons.length ? <div className="card"><ul className="plain small unavailable">{reasons.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul></div> : null}
+      {counts.length ? (
         <div className="grid-2 flow-gap-sm">
           {counts.map((u) => (
             <div className="card" key={u.id}>
@@ -277,9 +262,9 @@ export function RepeatSection(scope: Scope) {
               <Measured>{(w) => <MeasureBars width={w} title={`${metricLabel("measurement.repeat_counts", locale)} — ${u.id}`} valueLabel={t("physicalGroups")} locale={locale} rows={u.repeatCounts!.histogram.map((h) => ({ id: String(h.r), label: fill(t("repeatsR"), { r: h.r }), value: h.nGroups }))} />}</Measured>
             </div>
           ))}
-          {source ? <NoiseProxyCard {...scope} axis={source.axis} /> : null}
         </div>
       ) : null}
+      {source ? <div className="flow-gap-sm"><NoiseProxyCard {...scope} axis={source.axis} /></div> : null}
     </Section>
   );
 }
