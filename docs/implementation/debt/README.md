@@ -9,6 +9,7 @@ for the ongoing release. Every interim item is listed with its file and migratio
 - [characterization-repeatability.md](characterization-repeatability.md): per-band repeatability, noise proxy, residual heatmap and `AlignedTracks`.
 - [characterization-preprocessing.md](characterization-preprocessing.md): interactive preprocessing explorer and benchmark.
 - [characterization-overview.md](characterization-overview.md): overview cards, spectral quality map, comment framework and page wiring.
+- [characterization-domains.md](characterization-domains.md): shift between domains (relative metrics, per-unit T²/Q, band profiles, nearest neighbours, internal energy benchmark).
 
 Formulas, hypotheses and heuristic bands are documented in [../CHARACTERIZATION_INTERPRETABILITY.md](../CHARACTERIZATION_INTERPRETABILITY.md).
 

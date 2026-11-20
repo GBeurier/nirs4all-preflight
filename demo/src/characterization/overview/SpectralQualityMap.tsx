@@ -1,16 +1,17 @@
 // Spectral quality map (request §9): local diagnostics as horizontal tracks on one spectral axis,
 // each with its own scale and legend. Exploration tool: nothing here rejects a band or a spectrum.
 // Interim demo component (nirs4all-ui debt, see docs/implementation/debt/characterization-overview.md).
-import { useMemo, useRef, type MouseEvent } from "react";
+import { useMemo, useRef, useState, type MouseEvent } from "react";
 import { ChartDataTable, formatEngineNumber } from "nirs4all-ui/qualification";
-import { Measured } from "../../Measured";
 import { Section, type Scope } from "../../Sections";
 import { downloadText } from "../../download";
 import { useDistortionProfile } from "../preprocessing/distortion";
 import { AlignedTracks, type Track } from "../repeatability/AlignedTracks";
+import { ChartCard, Responsive, SegmentStrip } from "../shared/charts";
+import { stripRows } from "./stripRows";
 import { qualityMapInputs } from "./mapInputs";
 import { regionsExport, useCharacterizationSelection } from "./selection";
-import { MAP } from "./strings";
+import { MAP, PHASES } from "./strings";
 import { NON_EVALUABLE_COLOR, buildTracks, categoryOf, categoryShares, colorOf, summarizeInterval, type QualityTrack, type TrackId, type TrackInputs, type TrackSummary } from "./tracks";
 import "./overview.css";
 
@@ -116,12 +117,14 @@ export function SpectralQualityMap(props: Scope) {
   }, [view, input, sourceId, distortion]);
   const drawnTracks = useMemo(() => tracks.filter((t) => !t.unavailable), [tracks]);
   const drawn = useMemo(() => alignedTracks(tracks), [tracks]);
+  const rows = useMemo(() => stripRows(tracks, fmtNumber), [tracks]);
+  const [cursor, setCursor] = useState<number | null>(null);
   const ownSelection = shared.selection && shared.selection.sourceId === sourceId ? shared.selection : null;
   const regions = shared.regions.filter((r) => r.sourceId === sourceId);
   const summaries = useMemo(() => (ownSelection ? summarizeInterval(tracks, ownSelection.i0, ownSelection.i1) : []), [tracks, ownSelection]);
   if (!source || !sourceId || !drawnTracks.length) return null;
   const axisLabel = `${source.axis_unit ? `Spectral axis (${source.axis_unit})` : "Band index / spectral axis"}`;
-  const rows = source.axis.map((x, i) => [x, ...drawnTracks.flatMap((t) => [t.values[i] ?? null, ...(t.kind === "categorical" ? [categoryOf(t, t.values[i] ?? null)?.label ?? null] : [])])]);
+  const tableRows = source.axis.map((x, i) => [x, ...drawnTracks.flatMap((t) => [t.values[i] ?? null, ...(t.kind === "categorical" ? [categoryOf(t, t.values[i] ?? null)?.label ?? null] : [])])]);
   const columns = [axisLabel, ...drawnTracks.flatMap((t) => [`${t.label}${t.unit ? ` (${t.unit})` : ""}`, ...(t.kind === "categorical" ? [`${t.label} — class`] : [])])];
   // A click (not a drag) on a strip opens the detailed panel of that track: find the strip under the pointer.
   const onChartClick = (e: MouseEvent<HTMLDivElement>) => {
@@ -135,25 +138,23 @@ export function SpectralQualityMap(props: Scope) {
   const interval = ownSelection ? { sourceId, i0: ownSelection.i0, i1: ownSelection.i1, from: ownSelection.from, to: ownSelection.to } : null;
   const span = ownSelection ? `${fmtNumber(Math.min(ownSelection.from, ownSelection.to), 6)}${ownSelection.i0 === ownSelection.i1 ? "" : `–${fmtNumber(Math.max(ownSelection.from, ownSelection.to), 6)}`}${source.axis_unit ? ` ${source.axis_unit}` : ""}` : "";
   return (
-    <Section id="s-quality-map" icon="composition" accent="indigo" title={MAP.title} lead={MAP.lead}>
-      <p className="note">{MAP.warning}</p>
-      <div className="card qm-card" ref={chart} onClick={onChartClick}>
-        <Measured min={420}>
-          {(w) => (
-            <AlignedTracks
-              axis={source.axis}
-              axisLabel={axisLabel}
-              tracks={drawn}
-              width={w}
-              title={`${MAP.title} — ${sourceId}`}
-              selection={ownSelection ? { i0: ownSelection.i0, i1: ownSelection.i1 } : null}
-              onSelect={(sel) => shared.select(sel ? { sourceId, ...sel } : null)}
-              markRegions={regions.map((r) => ({ i0: Math.min(r.i0, r.i1), i1: Math.max(r.i0, r.i1), label: `To investigate${r.note ? `: ${r.note}` : ""}` }))}
-            />
-          )}
-        </Measured>
-        <p className="hint">{MAP.interaction}</p>
-      </div>
+    <Section id="s-quality-map" index="4 / 4" icon="composition" accent="indigo" title={MAP.title} lead={PHASES.mapLead}>
+      <ChartCard title={`${MAP.title} — ${sourceId}`} subtitle={MAP.stripLead} footnote={MAP.warning}>
+        <SegmentStrip
+          axis={source.axis}
+          axisLabel={axisLabel}
+          rows={rows}
+          title={`${MAP.title} — ${sourceId}`}
+          cursor={cursor}
+          onCursor={setCursor}
+          selection={ownSelection ? { i0: ownSelection.i0, i1: ownSelection.i1 } : null}
+          onSelect={(r) => shared.select(r ? { sourceId, i0: r.i0, i1: r.i1, from: source.axis[r.i0]!, to: source.axis[r.i1]! } : null)}
+          marks={regions.map((r) => ({ i0: r.i0, i1: r.i1, label: `To investigate${r.note ? `: ${r.note}` : ""}` }))}
+          fmt={fmtNumber}
+          onRowClick={(rowId) => { const t = drawnTracks.find((d) => d.id === rowId); if (t) shared.openPanel(t.panel); }}
+        />
+        <p className="hint">{MAP.stripInteraction}</p>
+      </ChartCard>
       {ownSelection ? (
         <div className="card qm-selection" role="region" aria-label={MAP.selected}>
           <h3 className="card-title">{MAP.selected}: {span} <span className="unit">· {Math.abs(ownSelection.i1 - ownSelection.i0) + 1} band(s)</span></h3>
@@ -183,16 +184,38 @@ export function SpectralQualityMap(props: Scope) {
           <button type="button" className="btn btn-ghost btn-sm" disabled={!regions.length} onClick={shared.clearRegions}>{MAP.regionsClear}</button>
         </div>
       </div>
-      <h3 className="qm-subtitle">{MAP.legendsTitle}</h3>
-      <p className="hint">{MAP.scaleNote}</p>
-      <div className="qm-legends">{drawnTracks.map((t) => <Legend key={t.id} track={t} />)}</div>
+      <details className="rb-details">
+        <summary>{MAP.valuesTitle}</summary>
+        <div className="card qm-card" ref={chart} onClick={onChartClick} style={{ marginTop: 10 }}>
+          <Responsive min={420}>
+            {(w) => (
+              <AlignedTracks
+                axis={source.axis}
+                axisLabel={axisLabel}
+                tracks={drawn}
+                width={w}
+                title={`${MAP.title} — ${sourceId}`}
+                selection={ownSelection ? { i0: ownSelection.i0, i1: ownSelection.i1 } : null}
+                onSelect={(sel) => shared.select(sel ? { sourceId, ...sel } : null)}
+                cursor={cursor}
+                onCursor={setCursor}
+                markRegions={regions.map((r) => ({ i0: Math.min(r.i0, r.i1), i1: Math.max(r.i0, r.i1), label: `To investigate${r.note ? `: ${r.note}` : ""}` }))}
+              />
+            )}
+          </Responsive>
+          <p className="hint">{MAP.interaction}</p>
+        </div>
+        <h3 className="qm-subtitle">{MAP.legendsTitle}</h3>
+        <p className="hint">{MAP.scaleNote}</p>
+        <div className="qm-legends">{drawnTracks.map((t) => <Legend key={t.id} track={t} />)}</div>
+      </details>
       {tracks.some((t) => t.unavailable) ? (
         <div className="card">
           <h3 className="card-title">{MAP.notDrawn}</h3>
           <ul className="plain small unavailable">{tracks.filter((t) => t.unavailable).map((t) => <li key={t.id}><strong>{t.label}</strong> — {t.unavailable}</li>)}</ul>
         </div>
       ) : null}
-      <ChartDataTable caption={`${MAP.tableCaption} — ${sourceId}`} columns={columns} rows={rows} locale="en" />
+      <ChartDataTable caption={`${MAP.tableCaption} — ${sourceId}`} columns={columns} rows={tableRows} locale="en" />
     </Section>
   );
 }

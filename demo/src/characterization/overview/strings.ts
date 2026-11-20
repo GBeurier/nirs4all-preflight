@@ -39,17 +39,33 @@ export const OVERVIEW = {
 } as const;
 
 export const PHASES = {
+  overviewTitle: "Dataset characterization overview",
+  overviewLead: "Spikes, noise and diversity at a glance, never combined into one score.",
   detailedTitle: "Detailed spectral diagnostics",
-  detailedLead: "Local profiles, repeatability, anomalies, residuals and distributions, on the spectral axis of the selected source.",
+  detailedLead: "Local profiles, repeatability, anomalies, residuals and distributions on one spectral axis.",
   detailedNav: "Detailed diagnostics",
+  preprocessingTitle: "Interactive preprocessing explorer",
+  preprocessingLead: "Real spectra, interactive parameters and a before / after comparison.",
   preprocessingNav: "Preprocessing explorer",
+  mapTitle: "Spectral quality map",
+  mapLead: "Cross-cutting view of the spectral regions to investigate.",
   mapNav: "Spectral quality map",
+} as const;
+
+/** Rubrics of the detailed diagnostics: one section each, same-type visuals grouped inside. */
+export const RUBRICS = {
+  integrity: { title: "Spectral integrity", nav: "Spectral integrity", lead: "Isolated peaks, abrupt changes and atypical spectra (T² / Q). Inspection flags, not rejection criteria.", tracks: "Where the events fall on the spectral axis" },
+  noise: { title: "Spectral noise and repeatability", nav: "Noise and repeatability", lead: "Fine-scale noise per spectrum (SNR), local noise proxy per band and agreement between technical replicates.", tracks: "Noise and repeatability profiles by band" },
+  diversity: { title: "Spectral diversity", nav: "Spectral diversity", lead: "How far spectra lie from the mean spectrum, and where along the axis they spread. Diversity is not a defect.", tracks: "Spread of the spectra by band" },
 } as const;
 
 export const MAP = {
   title: "Spectral quality map",
   lead: "Cross-cutting view of the regions to investigate: one track per local diagnostic on a common spectral axis. Each track keeps its own scale and legend; the tracks are never summed into a score.",
   warning: "An exploration tool, not a mechanism for rejecting wavelengths. Heuristic classes are indicative and not metrologically validated; grey hatched bands could not be evaluated.",
+  stripLead: "One row per local diagnostic on the same spectral axis; each row keeps its own classes. On long axes each segment shows its window's most extreme band; legend shares count individual bands. Never summed into a score.",
+  stripInteraction: "Hover for the local class · drag to select an interval · click a band to open its detailed rubric (Escape clears) · the selection is shared with the detailed profiles.",
+  valuesTitle: "Values, zoomable tracks and scales",
   interaction: "Hover for local values · drag to select an interval · click a band to open the matching detailed panel · Ctrl/⌘ + wheel to zoom · Shift + drag to pan",
   selected: "Selected interval",
   mark: "Mark as region to investigate",

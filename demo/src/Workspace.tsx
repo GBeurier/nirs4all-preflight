@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
-import { buildQualificationReportView, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
+import { buildQualificationReportView, extractIntrinsic, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
 import timings from "./data/analysis-timings.json";
 import { DEMO_DATASETS } from "./demo-datasets";
 import { csvDialect, downloadEvidenceCsv, metricKey, selectedReport, setCsvDialect, type CsvDialect } from "./export";
@@ -13,9 +13,9 @@ import { fill, type TextKey } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { countIndependenceGroups, defaultConfig, parseSeed, ANALYSIS_FAMILIES, metadataColumns, type MetadataRole, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
 import { DECLARABLE_REPETITIONS, type RepetitionDeclaration } from "./dataset";
-import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
-import { CharacterizationOverview, CharacterizationProvider, PHASES, PhaseHeading, SpectralQualityMap, hasQualityMap } from "./characterization/overview";
-import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
+import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
+import { CharacterizationOverview, CharacterizationProvider, DetailedProfiles, DiversityRubric, IntegrityRubric, NoiseRubric, PHASES, PhaseArrow, RUBRICS, SpectralQualityMap, hasQualityMap } from "./characterization/overview";
+import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
 type View = "data" | "diagnosis" | "evidence" | "export";
 const FAMILY_LABELS = { spectral_quality: "Spectral quality", sensitivity: "Structure sensitivity", repeatability: "Technical repeatability", clustering: "Exploratory groups", association: "Metadata and target", confounding: "Confounding factors", domain_shift: "Domain comparisons", probe: "Validation probe" };
@@ -24,12 +24,15 @@ const UNITS: readonly IndependenceUnit[] = ["unknown", "sample", "reference_grou
 const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-populations", label: "navPopulations" },
   { id: "s-structure", label: "navStructure" },
-  { id: "s-repeat", label: "navRepeat" },
   { id: "s-target", label: "navTarget" },
 ];
 /** Characterization sections (not in the shared i18n table): menu entries with their own English labels. */
 const CHARACTERIZATION_LINKS: readonly { id: string; label: string }[] = [
   { id: "s-characterization", label: "Characterization overview" },
+  { id: "s-detailed", label: PHASES.detailedNav },
+  { id: "s-quality", label: RUBRICS.integrity.nav },
+  { id: "s-repeat", label: RUBRICS.noise.nav },
+  { id: "s-diversity", label: RUBRICS.diversity.nav },
   { id: "s-preprocessing", label: PHASES.preprocessingNav },
   { id: "s-quality-map", label: PHASES.mapNav },
 ];
@@ -53,14 +56,14 @@ function issueGroups(validation: EngineValidation) {
  * characterization mockup: overview, detailed diagnostics (spectral quality, repeatability), preprocessing
  * explorer, spectral quality map, then the remaining analyses.
  */
-const DIAG_ORDER = ["s-overview", "s-populations", "s-characterization", "s-quality", "s-repeat", "s-preprocessing", "s-quality-map", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
+const DIAG_ORDER = ["s-overview", "s-populations", "s-characterization", "s-detailed", "s-quality", "s-repeat", "s-diversity", "s-preprocessing", "s-quality-map", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
 const diagMenu = (scope: Scope, qualityMap: boolean): { id: string; label: string }[] =>
   [
     { id: "s-overview", label: scope.t("diagTitle" as TextKey) },
-    ...[...DIAG_LINKS, ...presentSections(scope)].map((item) => ({ id: item.id, label: scope.t(item.label) })),
+    ...[...DIAG_LINKS, ...presentSections(scope).filter((item) => item.id !== "s-quality")].map((item) => ({ id: item.id, label: scope.t(item.label) })),
     ...CHARACTERIZATION_LINKS.filter((item) => item.id !== "s-quality-map" || qualityMap),
   ]
-    .filter((item) => (item.id !== "s-repeat" || scope.input.options.analysis_families?.repeatability !== false) && (item.id !== "s-target" || scope.targetId !== null))
+    .filter((item) => (item.id !== "s-target" || scope.targetId !== null) && ((item.id !== "s-quality" && item.id !== "s-diversity") || (scope.sourceId !== null && extractIntrinsic(scope.view, scope.sourceId) !== null)))
     .sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
 
 /** Sticky left menu of the diagnosis sections; the section in view is highlighted. */
@@ -164,11 +167,11 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const selected = new Set(report?.metrics.map(metricKey).filter((key) => !excludedMetrics.has(key)) ?? []);
   const choose = (keys: string[], checked: boolean) => setExcludedMetrics((previous) => { const next = new Set(previous); for (const key of keys) { if (checked) next.delete(key); else next.add(key); } return next; });
   const filteredReport = result ? selectedReport(result.report, selected) : null;
-  const alertSections: Record<string, string> = { leak: "s-duplicates", duplicates: "s-duplicates", missing: "s-quality", repeats: "s-populations", unit: "s-overview" };
-  // Red when a section holds a critical control point, orange for points to review.
+  // Red when a section holds a critical control point, orange for points to review. A point counts on the
+  // section its View link opens (the one that shows its cause); others stay on the overview's control list.
   const alerts: Alerts = {};
   for (const check of checks.filter((c) => c.status === "attention" || c.status === "critical")) {
-    const id = alertSections[check.id] ?? (check.href?.startsWith("#s-") ? check.href.slice(1) : "s-overview");
+    const id = check.href?.startsWith("#s-") ? check.href.slice(1) : "s-overview";
     const entry = (alerts[id] ??= { n: 0, critical: false });
     entry.n += 1;
     entry.critical ||= check.status === "critical";
@@ -331,23 +334,27 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
             <DiagnosisSummary {...scope} checks={checks} />
             <PopulationsSection {...scope} />
             <CharacterizationOverview key={`char-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
-            <PhaseHeading id="s-detailed" index="2 / 4" title={PHASES.detailedTitle} lead={PHASES.detailedLead} />
-            <SpectralQualitySection key={`quality-${source ?? ""}`} {...scope} />
-            <RepeatSection key={`repeat-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
-            <Section id="s-preprocessing" index="3 / 4" icon="flow" accent="cyan" title={PHASES.preprocessingNav}>
+            <PhaseArrow />
+            <DetailedProfiles key={`detail-${source ?? ""}`} {...scope} />
+            <IntegrityRubric key={`quality-${source ?? ""}`} {...scope} />
+            <NoiseRubric key={`repeat-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
+            <DiversityRubric key={`diversity-${source ?? ""}`} {...scope} />
+            <PhaseArrow />
+            <Section id="s-preprocessing" index="3 / 4" icon="flow" accent="cyan" title={PHASES.preprocessingTitle} lead={PHASES.preprocessingLead}>
               <Suspense fallback={<p className="note" role="status">Loading the preprocessing explorer…</p>}>
                 <PreprocessingExplorer key={`pre-${source ?? ""}`} scope={scope} />
               </Suspense>
             </Section>
+            <PhaseArrow />
             <SpectralQualityMap key={`map-${source ?? ""}`} {...scope} />
-            <DuplicatesSection {...scope} />
+            <DuplicatesSection {...scope} onOpenSettings={openSettings} />
             <StructureSection key={`pca-${source ?? ""}`} {...scope} />
             <SensitivitySection {...scope} />
             <ClusteringSection {...scope} />
             <TargetSection {...scope} />
             <AssociationSection {...scope} />
             <ConfoundingSection {...scope} />
-            <DomainShiftSection {...scope} />
+            <DomainShiftSection key={`shift-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
             <ProbeSection {...scope} />
             </CharacterizationProvider>
             <NextStep label={t("stepEvidence")} t={t} onClick={() => go("evidence")} />

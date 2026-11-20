@@ -1,84 +1,106 @@
-// Small presentation helpers shared by the repeatability and noise-proxy panels (interim; nirs4all-ui debt).
-import type { ReactNode } from "react";
+// Presentation helpers shared by the repeatability and noise-proxy blocks (interim; nirs4all-ui debt).
+// Everything is styled with the chart-kit tokens (--cz-*), light and dark.
+import { useState, type ReactNode } from "react";
+import { KpiStrip, StackedShareBar, type ShareSegment } from "../shared/charts";
+import { quantile } from "../shared/derive";
+import { Measured } from "../../Measured";
+import { AlignedTracks, type BandSelection, type Track } from "./AlignedTracks";
+import type { BBlocks } from "./blocks";
+import { fmt } from "./comments";
 import "./repeatability.css";
 
-/** Homogeneous test layout (request §2): lead, key metrics, interpretation, visualization, limitations, investigation. */
-export function DiagnosticBlock({ title, lead, metrics, comments, children, limitations, details, investigate }: {
-  title: string;
-  lead: string;
-  metrics?: ReactNode;
-  comments?: readonly string[];
-  children?: ReactNode;
-  limitations: string;
-  details?: ReactNode;
-  investigate?: readonly string[];
+/** Headline share + kit stacked bar (chat mockup "82 % Good to excellent"). */
+export function ShareSummary({ headline, headlineLabel, headlineSub, segments, total, label }: {
+  headline: string | null;
+  headlineLabel: string;
+  headlineSub?: string;
+  segments: readonly ShareSegment[];
+  total: number;
+  label: string;
 }) {
   return (
-    <div className="card rp-block">
-      <h3 className="card-title">{title}</h3>
-      <p className="rp-lead">{lead}</p>
-      {metrics ? <div className="stats">{metrics}</div> : null}
-      {comments?.length ? (
-        <div className="rp-interpretation">
-          <h4>Interpretation</h4>
-          <ul>{comments.map((c) => <li key={c}>{c}</li>)}</ul>
-        </div>
+    <div className="rp-share">
+      {headline !== null ? (
+        <p className="rp-share-head"><span className="rp-share-value">{headline}</span><span>{headlineLabel}{headlineSub ? <small>{headlineSub}</small> : null}</span></p>
       ) : null}
-      {children}
-      <details className="rp-limits">
-        <summary><strong>Methodological limitations.</strong> {limitations}</summary>
-        {details}
-      </details>
-      {investigate?.length ? (
-        <div className="rp-investigate">
-          <h4>Suggested investigation</h4>
-          <ul>{investigate.map((c) => <li key={c}>{c}</li>)}</ul>
-        </div>
-      ) : null}
+      <StackedShareBar segments={segments} total={total} label={label} fmt={(v, d) => fmt(v, d ?? 3)} />
     </div>
   );
 }
 
-export interface ShareSegment {
-  id: string;
-  label: string;
-  count: number;
-  color: string;
-  /** CSS background for a non-colour cue (e.g. a hatch) */
-  pattern?: string;
-}
-
-/** Labelled stacked bar of band shares (percentages written in the legend, never colour alone). */
-export function StackedShareBar({ segments, total, caption }: { segments: readonly ShareSegment[]; total: number; caption: string }) {
-  if (total <= 0) return null;
+/** Small titled card for the distributions row. */
+export function MiniCard({ title, sub, children, foot, full }: { title: string; sub?: string | undefined; children: ReactNode; foot?: ReactNode; full?: boolean }) {
   return (
-    <figure className="rp-stack">
-      <figcaption>{caption}</figcaption>
-      <div className="rp-stack-bar" role="img" aria-label={`${caption}: ${segments.map((s) => `${s.label} ${((100 * s.count) / total).toFixed(1)}%`).join(", ")}`}>
-        {segments.filter((s) => s.count > 0).map((s) => (
-          <span key={s.id} style={{ width: `${(100 * s.count) / total}%`, background: s.pattern ?? s.color }} title={`${s.label}: ${s.count} bands`} />
-        ))}
-      </div>
-      <ul className="rp-stack-legend">
-        {segments.map((s) => (
-          <li key={s.id}><span className="rp-swatch" style={{ background: s.pattern ?? s.color }} aria-hidden="true" />{s.label}: {s.count} ({((100 * s.count) / total).toFixed(1)}%)</li>
-        ))}
-      </ul>
-    </figure>
+    <section className={`cz-card rp-mini${full ? " rp-span-full" : ""}`}>
+      <h4 className="cz-card-title">{title}</h4>
+      {sub ? <p className="cz-card-sub">{sub}</p> : null}
+      <div className="rp-mini-body">{children}</div>
+      {foot ? <p className="cz-card-foot">{foot}</p> : null}
+    </section>
   );
 }
 
-export const HATCH = "repeating-linear-gradient(45deg, #cbd5e1 0 3px, #f1f5f9 3px 6px)";
-
-/** Histogram bins of finite values (equal width), for MeasureBars rows. */
-export function histogramBins(values: readonly (number | null)[], bins = 12, format: (v: number) => string = (v) => String(v)) {
-  const xs = values.filter((v): v is number => v !== null && Number.isFinite(v));
-  if (!xs.length) return [];
-  const lo = Math.min(...xs);
-  const hi = Math.max(...xs);
-  const k = hi > lo ? bins : 1;
-  const w = (hi - lo) / k || 1;
-  const counts = new Array(k).fill(0);
-  for (const v of xs) counts[Math.min(k - 1, Math.floor((v - lo) / w))]++;
-  return counts.map((c, i) => ({ id: String(i), label: `${format(lo + i * w)} – ${format(k === 1 ? hi : lo + (i + 1) * w)}`, value: c }));
+/**
+ * Standalone renderer of B's blocks (until K's rubric section takes over): KPI strip, interpretation,
+ * distributions side by side, one synchronized AlignedTracks stack, inspection, collapsed details.
+ */
+export function RubricPanel({ blocks, spectrum, axis, axisLabel, title, header }: {
+  blocks: readonly BBlocks[];
+  spectrum: Track | null;
+  axis: readonly number[];
+  axisLabel: string;
+  title: string;
+  header?: ReactNode;
+}) {
+  const [selection, setSelection] = useState<BandSelection | null>(null);
+  const tracks = [...(spectrum ? [spectrum] : []), ...blocks.flatMap((b) => b.bandTracks)];
+  const kpis = blocks.flatMap((b) => b.kpis);
+  const comments = blocks.flatMap((b) => b.comments);
+  const distributions = blocks.flatMap((b) => b.distributions);
+  return (
+    <div className="card rp-block">
+      {header}
+      {blocks.map((b) => <p key={b.id} className="rp-lead">{b.lead}</p>)}
+      {kpis.length ? <KpiStrip items={kpis} label={`${title}: key metrics`} /> : null}
+      {comments.length ? (
+        <div className="rp-interpretation">
+          <h4>Interpretation</h4>
+          <ul>{comments.map((c) => <li key={c.id} className={`rp-c-${c.tone ?? "info"}`}>{c.text}</li>)}</ul>
+        </div>
+      ) : null}
+      {blocks.map((b) => (b.actions ? <div key={b.id}>{b.actions}</div> : null))}
+      {distributions.length ? (
+        <div className="rp-dist">
+          {distributions.map((d) => (d.title ? <MiniCard key={d.id} title={d.title} sub={d.subtitle} full={d.span === "full"}>{d.node}</MiniCard> : <div key={d.id} className={d.span === "full" ? "rp-span-full" : undefined}>{d.node}</div>))}
+        </div>
+      ) : null}
+      {tracks.length > (spectrum ? 1 : 0) ? (
+        <Measured>{(w) => (
+          <AlignedTracks axis={axis} axisLabel={axisLabel} tracks={tracks} width={w} title={title} selection={selection} onSelect={setSelection} markRegions={blocks.flatMap((b) => b.markRegions)} />
+        )}</Measured>
+      ) : null}
+      {blocks.map((b) => {
+        const node = b.inspection({ selection });
+        return node ? <div key={b.id} className="rp-inspection">{node}</div> : null;
+      })}
+      {blocks.filter((b) => b.status === "computed").map((b) => (
+        <div key={b.id} className="rp-details">
+          {b.details.tables}
+          <details className="rp-limits">
+            <summary><strong>Method and limitations{blocks.length > 1 ? ` — ${b.title}` : ""}.</strong> {b.details.limitations}</summary>
+            {b.details.methodology}
+          </details>
+          {b.details.investigate.length ? (
+            <details className="rp-limits">
+              <summary><strong>Suggested investigation</strong></summary>
+              <ul>{b.details.investigate.map((c) => <li key={c}>{c}</li>)}</ul>
+            </details>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
 }
+
+/** Median of finite values (display helper). */
+export const median = (v: readonly (number | null)[]) => quantile(v, 0.5);

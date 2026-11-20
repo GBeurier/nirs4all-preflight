@@ -32,6 +32,7 @@
  * reference bands carry text labels and non-evaluable bands a hatch pattern.
  */
 import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import "../shared/charts/charts.css";
 import "./aligned-tracks.css";
 
 export type Values = readonly (number | null)[];
@@ -108,10 +109,37 @@ export interface AlignedTracksProps {
   onCursor?: ((index: number | null) => void) | undefined;
   markRegions?: readonly { i0: number; i1: number; label: string }[] | undefined;
   className?: string | undefined;
+  /** HTML legend under the chart (unique series/envelope labels with line swatches); default true. */
+  legend?: boolean | undefined;
 }
 
-const PAD = { left: 64, right: 16, top: 22, gap: 26, bottom: 36 };
-const DEFAULT_COLORS = ["#0f766e", "#7c3aed", "#b45309", "#2563eb", "#be185d"];
+interface LegendItem {
+  key: string;
+  label: string;
+  color: string;
+  dash?: string | undefined;
+  area?: boolean | undefined;
+}
+
+const MAX_LEGEND = 10;
+
+/** Unique legend entries over all tracks (series as lines, envelopes as areas), capped. */
+export function legendItems(tracks: readonly Track[]): LegendItem[] {
+  const out = new Map<string, LegendItem>();
+  tracks.forEach((t) => {
+    t.envelopes?.forEach((e, i) => out.has(`e${e.label}`) || out.set(`e${e.label}`, { key: `e${e.label}`, label: e.label, color: e.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]!, area: true }));
+    t.series?.forEach((s, i) => out.has(`s${s.label}`) || out.set(`s${s.label}`, { key: `s${s.label}`, label: s.label, color: s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]!, dash: s.dash }));
+  });
+  return [...out.values()].slice(0, MAX_LEGEND);
+}
+
+const PAD = { left: 60, right: 14, top: 24, gap: 34, bottom: 40 };
+/** Horizontal plot padding, exported so band-indexed companions (e.g. a heatmap) can align with the tracks. */
+export const TRACK_PAD = { left: PAD.left, right: PAD.right } as const;
+/** Kit tokens (see shared/charts/charts.css); a series colour may be any CSS colour or `var(--cz-*)`. */
+const DEFAULT_COLORS = ["var(--cz-blue)", "var(--cz-copper)", "var(--cz-teal)", "var(--cz-ink-2)", "var(--cz-copper-2)"];
+/** Half-width (px) of the shaded band drawn around the shared cursor. */
+const CURSOR_HALF = 7;
 
 const defaultFormat = (v: number) => {
   const a = Math.abs(v);
@@ -190,7 +218,7 @@ function trackDomain(track: Track): [number, number] | null {
 }
 
 export function AlignedTracks(props: AlignedTracksProps) {
-  const { axis, axisLabel, tracks, width, title, onSelect, markRegions, className } = props;
+  const { axis, axisLabel, tracks, width, title, onSelect, markRegions, className, legend = true } = props;
   const uid = useId().replace(/:/g, "");
   const n = axis.length;
   const fullDomain = useMemo<[number, number]>(() => (n ? [axis[0]!, axis[n - 1]!] : [0, 1]), [axis, n]);
@@ -346,10 +374,10 @@ export function AlignedTracks(props: AlignedTracksProps) {
         <title>{title}</title>
         <defs>
           <pattern id={`${uid}-hatch`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <rect width="6" height="6" fill="var(--at-grey-bg, #f1f5f9)" />
-            <line x1="0" y1="0" x2="0" y2="6" stroke="var(--at-grey, #94a3b8)" strokeWidth="1.5" />
+            <rect width="6" height="6" style={{ fill: "var(--cz-surface-2, #f5f7f9)" }} />
+            <line x1="0" y1="0" x2="0" y2="6" style={{ stroke: "var(--cz-na-line, #8d969f)" }} strokeWidth="1.2" />
           </pattern>
-          <clipPath id={`${uid}-clip`}><rect x={PAD.left} y={0} width={plotW} height={totalH} /></clipPath>
+          {layout.map((box, ti) => <clipPath key={ti} id={`${uid}-clip${ti}`}><rect x={PAD.left} y={box.top - 1} width={plotW} height={box.h + 2} /></clipPath>)}
         </defs>
         {tracks.map((t, ti) => {
           const box = layout[ti]!;
@@ -359,12 +387,12 @@ export function AlignedTracks(props: AlignedTracksProps) {
           const colorOf = (i: number, c?: string) => c ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]!;
           return (
             <g key={t.id} className="at-track">
-              <text className="at-title" x={PAD.left} y={box.top - 7}>
-                {t.title}{t.unit ? ` (${t.unit})` : ""}
-                {(t.series ?? []).length > 1 || t.envelopes?.length ? (t.series ?? []).map((s) => `  ·  ${s.label}${s.dash ? " (dashed)" : ""}`).join("") : ""}
+              <text className="at-title" x={PAD.left} y={box.top - 9}>
+                {t.title}{t.unit ? <tspan className="at-title-unit">{` (${t.unit})`}</tspan> : null}
               </text>
-              <rect x={PAD.left} y={box.top} width={plotW} height={box.h} className="at-frame" />
-              <g clipPath={`url(#${uid}-clip)`}>
+              {yTicks.map((v) => <line key={`g${v}`} x1={PAD.left} x2={PAD.left + plotW} y1={y(v)} y2={y(v)} className="at-grid" />)}
+              {!t.strip ? <line x1={PAD.left} x2={PAD.left + plotW} y1={box.top + box.h} y2={box.top + box.h} className="at-base" /> : null}
+              <g clipPath={`url(#${uid}-clip${ti})`}>
                 {t.refBands?.map((b) => {
                   if (!dom) return null;
                   const top = y(Math.min(dom[1], Math.max(b.from, b.to)));
@@ -372,14 +400,14 @@ export function AlignedTracks(props: AlignedTracksProps) {
                   if (bot - top <= 0) return null;
                   return (
                     <g key={b.label}>
-                      <rect x={PAD.left} y={top} width={plotW} height={bot - top} fill={b.fill ?? "rgba(100,116,139,.08)"} />
+                      <rect x={PAD.left} y={top} width={plotW} height={bot - top} style={{ fill: b.fill ?? "var(--cz-zone)" }} />
                       <text className="at-band-label" x={PAD.left + plotW - 4} y={top + 10} textAnchor="end">{b.label}</text>
                     </g>
                   );
                 })}
                 {t.nonEvaluable ? runs(t.nonEvaluable).map((r) => {
                   const rr = bandRect(r.i0, r.i1);
-                  return rr.w > 0 ? <rect key={`ne${r.i0}`} x={rr.x} y={box.top} width={rr.w} height={box.h} fill={`url(#${uid}-hatch)`} opacity={0.7}><title>Not evaluable</title></rect> : null;
+                  return rr.w > 0 ? <rect key={`ne${r.i0}`} x={rr.x} y={box.top} width={rr.w} height={box.h} fill={`url(#${uid}-hatch)`} opacity={0.55}><title>Not evaluable</title></rect> : null;
                 }) : null}
                 {markRegions?.map((m) => {
                   const rr = bandRect(m.i0, m.i1);
@@ -396,7 +424,7 @@ export function AlignedTracks(props: AlignedTracksProps) {
                   const v = t.strip!.values[i];
                   const c = v === null || v === undefined || !Number.isFinite(v) ? null : t.strip!.color(v);
                   const rr = bandRect(i, i);
-                  return <rect key={i} x={rr.x} y={box.top} width={Math.max(0.5, rr.w)} height={box.h} fill={c ?? `url(#${uid}-hatch)`} />;
+                  return <rect key={i} x={rr.x} y={box.top} width={Math.max(0.5, rr.w)} height={box.h} style={{ fill: c ?? `url(#${uid}-hatch)` }} />;
                 }) : null}
                 {dom ? t.envelopes?.map((e, ei) => {
                   const pts: string[] = [];
@@ -420,7 +448,7 @@ export function AlignedTracks(props: AlignedTracksProps) {
                   }
                   if (lowers.length) pts.push(...lowers.reverse().map(([a, b]) => `${a.toFixed(1)},${b.toFixed(1)}`));
                   flush();
-                  return segs.map((s, si) => <polygon key={`${e.id}${si}`} points={s} fill={colorOf(ei, e.color)} opacity={0.18} />);
+                  return segs.map((s, si) => <polygon key={`${e.id}${si}`} points={s} style={{ fill: colorOf(ei, e.color) }} opacity={0.16} />);
                 }) : null}
                 {dom ? t.series?.map((s, si) => {
                   const c = colorOf(si, s.color);
@@ -430,19 +458,18 @@ export function AlignedTracks(props: AlignedTracksProps) {
                       if (v === null || !Number.isFinite(v) || !visible(i)) return null;
                       const rr = bandRect(i, i);
                       const yy = y(v);
-                      return <rect key={i} x={rr.x} width={Math.max(0.5, rr.w * 0.9)} y={Math.min(base, yy)} height={Math.abs(base - yy)} fill={c} opacity={0.75} />;
+                      return <rect key={i} x={rr.x} width={Math.max(0.5, rr.w * 0.9)} y={Math.min(base, yy)} height={Math.abs(base - yy)} style={{ fill: c }} opacity={0.8} />;
                     })}</g>;
                   }
-                  if (s.kind === "points") return <g key={s.id}>{s.values.map((v, i) => (v === null || !Number.isFinite(v) || !visible(i) ? null : <circle key={i} cx={x(axis[i]!)} cy={y(v)} r={2} fill={c} />))}</g>;
+                  if (s.kind === "points") return <g key={s.id}>{s.values.map((v, i) => (v === null || !Number.isFinite(v) || !visible(i) ? null : <circle key={i} cx={x(axis[i]!)} cy={y(v)} r={2} style={{ fill: c }} />))}</g>;
                   const d = linePath(s.values, y);
-                  return <path key={s.id} d={d} fill="none" stroke={c} strokeWidth={1.5} strokeDasharray={s.dash} />;
+                  return <path key={s.id} d={d} fill="none" style={{ stroke: c }} strokeWidth={1.4} strokeLinejoin="round" strokeDasharray={s.dash} />;
                 }) : null}
               </g>
               {!t.strip && !dom ? <text className="at-empty" x={PAD.left + plotW / 2} y={box.top + box.h / 2} textAnchor="middle">No evaluable value</text> : null}
               {yTicks.map((v) => (
                 <g key={v}>
-                  <line x1={PAD.left - 4} x2={PAD.left} y1={y(v)} y2={y(v)} className="at-tick" />
-                  <text className="at-tick-label" x={PAD.left - 6} y={y(v) + 3} textAnchor="end">{tick(v, t.format)}</text>
+                  <text className="at-tick-label" x={PAD.left - 8} y={y(v) + 4} textAnchor="end">{tick(v, t.format)}</text>
                 </g>
               ))}
               {t.strip ? <text className="at-tick-label" x={PAD.left - 6} y={box.top + box.h / 2 + 3} textAnchor="end">{t.strip.label}</text> : null}
@@ -453,17 +480,41 @@ export function AlignedTracks(props: AlignedTracksProps) {
           const rr = bandRect(sel.i0, sel.i1);
           return <rect className="at-selection" x={rr.x} y={PAD.top} width={Math.max(2, rr.w)} height={totalH - PAD.top - PAD.bottom} />;
         })() : null}
-        {cursor !== null && cursor < n && visible(cursor) ? <line className="at-cursor" x1={x(axis[cursor]!)} x2={x(axis[cursor]!)} y1={PAD.top} y2={totalH - PAD.bottom} /> : null}
+        {cursor !== null && cursor < n && visible(cursor) ? (() => {
+          const cx = x(axis[cursor]!);
+          const rr = bandRect(cursor, cursor);
+          const l = Math.max(PAD.left, Math.min(rr.x, cx - CURSOR_HALF));
+          const r = Math.min(PAD.left + plotW, Math.max(rr.x + rr.w, cx + CURSOR_HALF));
+          return (
+            <g pointerEvents="none">
+              <rect className="at-cursor-band" x={l} y={PAD.top - 4} width={Math.max(0, r - l)} height={totalH - PAD.top - PAD.bottom + 4} />
+              <line className="at-cursor" x1={cx} x2={cx} y1={PAD.top - 4} y2={totalH - PAD.bottom} />
+            </g>
+          );
+        })() : null}
         <g>
           {xTicks.map((v) => (
             <g key={v}>
               <line x1={x(v)} x2={x(v)} y1={totalH - PAD.bottom} y2={totalH - PAD.bottom + 4} className="at-tick" />
-              <text className="at-tick-label" x={x(v)} y={totalH - PAD.bottom + 15} textAnchor="middle">{defaultFormat(v)}</text>
+              <text className="at-tick-label" x={x(v)} y={totalH - PAD.bottom + 17} textAnchor="middle">{defaultFormat(v)}</text>
             </g>
           ))}
           <text className="at-axis-label" x={PAD.left + plotW / 2} y={totalH - 4} textAnchor="middle">{axisLabel}</text>
         </g>
       </svg>
+      {legend ? (
+        <ul className="at-legend" aria-label="Legend">
+          {legendItems(tracks).map((it) => (
+            <li key={it.key}>
+              <svg width="22" height="10" aria-hidden="true">
+                {it.area ? <rect x="0" y="1" width="22" height="8" rx="2" style={{ fill: it.color }} opacity={0.22} /> : <line x1="0" x2="22" y1="5" y2="5" style={{ stroke: it.color }} strokeWidth="2" strokeDasharray={it.dash} />}
+              </svg>
+              {it.label}
+            </li>
+          ))}
+          {tracks.some((t) => t.nonEvaluable?.some(Boolean)) ? <li><span className="at-legend-na" aria-hidden="true" />Not evaluable</li> : null}
+        </ul>
+      ) : null}
       {cursor !== null && cursor < n ? (
         <div className="at-tooltip" role="status" style={{ left: Math.min(width - 220, Math.max(0, x(axis[cursor]!) + 12)) }}>
           <strong>{axisLabel}: {defaultFormat(axis[cursor]!)}</strong> <span className="at-dim">(band {cursor + 1})</span>

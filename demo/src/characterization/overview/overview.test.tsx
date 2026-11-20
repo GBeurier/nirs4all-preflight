@@ -55,9 +55,12 @@ describe("CharacterizationOverview", () => {
 
   it("shows the three dimensions as separate cards with their denominators and no global score", () => {
     const out = html(<CharacterizationOverview {...withEverything} />);
-    expect(out).toContain("Spectral integrity");
-    expect(out).toContain("Spectral noise and repeatability");
-    expect(out).toContain("Spectral diversity");
+    // Compact cards of the page mockup: Spikes % (with its bar), SNR dB with % noise, Diversity relative P95 ×.
+    expect(out).toContain(">Spikes<");
+    expect(out).toContain(">SNR<");
+    expect(out).toContain(">Diversity<");
+    expect(out).toContain('class="ov-kpi-bar"');
+    expect(out).toContain("Relative P95");
     expect(out).toContain("20%"); // 4 of 20 spectra with flagged isolated peaks
     expect(out).toContain("4 of 20 spectra");
     expect(out).toContain("47"); // median SNR (dB)

@@ -10,7 +10,6 @@ import {
   EigenvalueScree,
   EvidenceTable,
   FindingList,
-  MeasureBars,
   PopulationFlow,
   ProfileStatusBadge,
   ScoreMap,
@@ -18,7 +17,6 @@ import {
   TargetDistribution,
   extractObservationFlow,
   extractPca,
-  extractRepeatabilityUncertainty,
   extractSamplePopulations,
   extractTarget,
   formatEngineNumber,
@@ -30,13 +28,14 @@ import {
   type CheckItem,
   type QualificationReportView,
 } from "nirs4all-ui/qualification";
-import { NoiseProxyCard, presentSections } from "./Blocks";
-import { RepeatabilityPanel } from "./characterization/repeatability";
+import { presentSections } from "./Blocks";
+
 import { downloadEvidenceCsv, exportTables, metricKey } from "./export";
 import type { T } from "./App";
 import { Icon, type IconName } from "./icons";
 import { Measured } from "./Measured";
 import { fill, type TextKey } from "./i18n";
+import { targetFences } from "./checks";
 import type { EngineInput } from "./input";
 import { atypicalScans, developmentTargetPoints, pcaPoints, varyingMetadata, type PcaColorBy } from "./views";
 
@@ -243,32 +242,6 @@ export function StructureSection({ t, locale, view, input, sourceId, targetId }:
 
 // --- 05 repeatability -------------------------------------------------------------------------
 
-export function RepeatSection(scope: Scope & { onOpenSettings?: () => void }) {
-  const { t, locale, view, input, sourceId } = scope;
-  if (input.options.analysis_families?.repeatability === false) return null;
-  const source = input.sources.find((s) => s.source_id === sourceId);
-  const uncertainty = sourceId ? extractRepeatabilityUncertainty(view, sourceId) : [];
-  const reasons = view.metrics.filter((m) => m.sourceId === sourceId && m.id.startsWith("measurement.") && !m.id.startsWith("measurement.noise_proxy") && m.status !== "computed");
-  const counts = uncertainty.filter((u) => u.repeatCounts?.histogram.length);
-  return (
-    <Section id="s-repeat" icon="repeat" accent="green" title={t("repeatTitle")} lead={t("repeatLead")}>
-      {source ? <RepeatabilityPanel {...scope} /> : null}
-      {reasons.length ? <div className="card"><ul className="plain small unavailable">{reasons.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul></div> : null}
-      {counts.length ? (
-        <div className="grid-2 flow-gap-sm">
-          {counts.map((u) => (
-            <div className="card" key={u.id}>
-              <h3 className="card-title">Technical repeats per physical sample <span className="unit">· {u.id}</span></h3><p className="hint">Each bar counts physical samples with this many acquisitions in this measurement context. Separate panels correspond to separate contexts.</p>
-              <Measured>{(w) => <MeasureBars width={w} title={`${metricLabel("measurement.repeat_counts", locale)} — ${u.id}`} valueLabel={t("physicalGroups")} locale={locale} rows={u.repeatCounts!.histogram.map((h) => ({ id: String(h.r), label: fill(t("repeatsR"), { r: h.r }), value: h.nGroups }))} />}</Measured>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {source ? <div className="flow-gap-sm"><NoiseProxyCard {...scope} axis={source.axis} /></div> : null}
-    </Section>
-  );
-}
-
 // --- 06 target --------------------------------------------------------------------------------
 
 export function TargetSection({ t, locale, view, input, targetId }: Scope) {
@@ -277,6 +250,7 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
   const d = target.denominators;
   const points = developmentTargetPoints(input, targetId);
   const owned = presentSections({ t, locale, view, input, sourceId: null, targetId }).flatMap((b) => b.prefixes);
+  const fences = target.classCounts ? null : targetFences(view, input, targetId);
   const unavailable = view.metrics.filter((m) => m.targetId === targetId && m.status !== "computed" && !owned.some((p) => m.id.startsWith(p)));
   return (
     <Section id="s-target" icon="target" accent="amber" title={t("targetTitle")} lead={t("targetLead")}>
@@ -285,6 +259,7 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
         <StatTile label={t("excludedCensored")} value={num(d.n_excluded_censored ?? null, locale)} tone={(d.n_excluded_censored ?? 0) > 0 ? "warning" : "neutral"} />
         <StatTile label={t("excludedComposite")} value={num(d.n_excluded_composite ?? null, locale)} tone={(d.n_excluded_composite ?? 0) > 0 ? "warning" : "neutral"} />
         <StatTile label={t("inconsistent")} value={num(d.n_inconsistent_samples ?? null, locale)} tone={(d.n_inconsistent_samples ?? 0) > 0 ? "critical" : "neutral"} />
+        {d.n_unreferenced_development_samples !== undefined ? <StatTile label={t("unreferenced")} value={num(d.n_unreferenced_development_samples, locale)} suffix={d.n_development_real_samples !== undefined ? `/ ${d.n_development_real_samples}` : undefined} tone={d.n_unreferenced_development_samples > 0 ? "warning" : "neutral"} /> : null}
         {target.localContrast.map((c) => (
           <StatTile key={c.sourceId ?? ""} label={`${t("kpiContrast")} · ${c.sourceId ?? ""}`} value={num(c.value, locale)} hint={c.k ? `${t("kpiContrastHint")} = ${c.k}` : undefined} />
         ))}
@@ -296,6 +271,13 @@ export function TargetSection({ t, locale, view, input, targetId }: Scope) {
         ) : (
           <Measured>{(w) => <TargetDistribution summary={target.summary} points={points} unit={target.unit} title={`${t("targetTitle")} — ${targetId}`} locale={locale} width={w} />}</Measured>
         )}
+        {fences?.outside.length ? (
+          <>
+            <h4>{t("yOutliersTitle")}</h4>
+            <p className="hint">{fill(t("yOutliersHint"), { lo: num(fences.lo, locale), hi: num(fences.hi, locale) })}</p>
+            <ChartDataTable open locale={locale} caption={t("yOutliersTitle")} columns={[t("sampleCol"), t("referenceCol")]} rows={fences.outside.map(([id, v]) => [id, v])} />
+          </>
+        ) : null}
         {unavailable.length ? (
           <ul className="plain small unavailable">{unavailable.map((m, i) => <li key={`${m.id}${i}`}>{metricLabel(m.id, locale)} : <AvailabilityBadge status={m.status} reason={m.reasonCode} locale={locale} /></li>)}</ul>
         ) : null}

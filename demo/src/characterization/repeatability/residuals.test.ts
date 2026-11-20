@@ -22,7 +22,7 @@ describe("Savitzky–Golay residuals (Methods WASM kernel)", () => {
     const src = source();
     const before = JSON.stringify(src);
     const r = await computeResiduals(src, [0, 1, 2], 7, 2);
-    expect(r.backend).toMatch(/^@nirs4all\/methods 1\.4\./);
+    expect(r.backend).toMatch(/^@nirs4all\/methods 1\.5\./);
     for (let j = 3; j < p - 3; j++) expect(Math.abs(r.residual[0]![j]!)).toBeLessThan(1e-9);
     expect(r.residual[1]![10]! * r.residual[1]![11]!).toBeLessThan(0);
     for (let j = 12; j <= 18; j++) expect(r.residual[2]![j]).toBeNull();

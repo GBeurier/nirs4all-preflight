@@ -1,21 +1,31 @@
-/* AlignedTracks (interim demo component; nirs4all-ui debt). */
+/* AlignedTracks (interim demo component; nirs4all-ui debt). Colours come from the kit tokens (--cz-*). */
+
 .at-wrap { position: relative; }
-.at-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; }
-.at-toolbar .hint { margin-right: auto; }
-.at-svg { display: block; max-width: 100%; touch-action: none; user-select: none; cursor: crosshair; }
-.at-svg:focus-visible { outline: 2px solid var(--focus, #0ea5e9); outline-offset: 2px; }
-.at-frame { fill: none; stroke: var(--border, #e2e8f0); }
-.at-title { font-size: 11.5px; font-weight: 600; fill: var(--text-2, #334155); }
-.at-tick { stroke: var(--text-3, #64748b); }
-.at-tick-label { font-size: 10px; fill: var(--text-3, #64748b); }
-.at-axis-label { font-size: 11px; fill: var(--text-2, #334155); }
-.at-band-label { font-size: 9.5px; fill: var(--text-3, #64748b); }
-.at-empty { font-size: 11px; fill: var(--text-3, #64748b); }
-.at-refline { stroke: var(--text-3, #64748b); stroke-dasharray: 3 3; }
-.at-cursor { stroke: var(--text, #0f172a); stroke-width: 1; pointer-events: none; }
-.at-selection { fill: rgba(14, 165, 233, .14); stroke: rgba(14, 165, 233, .6); pointer-events: none; }
-.at-mark { fill: rgba(217, 119, 6, .08); stroke: rgba(217, 119, 6, .45); stroke-dasharray: 2 3; }
-.at-tooltip { position: absolute; top: 34px; z-index: 5; min-width: 180px; max-width: 260px; padding: 6px 8px; font-size: 11px; line-height: 1.35;
-  background: var(--card, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 6px; box-shadow: 0 4px 14px rgba(15, 23, 42, .12); pointer-events: none; }
-.at-tooltip > div { margin-top: 3px; }
-.at-dim { color: var(--text-3, #64748b); }
+.at-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 2px; font-size: 12px; }
+.at-toolbar .hint { margin-right: auto; color: var(--cz-ink-3); font-size: 12px; }
+.at-toolbar .btn { color: var(--cz-ink-2); }
+.at-svg { display: block; max-width: 100%; touch-action: none; user-select: none; cursor: crosshair; font-family: inherit; }
+.at-svg:focus-visible { outline: 2px solid var(--cz-accent); outline-offset: 2px; }
+.at-title { font-size: 12.5px; font-weight: 650; fill: var(--cz-ink); }
+.at-title-unit { font-weight: 400; fill: var(--cz-ink-3); }
+.at-grid { stroke: var(--cz-grid); stroke-width: 1; }
+.at-base { stroke: var(--cz-axis); stroke-width: 1; }
+.at-tick { stroke: var(--cz-axis); }
+.at-tick-label { font-size: 11px; fill: var(--cz-ink-3); font-variant-numeric: tabular-nums; }
+.at-axis-label { font-size: 12px; fill: var(--cz-ink-2); }
+.at-band-label { font-size: 10.5px; fill: var(--cz-ink-3); }
+.at-empty { font-size: 12px; fill: var(--cz-ink-3); }
+.at-refline { stroke: var(--cz-ink-3); stroke-dasharray: 4 3; stroke-width: 1; }
+.at-cursor { stroke: var(--cz-cursor); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.at-cursor-band { fill: var(--cz-sel); }
+.at-selection { fill: var(--cz-zone); stroke: var(--cz-accent); stroke-opacity: .55; pointer-events: none; }
+.at-mark { fill: var(--cz-copper); fill-opacity: .07; stroke: none; }
+.at-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; margin: 2px 0 0; padding: 0 0 0 60px; font-size: 12px; color: var(--cz-ink-2); }
+.at-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.at-legend-na { display: inline-block; width: 14px; height: 10px; border-radius: 2px;
+  background: repeating-linear-gradient(45deg, var(--cz-na-line) 0 1.5px, var(--cz-surface-2) 1.5px 5px); }
+.at-tooltip { position: absolute; top: 34px; z-index: 5; min-width: 190px; max-width: 280px; padding: 8px 10px; font-size: 12px; line-height: 1.4;
+  color: var(--cz-ink); background: var(--cz-surface); border: 1px solid var(--cz-border); border-radius: 8px; box-shadow: 0 6px 18px rgba(15, 23, 42, .14);
+  pointer-events: none; font-variant-numeric: tabular-nums; }
+.at-tooltip > div { margin-top: 4px; }
+.at-dim { color: var(--cz-ink-3); }

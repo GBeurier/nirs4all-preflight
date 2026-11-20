@@ -1,5 +1,5 @@
 // Preprocessing step catalog for the explorer. Every available step is a `@nirs4all/methods`
-// 1.4.1 transformer (see methodsKernel.ts); nothing here computes a spectrum. Steps that the
+// 1.5 transformer (see methodsKernel.ts); nothing here computes a spectrum. Steps that the
 // request lists but Methods does not expose are declared `unavailable` (debt), never hand-rolled.
 
 /** How a step's output can be compared with the raw spectra on the same scale. */
@@ -9,8 +9,8 @@ export type StepKind = "savgol" | "gaussian" | "wavelet" | "snv" | "msc" | "detr
 export type UnavailableKind = "median" | "despike";
 
 export type ParamSpec =
-  | { name: string; label: string; type: "int"; min: number; max: number; step?: number; odd?: boolean }
-  | { name: string; label: string; type: "float"; min: number; max: number; step: number }
+  | { name: string; label: string; type: "int"; min: number; max: number; step?: number; odd?: boolean; unit?: string }
+  | { name: string; label: string; type: "float"; min: number; max: number; step: number; unit?: string }
   | { name: string; label: string; type: "choice"; choices: readonly string[] };
 
 export type ParamValues = Record<string, number | string>;
@@ -29,7 +29,7 @@ export interface StepSpec {
   note: string;
 }
 
-const window = (max = 101): ParamSpec => ({ name: "window", label: "Window (bands)", type: "int", min: 3, max, step: 2, odd: true });
+const window = (max = 101): ParamSpec => ({ name: "window", label: "Window length", type: "int", min: 3, max, step: 2, odd: true, unit: "bands" });
 
 export const STEP_SPECS: Record<StepKind, StepSpec> = {
   savgol: {
@@ -41,7 +41,7 @@ export const STEP_SPECS: Record<StepKind, StepSpec> = {
   gaussian: {
     kind: "gaussian", label: "Gaussian smoothing", methodId: "preprocessing.smoothing.gaussian", family: "smoothing",
     comparability: "comparable", preservesUnits: true,
-    params: [{ name: "sigma", label: "Sigma (bands)", type: "float", min: 0.25, max: 20, step: 0.25 }],
+    params: [{ name: "sigma", label: "Sigma", type: "float", min: 0.25, max: 20, step: 0.25, unit: "bands" }],
     defaults: { sigma: 1.5 }, note: "Gaussian kernel, sigma in bands, reflect edges, truncated at 4 sigma.",
   },
   wavelet: {
@@ -86,10 +86,10 @@ export const STEP_SPECS: Record<StepKind, StepSpec> = {
 
 export const STEP_KINDS = Object.keys(STEP_SPECS) as StepKind[];
 
-/** Requested steps that `@nirs4all/methods` 1.4.1 does not expose as transformers. */
+/** Requested steps that `@nirs4all/methods` 1.5.0 still does not expose as transformers (checked 2026-11-20). */
 export const UNAVAILABLE_STEPS: readonly { kind: UnavailableKind; label: string; reason: string }[] = [
-  { kind: "median", label: "Median filter", reason: "No median-filter transformer in @nirs4all/methods 1.4.1 (owner debt: Methods kernel)." },
-  { kind: "despike", label: "Despiking", reason: "No despiking transformer in @nirs4all/methods 1.4.1 (owner debt: Methods kernel)." },
+  { kind: "median", label: "Median filter", reason: "No median-filter transformer in @nirs4all/methods 1.5.0 (owner debt: Methods kernel)." },
+  { kind: "despike", label: "Despiking", reason: "No despiking transformer in @nirs4all/methods 1.5.0 (owner debt: Methods kernel)." },
 ];
 
 export interface PipelineStep {

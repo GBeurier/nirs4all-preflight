@@ -245,3 +245,56 @@ export function atypicalScans(view: QualificationReportView, sourceId: string): 
   const evaluated = new Set(t2.observationIds.filter((_, i) => t2.values[i] !== null && q.values[i] !== null && q.values[i] !== undefined));
   return { evaluated, atypical: atypicalSpectra(t2, q) };
 }
+
+/** One spectrum of an exact-duplicate pair, as declared in the input. */
+export interface ExactPairSide { observationId: string; sampleId: string; physicalId: string }
+export interface ExactPairs { total: number; listed: [ExactPairSide, ExactPairSide][] }
+
+/**
+ * Lists the spectrum pairs behind the engine's exact-duplicate counts (the report carries counts only),
+ * with the engine's identity rule: equal valid cells (-0 = 0), masked cells equal to each other, at least one
+ * valid cell, real rows only, and the two sides under different physical samples. `crossPartition` pairs a
+ * calibration spectrum with a retained-test spectrum (X only); `crossPhysical` pairs calibration spectra.
+ * Counting is exact; only the first `cap` pairs are kept for display.
+ */
+export function exactDuplicatePairs(input: EngineInput, sourceId: string, cap = 200): { crossPartition: ExactPairs; crossPhysical: ExactPairs } | null {
+  const source = input.sources.find((s) => s.source_id === sourceId);
+  if (!source) return null;
+  const samples = sampleIndex(input);
+  const p = source.axis.length;
+  const buffer = new Float64Array(p);
+  const bits = new Uint32Array(buffer.buffer);
+  // Hash buckets, then exact comparison inside a bucket: rows with equal keys form one class.
+  const classes = new Map<number, { cells: Float64Array; masked: Uint8Array; dev: ExactPairSide[]; test: ExactPairSide[] }[]>();
+  source.x.forEach((row, r) => {
+    const sample = samples.get(source.sample_ids[r] ?? "");
+    if (!sample || sample.augmentation_parent_id) return;
+    const partition = sample.partition ?? "development";
+    if (partition !== "development" && partition !== "retained_test") return;
+    const masked = new Uint8Array(p);
+    let valid = 0;
+    for (let c = 0; c < p; c++) {
+      const v = row[c];
+      if (v === null || v === undefined || source.valid_mask?.[r]?.[c] === false) { masked[c] = 1; buffer[c] = 0; } else { buffer[c] = v === 0 ? 0 : v; valid++; }
+    }
+    if (!valid) return;
+    let h = 2166136261;
+    for (let i = 0; i < bits.length; i++) h = Math.imul(h ^ bits[i]!, 16777619);
+    for (let c = 0; c < p; c++) if (masked[c]) h = Math.imul(h ^ (c + 1), 16777619);
+    const side = { observationId: source.observation_ids[r] ?? String(r), sampleId: sample.sample_id, physicalId: sample.physical_sample_id ?? sample.sample_id };
+    const bucket = classes.get(h) ?? [];
+    classes.set(h, bucket);
+    let cls = bucket.find((k) => k.masked.every((m, c) => m === masked[c] && (m === 1 || k.cells[c] === buffer[c])));
+    if (!cls) { cls = { cells: buffer.slice(), masked, dev: [], test: [] }; bucket.push(cls); }
+    (partition === "development" ? cls.dev : cls.test).push(side);
+  });
+  const crossPartition: ExactPairs = { total: 0, listed: [] };
+  const crossPhysical: ExactPairs = { total: 0, listed: [] };
+  for (const bucket of classes.values()) for (const { dev, test } of bucket) {
+    for (const [i, a] of dev.entries()) {
+      for (const b of dev.slice(i + 1)) if (a.physicalId !== b.physicalId) { crossPhysical.total++; if (crossPhysical.listed.length < cap) crossPhysical.listed.push([a, b]); }
+      for (const b of test) if (a.physicalId !== b.physicalId) { crossPartition.total++; if (crossPartition.listed.length < cap) crossPartition.listed.push([a, b]); }
+    }
+  }
+  return { crossPartition, crossPhysical };
+}

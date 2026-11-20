@@ -418,3 +418,6 @@ code{font-size:.85em}
 .diag-side a .alert-dot[data-level="critical"] { background: #e11d48; }
 .csv-dialect { display: grid; gap: 5px; max-width: 420px; margin: 0 0 16px; font-size: .84rem; font-weight: 600; }
 .csv-dialect small { font-weight: 400; color: var(--text-3); }
+.card-critical{border-color:color-mix(in srgb,#e11d48 45%,var(--border));background:color-mix(in srgb,#e11d48 4%,var(--card))}
+.not-evaluated strong{font-weight:600}
+#dup-exact{margin-bottom:16px}

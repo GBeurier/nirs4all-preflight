@@ -8,13 +8,15 @@ import { buildQualificationReportView, type EngineReport } from "nirs4all-ui/qua
 // nirs4all-ui tests, they fix every layout case; engine.integration.test.tsx runs the real engine.
 import reportJson from "./fixtures/preflight-0.1.0-report.json";
 import extendedJson from "./fixtures/preflight-0.1.0-probe-extended.json";
-import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
+import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
 import { buildChecks } from "./checks";
 import { translate, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
-import { RepeatSection, StructureSection, type Scope } from "./Sections";
+import { StructureSection, type Scope } from "./Sections";
+import { IntegrityRubric, NoiseRubric } from "./characterization/overview";
 import { DataView } from "./DataView";
 import { MetadataRoles } from "./Workspace";
+import { exactDuplicatePairs } from "./views";
 
 const view = buildQualificationReportView(reportJson as unknown as EngineReport);
 const extended = buildQualificationReportView(extendedJson as unknown as EngineReport);
@@ -61,6 +63,47 @@ describe("0.1.0 capability sections", () => {
     expect(out).toContain('data-tone="critical"');
     expect(out).toContain("REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED");
     expect(out).toContain("s07");
+  });
+
+  it("exact duplicates: the calibration ↔ test pairs behind the leakage control point are listed", () => {
+    const spectrum = axis.map((_, i) => i / 10);
+    const ids = ["c1", "c2", "c3", "t1", "t2"];
+    const exactInput: EngineInput = { ...input,
+      samples: [
+        { sample_id: "c1", partition: "development" }, { sample_id: "c2", partition: "development" }, { sample_id: "c3", partition: "development", physical_sample_id: "P" },
+        { sample_id: "t1", partition: "retained_test" }, { sample_id: "t2", partition: "retained_test", physical_sample_id: "P" },
+      ],
+      // c1 = t1 (-0 equals 0); c3 = t2 share their physical sample, so they are not a pair; c2 differs.
+      sources: [{ ...input.sources[0]!, observation_ids: ids.map((id) => `obs-${id}`), sample_ids: ids, x: [[-0, ...spectrum.slice(1)], spectrum.map((v) => v + 1), spectrum.map((v) => v + 2), spectrum, spectrum.map((v) => v + 2)] }],
+    };
+    const metric = (id: string, value: number, denominators: Record<string, number>) => ({ metric_id: id, protocol_version: "0.1.0", status: "computed", reason_code: null, scope: "source_target", source_id: "nir", target_id: null, view_id: "native", population_id: "development_real", value, unit: null, denominators, parameters: {} });
+    const notApplicable = { metric_id: "integrity.quasi_duplicate_pairs", protocol_version: "0.1.0", status: "not_applicable", reason_code: "QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED", scope: "source_target", source_id: "nir", target_id: null, view_id: "native", population_id: "development_real", value: null, unit: null, denominators: {}, parameters: {} };
+    const exactView = buildQualificationReportView({ ...(reportJson as unknown as EngineReport), metrics: [
+      metric("integrity.cross_partition_exact_duplicate_pairs", 1, { n_development_observations: 3, n_retained_test_observations: 2, n_affected_development_observations: 1, n_affected_retained_test_observations: 1 }),
+      metric("integrity.cross_physical_exact_duplicate_pairs", 0, { n_development_observations: 3 }),
+      notApplicable,
+    ] } as unknown as EngineReport);
+    const s = scope("en", { view: exactView, input: exactInput });
+    const out = html(<DuplicatesSection {...s} />);
+    expect(out.indexOf("Identical spectra")).toBeLessThan(out.indexOf("not evaluated: set"));
+    expect(out).toContain('data-tone="critical"');
+    expect(out).toContain("1 of 3 calibration and 1 of 2 retained-test spectra involved");
+    expect(out).toContain("<td data-value=\"c1\">c1</td><td data-value=\"obs-c1\">obs-c1</td><td data-value=\"t1\">t1</td>");
+    expect(out).not.toContain(">c3<");
+    expect(out).toContain("may indicate leakage");
+    expect(out).toContain("not evaluated: set a spectral similarity tolerance");
+    expect(out).not.toContain("Not applicable");
+
+    const checks = buildChecks(exactView, exactInput, "nir", null, s.t, "en");
+    expect(checks.find((c) => c.id === "leak")).toMatchObject({ status: "critical", href: "#s-duplicates" });
+    expect(checks.find((c) => c.id === "duplicates")).toMatchObject({ status: "ok", href: "#s-duplicates" });
+
+    // Counting stays exact when the displayed list is capped.
+    const many: EngineInput = { ...exactInput, samples: ids.map((sample_id, i) => ({ sample_id, partition: i < 3 ? "development" : "retained_test" })), sources: [{ ...exactInput.sources[0]!, x: ids.map(() => spectrum) }] };
+    const pairs = exactDuplicatePairs(many, "nir", 2)!;
+    expect(pairs.crossPartition.total).toBe(6);
+    expect(pairs.crossPartition.listed).toHaveLength(2);
+    expect(pairs.crossPhysical.total).toBe(3);
   });
 
   it("clustering: verdict, criteria checklist and partition table", () => {
@@ -113,8 +156,8 @@ describe("0.1.0 capability sections", () => {
     expect(html(<ProbeSection {...scope("en", { view: extended, targetId: "moisture" })} />)).toContain("FEWER_THAN_THREE_INDEPENDENT_GROUPS");
   });
 
-  it("repeatability shows repeat counts and the noise proxy next to the profile", () => {
-    const out = html(<RepeatSection {...scope("en")} />);
+  it("noise and repeatability rubric shows repeat counts and the noise proxy next to the profile", () => {
+    const out = html(<NoiseRubric {...scope("en")} />);
     expect(out).toContain("Technical repeats per physical sample");
     expect(out).toContain("Pooled noise proxy · A · 2026-03");
     expect(out).toContain("NO_BALANCED_BAND");
@@ -131,7 +174,7 @@ describe("0.1.0 capability sections", () => {
       { ...metric, id: `intrinsic.pca.${name}`, value: { sample_ids: scans, observation_ids: scans, values: scans.map(() => 2) } },
       { ...metric, id: `intrinsic.pca.${name}_p95`, value: 1 },
     ]) };
-    expect(html(<SpectralQualitySection {...scope("en", { view: qualityView })} />)).toContain("first 20 of 21 atypical spectra</caption>");
+    expect(html(<IntegrityRubric {...scope("en", { view: qualityView })} />)).toContain("Most atypical spectra — first 20 of 21");
 
     const sampleIds = ids.slice(0, 41);
     const tableInput: EngineInput = { ...input,
@@ -145,7 +188,7 @@ describe("0.1.0 capability sections", () => {
   it("summarises population-relative events by band", () => {
     const band = (id: string, counts: number[]) => ({ metric_id: `intrinsic.events.${id}`, protocol_version: "spectral-population-events.v1", status: "computed", reason_code: null, scope: "source", view_id: "native:observations", population_id: "development_real", source_id: "nir", value: { axis, counts, evaluated: axis.map(() => 30) } });
     const events = buildQualificationReportView({ ...(reportJson as unknown as EngineReport), metrics: [band("global_spike_band_counts", axis.map((_, i) => (i === 5 ? 1 : 0))), band("global_jump_band_counts", axis.map(() => 0))] } as unknown as EngineReport);
-    const out = html(<SpectralQualitySection {...scope("en", { view: events })} />);
+    const out = html(<IntegrityRubric {...scope("en", { view: events })} />);
     expect(out).toContain("Spike and jump counts by band");
     expect(out).toContain("atypical relative to the other spectra at the same band");
   });
