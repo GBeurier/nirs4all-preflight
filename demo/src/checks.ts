@@ -34,7 +34,7 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
     title: t("chkLeak"),
     status: leak === null ? "unavailable" : leak > 0 ? "critical" : "ok",
     detail: leak === null ? undefined : leak > 0 ? f("chkLeakKo", { n: leak }) : t("chkLeakOk"),
-    href: "#ev-integrity.cross_partition_exact_duplicate_pairs",
+    href: "#s-duplicates",
   });
 
   const dup = integrity?.physicalDuplicatePairs ?? null;
@@ -43,7 +43,7 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
     title: t("chkDup"),
     status: dup === null ? "unavailable" : dup > 0 ? "attention" : "ok",
     detail: dup === null ? undefined : dup > 0 ? f("chkDupKo", { n: dup }) : t("chkDupOk"),
-    href: "#ev-integrity.cross_physical_exact_duplicate_pairs",
+    href: "#s-duplicates",
   });
 
   const missing = integrity?.missingCells ?? null;
@@ -127,13 +127,9 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
   }
 
   if (targetId) {
-    // Tukey fences on the engine's own quartiles: a convention for inspection, not a calibrated threshold.
-    const summary = extractTarget(view, targetId).summary;
-    if (summary) {
-      const iqr = summary.q75 - summary.q25;
-      const lo = summary.q25 - 1.5 * iqr;
-      const hi = summary.q75 + 1.5 * iqr;
-      const outside = [...developmentTargetValues(input, targetId)].filter(([, v]) => v < lo || v > hi);
+    const fences = targetFences(view, input, targetId);
+    if (fences) {
+      const { lo, hi, outside } = fences;
       items.push({
         id: "y-outliers",
         title: `${t("chkYOutliers")} · ${targetId}`,
@@ -155,6 +151,16 @@ export function buildChecks(view: QualificationReportView, input: EngineInput, s
   });
   const rank = { critical: 0, attention: 1, ok: 2, unavailable: 3 };
   return items.filter((item) => item.id !== "repeatability" || input.options.analysis_families?.repeatability !== false).sort((a, b) => rank[a.status] - rank[b.status]);
+}
+
+/** Tukey fences on the engine's own quartiles: a convention for inspection, not a calibrated threshold. */
+export function targetFences(view: QualificationReportView, input: EngineInput, targetId: string): { lo: number; hi: number; outside: [string, number][] } | null {
+  const summary = extractTarget(view, targetId).summary;
+  if (!summary) return null;
+  const iqr = summary.q75 - summary.q25;
+  const lo = summary.q25 - 1.5 * iqr;
+  const hi = summary.q75 + 1.5 * iqr;
+  return { lo, hi, outside: [...developmentTargetValues(input, targetId)].filter(([, v]) => v < lo || v > hi) };
 }
 
 export const needsReview = (items: readonly CheckItem[]) => items.filter((i) => i.status === "attention" || i.status === "critical").length;

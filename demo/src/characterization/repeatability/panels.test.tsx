@@ -38,10 +38,12 @@ describe("RepeatabilityPanel", () => {
   it("no replicates: explicit message, settings button only with a handler, noise-proxy note", () => {
     const withButton = html(<RepeatabilityPanel {...scope([])} onOpenSettings={() => undefined} />);
     expect(withButton).toContain(NO_REPLICATES_MESSAGE);
-    expect(withButton).toContain("Open dataset settings");
+    expect(withButton).toContain("Configure technical replicate groups in dataset settings");
+    expect(withButton).toContain("Not available");
+    expect(withButton).toContain("Per-band fine-scale noise proxy");
     expect(withButton).toContain("does not replace an experimental measurement of repeatability");
-    expect(withButton).not.toMatch(/ICC P5|Median ICC/);
-    expect(html(<RepeatabilityPanel {...scope([])} />)).not.toContain("Open dataset settings");
+    expect(withButton).not.toMatch(/ICC P5|Median ICC|>0<\/p>/);
+    expect(html(<RepeatabilityPanel {...scope([])} />)).not.toContain("Configure technical replicate groups");
   });
 
   it("computed: warning, model statement, negative ICC kept in the data table", () => {
@@ -53,7 +55,10 @@ describe("RepeatabilityPanel", () => {
     expect(out).toContain("one-way random-effects");
     expect(out).toContain("Koo &amp; Li");
     expect(out).toContain("-0.15");
-    expect(out).toContain("Not evaluable: 1 (12.5%)");
+    expect(out).toContain("Not evaluable");
+    expect(out).toContain("Good to excellent relative repeatability");
+    expect(out).toContain("Sample diversity vs. measurement variability");
+    expect(out).toContain("Click a band or drag over a region");
   });
 });
 
@@ -63,9 +68,11 @@ describe("NoiseProxyPanel", () => {
       metric("measurement.noise_proxy", [null, null, 0.01, 0.02, 0.01, 0.01, null, null], { instrument: "A", campaign: "", window_bands: 5, polyorder: 2 }),
       metric("measurement.noise_proxy_pooled", 0.012, { instrument: "A", campaign: "" }),
     ])} />);
-    expect(out).toContain("Pooled noise proxy · A");
+    expect(out).toContain("Pooled noise proxy");
+    expect(out).toContain("Relative pooled noise proxy");
     expect(out).toContain("between-spectrum SD");
-    expect(out).toContain("Compute residuals (12 of 12 spectra)");
+    expect(out).toContain("Local noise-to-diversity ratio");
+    expect(out).toContain("Smoothing residuals: noise or spectral information?");
     expect(out).not.toMatch(/Infinity|NaN/);
   });
 });

@@ -5,10 +5,13 @@ import reportJson from "../../fixtures/preflight-0.1.0-report.json";
 import { translate, type TextKey } from "../../i18n";
 import type { EngineInput } from "../../input";
 import type { Scope } from "../../Sections";
-import { SpectralQualitySection } from "../../Blocks";
 import { diversityComments, eventComments, snrComments } from "./comments";
 import { INSTRUMENT_REFERENCES, NON_CONVERTIBLE_REFERENCES, referenceDb } from "./instruments";
-import { bandEnvelope, completeMatrix, contrastSnr, countHistogram, diversityStats, eventOverlap, eventPattern, eventRegions, eventStats, eventThreshold, snrStats, topKOverlap, valueHistogram } from "./model";
+import { NoiseBenchmarkCard, benchmarkPosition, flaggedBins } from "./blocks";
+import { NOISE_BENCHMARK } from "./noiseBenchmark";
+import { BoxPlotRows, DualScaleGauge } from "../shared/charts";
+import { SNR_BANDS } from "../shared/derive";
+import { addIllustrativeNoise, gaussianSequence, medianSnrSpectrum, bandEnvelope, completeMatrix, contrastSnr, countHistogram, diversityStats, eventOverlap, eventPattern, eventRegions, eventStats, eventThreshold, snrStats, topKOverlap, valueHistogram } from "./model";
 import { DiversityPanel, IntegrityPanel, SnrPanel, diversitySummary, integritySummary, snrSummary } from "./index";
 import { makeFmt } from "./format";
 
@@ -228,17 +231,44 @@ describe("panels and summaries", () => {
   it("render the homogeneous structure with denominators", () => {
     const html = renderToStaticMarkup(<><IntegrityPanel {...scope()} /><SnrPanel {...scope()} /><DiversityPanel {...scope()} /></>);
     expect(html).toContain("Spectra with isolated peaks and abrupt changes");
-    expect(html).toContain("4/20 spectra — 20%");
-    expect(html).toContain("3.75 events per affected spectrum");
+    expect(html).toContain("4/20 spectra · 15 events · 3.75 per flagged spectrum");
+    expect(html).toContain("Flagged spectra / 20");
     expect(html).toContain("Methodological limitations");
     expect(html).toContain("Suggested investigation");
     expect(html).toContain("These are inspection flags, not automatic rejection criteria.");
     expect(html).toContain("Spectra × wavelength map unavailable");
     expect(html).toContain("6 robust deviations");
-    expect(html).toContain("Estimated SNR (median)");
+    expect(html).toContain("Estimated SNR");
+    expect(html).toContain("47 dB | 0.447 %");
     expect(html).toContain("Manufacturer specifications and dataset-derived SNR estimates are obtained using different measurement and estimation protocols.");
     expect(html).toContain("Large spectral distances indicate heterogeneity, not necessarily poor data quality.");
-    expect(html).toContain("2.73× (273% of the typical level)");
+    expect(html).toContain("2.73×");
+    expect(html).toContain("273 % of the typical signal level");
+    expect(html).toContain("P95 RMS distance");
+    expect(html).toContain("Tables, method and limitations");
+  });
+
+  it("show compact zero states instead of empty charts", () => {
+    const zero = viewOf([
+      ...signal("events.spike_count", ids.map(() => 0)),
+      ...signal("events.jump_count", ids.map(() => 0)),
+      metric("events.global_spike_band_counts", { axis, counts: axis.map(() => 0), evaluated: axis.map(() => N) }),
+    ]);
+    const html = renderToStaticMarkup(<IntegrityPanel {...scope({ view: zero })} />);
+    expect(html).toContain("No isolated peak was flagged in any of the 20 evaluated spectra.");
+    expect(html).not.toContain("Flagged spectra /");
+    expect(html).not.toContain("events per flagged spectrum");
+    expect(html).not.toContain("spectra flagged per band");
+  });
+
+  it("never show raw JSON observation ids", () => {
+    const jsonIds = ids.map((_, i) => JSON.stringify([0, "train", i, null]));
+    const v = viewOf(metrics.map((m) => (m.value && typeof m.value === "object" && "observation_ids" in (m.value as object) ? { ...m, value: { ...(m.value as object), observation_ids: jsonIds } } : m)));
+    const inp = { ...input, sources: [{ ...input.sources[0]!, observation_ids: jsonIds }] };
+    const html = renderToStaticMarkup(<><IntegrityPanel {...scope({ view: v, input: inp })} /><SnrPanel {...scope({ view: v, input: inp })} /><DiversityPanel {...scope({ view: v, input: inp })} /></>);
+    expect(html).toContain("train #1");
+    expect(html).not.toContain("[0,&quot;train&quot;");
+    expect(html).not.toContain('[0,"train"');
   });
 
   it("render nothing without intrinsic results", () => {
@@ -255,7 +285,117 @@ describe("panels and summaries", () => {
     expect(diversitySummary(scope())!.relativeP95).toBeCloseTo(44 / 16.1);
   });
 
-  it("keep the spectral quality section working with the new panels", () => {
-    expect(renderToStaticMarkup(<SpectralQualitySection {...scope()} />)).toContain("Distance from the mean spectrum");
+});
+
+describe("wave 2 helpers", () => {
+  it("histogram of flagged spectra drops the zero bin and keeps ids", () => {
+    const bins = flaggedBins(eventStats(intrinsic, "spike")!);
+    expect(bins[0]!.lo).toBe(1);
+    expect(bins.reduce((a, b) => a + b.count, 0)).toBe(4);
+    expect(bins.find((b) => b.lo === 1)!.ids.sort()).toEqual(["o1", "o2", "o3"]);
+    expect(bins.find((b) => b.lo === 12)!.ids).toEqual(["o0"]);
+  });
+
+  it("illustrative noise has the sigma implied by the SNR definition and keeps missing values", () => {
+    const draws = gaussianSequence(20000);
+    const mean = draws.reduce((a, b) => a + b, 0) / draws.length;
+    const sd = Math.sqrt(draws.reduce((a, b) => a + (b - mean) ** 2, 0) / draws.length);
+    expect(Math.abs(mean)).toBeLessThan(0.05);
+    expect(sd).toBeCloseTo(1, 1);
+    expect(gaussianSequence(5)).toEqual(gaussianSequence(5));
+    const base = [2, -2, null, 2];
+    const out = addIllustrativeNoise(base, 40, draws)!;
+    expect(out.sigma).toBeCloseTo(2 * 0.01, 12);
+    expect(out.values[2]).toBeNull();
+    expect(base).toEqual([2, -2, null, 2]);
+    expect(addIllustrativeNoise([0, 0, null], 40, draws)).toBeNull();
+  });
+
+  it("picks the spectrum with the median SNR for the illustration", () => {
+    const s = snrStats(intrinsic)!;
+    const id = medianSnrSpectrum(s)!;
+    expect(Math.abs(s.entries.find((e) => e.id === id)!.value - s.medianDb)).toBeLessThanOrEqual(Math.min(...s.entries.map((e) => Math.abs(e.value - s.medianDb))));
+  });
+
+  it("numerically constant values give one histogram bin", () => {
+    const bins = valueHistogram([{ id: "a", value: 3.02 }, { id: "b", value: 3.02 + 1e-15 }, { id: "c", value: 3.02 }], 24);
+    expect(bins).toHaveLength(1);
+    expect(bins[0]!.count).toBe(3);
+  });
+});
+
+describe("noise scales read left = less noise", () => {
+  const bandX = (html: string, label: string) => {
+    const m = new RegExp(`<title>${label} [^<]*</title><rect x="([0-9.]+)"`).exec(html);
+    return m ? Number(m[1]) : NaN;
+  };
+  const bands = SNR_BANDS.map((b, i) => ({ from: i === 0 ? 0 : SNR_BANDS[i - 1]!.maxDb, to: Number.isFinite(b.maxDb) ? b.maxDb : 100, label: b.label }));
+  const ticks = [0, 50, 100].map((v) => ({ value: v, top: String(v), bottom: `${v} %` }));
+
+  it("the reversed gauge puts high dB (least noise) on the left, with the direction caption", () => {
+    const html = renderToStaticMarkup(<DualScaleGauge reversed ends={{ left: "Less noise", right: "More noise" }} value={70} min={0} max={100} bands={bands} ticks={ticks} ariaLabel="g" />);
+    expect(bandX(html, "Extremely low")).toBeLessThan(bandX(html, "Moderate"));
+    expect(bandX(html, "Moderate")).toBeLessThan(bandX(html, "Very high"));
+    expect(html).toContain("← Less noise");
+    expect(html).toContain("More noise →");
+    const plain = renderToStaticMarkup(<DualScaleGauge value={70} min={0} max={100} bands={bands} ticks={ticks} ariaLabel="g" />);
+    expect(bandX(plain, "Very high")).toBeLessThan(bandX(plain, "Extremely low"));
+  });
+
+  it("the SNR panel gauge is reversed and coloured from the noise scale", () => {
+    const html = renderToStaticMarkup(<SnrPanel {...scope()} />);
+    expect(bandX(html, "Extremely low")).toBeLessThan(bandX(html, "Very high"));
+    expect(html).toContain("var(--ig-noise-6)");
+    expect(html).toContain("← Less noise");
+  });
+});
+
+describe("empirical noise benchmark", () => {
+  it("holds only engine-computed rows of bundled public datasets, with provenance", () => {
+    expect(NOISE_BENCHMARK.rows.map((r) => r.id).sort()).toEqual(["anopheles", "beer"]);
+    expect(NOISE_BENCHMARK.generated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    for (const r of NOISE_BENCHMARK.rows) {
+      expect(r.min <= r.p5 && r.p5 <= r.p25 && r.p25 <= r.p50 && r.p50 <= r.p75 && r.p75 <= r.p95 && r.p95 <= r.max).toBe(true);
+      expect(r.n).toBeGreaterThan(0);
+      expect(r.source).toMatch(/https:\/\//);
+    }
+  });
+
+  const p = { p5: 46, p25: 47, p50: 48.9, p75: 50, p95: 51 };
+  it("draws this dataset plus the references and states the coverage plainly", () => {
+    const html = renderToStaticMarkup(<NoiseBenchmarkCard medianDb={48.9} p={p} n={20} f={f} locale="en" />);
+    expect(html).toContain("Empirical noise benchmark");
+    expect(html).toContain("2 public reference datasets");
+    expect(html).toContain("Not a representative instrument benchmark");
+    expect(html).toContain("instrument not documented");
+    expect(html).toContain("This dataset");
+    expect(html).toContain("48.9 dB");
+    for (const brand of ["FOSS", "Büchi", "Bruker", "PerkinElmer", "VIAVI", "Texas"]) expect(html).not.toContain(brand);
+  });
+
+  it("marks a bundled reference as this dataset instead of duplicating it", () => {
+    const beer = NOISE_BENCHMARK.rows.find((r) => r.id === "beer")!;
+    const html = renderToStaticMarkup(<NoiseBenchmarkCard medianDb={beer.p50} p={{ p5: beer.p5, p25: beer.p25, p50: beer.p50, p75: beer.p75, p95: beer.p95 }} n={beer.n} f={f} locale="en" />);
+    expect(html).toContain("this dataset · instrument not documented");
+    expect(html).not.toContain("analysed now");
+  });
+
+  it("words the position against a reference interval", () => {
+    expect(benchmarkPosition(90, { p5: 80, p95: 85 })).toBe("above its P95 (less noise)");
+    expect(benchmarkPosition(50, { p5: 80, p95: 85 })).toBe("below its P5 (more noise)");
+    expect(benchmarkPosition(82, { p5: 80, p95: 85 })).toBe("within its P5–P95");
+  });
+
+  it("BoxPlotRows shows a compact message for invalid stats and reverses the axis", () => {
+    expect(renderToStaticMarkup(<BoxPlotRows title="t" rows={[{ label: "a", stats: { lo: 3, q1: 2, median: 1, q3: 4, hi: 5 } }]} emptyMessage="Nothing" />)).toContain("Nothing");
+    const rows = [{ label: "a", stats: { lo: 10, q1: 20, median: 30, q3: 40, hi: 50 } }];
+    const median = (html: string) => Number(/class="cz-box-median" x1="([0-9.]+)"/.exec(html.replace(/<line x1="([0-9.]+)" x2="[0-9.]+" y1="[0-9.]+" y2="[0-9.]+" class="cz-box-median"/, '<line class="cz-box-median" x1="$1"'))?.[1]);
+    const lo = (html: string) => Number(/<line x1="([0-9.]+)" x2="[0-9.]+" y1="[0-9.]+" y2="[0-9.]+" class="cz-box-whisker"/.exec(html)?.[1]);
+    const plain = renderToStaticMarkup(<BoxPlotRows title="t" rows={rows} domain={[0, 60]} />);
+    const rev = renderToStaticMarkup(<BoxPlotRows title="t" rows={rows} domain={[0, 60]} reversed />);
+    expect(median(plain)).toBeCloseTo(median(rev), 6); // 30 is the centre of [0, 60]
+    expect(lo(plain)).toBeLessThan(median(plain));
+    expect(lo(rev)).toBeLessThan(median(rev)); // whisker line drawn left to right in both orientations
+    expect(rev).toContain("Whiskers: P5–P95");
   });
 });

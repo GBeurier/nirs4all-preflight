@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { coerceParam, newStep, pipelineComparability, pipelinePreservesUnits, stepIssue, STEP_SPECS, stripIds, type StepRecipe } from "./catalog";
 import { prepareExplorerData, sampleRows } from "./data";
-import { applyPipeline, benchmarkGrid, comparisonMetrics, diagnose, evaluatePipeline, type ExplorerKernel, type EvaluationInput } from "./evaluate";
+import { applyPipeline, benchmarkGrid, comparisonMetrics, diagnose, evaluatePipeline, sweepOf, sweepTrajectory, sweeps, type BenchmarkPoint, type ExplorerKernel, type EvaluationInput } from "./evaluate";
+import { affectedPercent, impactRows, relativeDistance } from "./impact";
 import {
   axisStep,
   bandDescriptor,
@@ -9,6 +10,7 @@ import {
   distortionProfile,
   diversityRetentionPercent,
   fineScaleReductionPercent,
+  medianOf,
   paretoFront,
   relativeRmsePercent,
   sharedHistogram,
@@ -37,11 +39,12 @@ const fakeKernel: ExplorerKernel = {
       sigma.push(s / (r.length - 2));
       snrDb.push(20 * Math.log10(m / r.length / (s / (r.length - 2))));
     }
-    return { sigma, snrDb };
+    return { sigma, snrDb, meanAbs: Array.from({ length: X.rows }, (_, i) => X.data.subarray(i * X.cols, (i + 1) * X.cols).reduce((a, v) => a + Math.abs(v), 0) / X.cols) };
   },
   events: () => null,
   noiseProfile: () => null,
   repeatability: () => null,
+  reference: () => null,
 };
 
 const input = (rows: number[][]): EvaluationInput => ({
@@ -275,5 +278,47 @@ describe("explorer host", () => {
     await tick();
     expect(workers[1]!.sent[0]!.op).toBe("init");
     host.dispose();
+  });
+});
+
+describe("impact table and sweeps", () => {
+  const rows = [[1, 3, 2, 5, 4, 6], [2, 4, 3, 6, 5, 7], [1, 2, 4, 3, 6, 5]];
+  const withRef: ExplorerKernel = { ...fakeKernel, reference: (X) => Array.from({ length: X.rows }, (_, i) => i + 1), events: (X) => ({ spikes: Array.from({ length: X.rows }, (_, i) => (i === 0 ? 2 : 0)), jumps: new Array<number>(X.rows).fill(0), spikeBands: [], jumpBands: [] }) };
+  it("image6 rows: shares, dB ↔ %, relative distance and distortion reference", () => {
+    const inp = input(rows);
+    const before = diagnose(withRef, inp, inp.matrix);
+    const ev = evaluatePipeline(withRef, inp, before, [{ kind: "savgol", params: { window: 5, polyorder: 2 } }]);
+    const r = Object.fromEntries(impactRows(before, ev, 3).map((x) => [x.key, x]));
+    expect(r.isolatedPeaks!.raw).toBeCloseTo(100 / 3, 9);
+    expect(r.abruptChanges!.raw).toBe(0);
+    expect(r.relativeNoise!.raw).toBeCloseTo(100 * 10 ** (-r.snr!.raw! / 20), 9);
+    // identity-like fake (k = 1): no change, distortion 0, raw is the reference
+    expect(r.snr!.delta).toBeCloseTo(0, 9);
+    expect(r.distortion!.rawReference).toBe(true);
+    expect(r.distortion!.processed).toBe(0);
+    const level = medianOf(before.noise!.meanAbs.filter((v): v is number => v !== null))!;
+    expect(r.relativeDistance!.raw).toBeCloseTo(2.9 / level, 9);
+    expect(affectedPercent([])).toBeNull();
+    expect(relativeDistance({ reference: [1, 2], noise: { snrDb: [], sigma: [], meanAbs: [0, 0] } })).toBeNull();
+  });
+  it("withholds deltas for derivatives and rescaled distances for SNV", () => {
+    const inp = input(rows);
+    const before = diagnose(withRef, inp, inp.matrix);
+    const d1 = impactRows(before, evaluatePipeline(withRef, inp, before, [{ kind: "sg_d1", params: { window: 5, polyorder: 2 } }]), 3);
+    expect(d1.every((x) => x.delta === null)).toBe(true);
+    expect(d1.find((x) => x.key === "snr")!.withheld).toMatch(/spectral space/);
+    const snv = impactRows(before, evaluatePipeline(withRef, inp, before, [{ kind: "snv", params: {} }]), 3);
+    expect(snv.find((x) => x.key === "relativeDistance")!.withheld).toMatch(/rescaled/);
+    expect(snv.find((x) => x.key === "snr")!.withheld).toBeNull();
+    expect(snv.find((x) => x.key === "distortion")!.processed).toBeNull();
+  });
+  it("sweep trajectory orders one method's points by its parameter", () => {
+    const pt = (window: number, polyorder = 2, d: number | null = window): BenchmarkPoint => ({ key: `k${window}-${polyorder}`, label: "", steps: [{ kind: "savgol", params: { window, polyorder } }], distortion: d, reduction: d, snrGainDb: null, error: null });
+    const pts = [pt(21), pt(5), pt(11, 3), pt(11), pt(31, 2, null)];
+    expect(sweepTrajectory(pts)).toEqual([1, 3, 0]);
+    expect(sweeps(pts).map((s) => s.key)).toEqual(["savgol:2", "savgol:3"]);
+    expect(sweepOf(pts[0]!.steps)!.short).toBe("SG 21");
+    expect(sweepOf([{ kind: "snv", params: {} }])).toBeNull();
+    expect(benchmarkGrid(64).filter((c) => sweepOf(c.steps)?.key === "savgol:2").map((c) => c.steps[0]!.params.window)).toEqual([5, 7, 9, 11, 15, 21, 31, 51]);
   });
 });

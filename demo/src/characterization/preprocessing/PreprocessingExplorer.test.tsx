@@ -22,7 +22,10 @@ describe("PreprocessingExplorer (static render)", () => {
     expect(html).toContain("Computed on 5 of 6 spectra");
     expect(html).toContain("Median filter");
     expect(html).toContain("Despiking");
-    expect(html).toContain("Chemometric validation (future, not available)");
+    expect(html).toContain("Chemometric validation (optional, not available)");
+    expect(html).toContain("Impact on spectral characteristics");
+    expect(html).toContain("Noise reduction vs spectral distortion");
+    expect(html).not.toContain("Zone");
   });
   it("explains when there are not enough complete spectra", () => {
     const html = renderToStaticMarkup(<PreprocessingExplorer scope={scopeOf([[1, 2, 3, 4, 5, 6]])} />);

@@ -1,9 +1,8 @@
 // Diagnosis sections of the preflight 0.1.0 capability blocks. Display only: every number
 // is an engine value read by the nirs4all-ui selectors; nothing is recomputed here.
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import {
-  SpectraExplorer,
   AvailabilityBadge,
   ChartDataTable,
   CheckList,
@@ -20,8 +19,6 @@ import {
   extractConfounding,
   extractDomainShift,
   extractDuplicates,
-  extractIntrinsic,
-  extractNoiseProxy,
   extractPca,
   extractProbes,
   extractStructureSensitivity,
@@ -44,9 +41,9 @@ import {
 import { fill, isTextKey, type TextKey } from "./i18n";
 import { Measured } from "./Measured";
 import { Section, type Scope } from "./Sections";
-import { atypicalSpectra } from "./views";
-import { DiversityPanel, IntegrityPanel, SnrPanel } from "./characterization/integrity";
-import { NoiseProxyPanel } from "./characterization/repeatability";
+import { DomainShiftView } from "./characterization/domains";
+import { exactDuplicatePairs, type ExactPairSide } from "./views";
+
 
 /** Counts exactly; other engine numbers with `digits` significant digits, exponent form outside [1e-4, 1e6). */
 const n = (v: number | null | undefined, locale: Locale, digits = 3) =>
@@ -59,7 +56,7 @@ const en = (v: EngineNumber | null, locale: Locale) => (v ? (formatEngineNumber(
 /** Sections present in the report, in display order (drives the chip navigation). */
 export const BLOCK_SECTIONS: readonly { id: string; label: TextKey; prefixes: readonly string[] }[] = [
   { id: "s-sensitivity", label: "navSensitivity", prefixes: ["structure.snv_", "structure.detrend_", "structure.balanced_repeat_sensitivity"] },
-  { id: "s-duplicates", label: "navDuplicates", prefixes: ["integrity.quasi_duplicate_pairs", "integrity.cross_partition_quasi_duplicate_pairs", "reference."] },
+  { id: "s-duplicates", label: "navDuplicates", prefixes: ["integrity.cross_partition_exact_duplicate_pairs", "integrity.cross_physical_exact_duplicate_pairs", "integrity.quasi_duplicate_pairs", "integrity.cross_partition_quasi_duplicate_pairs", "reference."] },
   { id: "s-clustering", label: "navClustering", prefixes: ["clustering."] },
   { id: "s-confounding", label: "navConfounding", prefixes: ["confounding."] },
   { id: "s-shift", label: "navShift", prefixes: ["domain_shift."] },
@@ -187,47 +184,90 @@ export function SensitivitySection({ t, locale, view, sourceId }: Scope) {
   );
 }
 
-// --- repeatability uncertainty extras (rendered inside the repeatability section) --------------
+// --- exact duplicates, near duplicates and reference conflicts --------------------------------
 
-export function NoiseProxyCard(scope: Scope & { axis: readonly number[] }) {
-  const { locale, view, sourceId } = scope;
-  if (!sourceId) return null;
-  const contexts = extractNoiseProxy(view, sourceId);
-  const missing = unavailableMetrics(view, ["measurement.noise_proxy"], sourceId);
-  if (!contexts.length && !missing.length) return null;
-  return (
-    <>
-      {contexts.length ? <NoiseProxyPanel {...scope} /> : null}
-      {missing.length ? (
-        <div className="card">
-          <CardTitle id="measurement.noise_proxy" locale={locale} />
-          <Unavailable metrics={missing} locale={locale} />
-        </div>
-      ) : null}
-    </>
-  );
-}
+const EXACT_IDS = ["integrity.cross_partition_exact_duplicate_pairs", "integrity.cross_physical_exact_duplicate_pairs"] as const;
+/** Reasons meaning "the user did not set the tolerance", never an all-clear. */
+const TOLERANCE_REASONS: Partial<Record<string, TextKey>> = {
+  QUASI_DUPLICATE_TOLERANCE_NOT_DECLARED: "dupSetSimilarity",
+  REFERENCE_CONTRADICTION_TOLERANCE_NOT_DECLARED: "dupSetReference",
+};
+const pairSide = (s: ExactPairSide) => (s.physicalId === s.sampleId ? s.sampleId : `${s.sampleId} (physical ${s.physicalId})`);
 
-// --- quasi-duplicates and reference conflicts ------------------------------------------------
-
-export function DuplicatesSection({ t, locale, view, sourceId }: Scope) {
+export function DuplicatesSection({ t, locale, view, input, sourceId, onOpenSettings }: Scope & { onOpenSettings?: (() => void) | undefined }) {
+  const exact = EXACT_IDS.map((id) => view.metrics.find((m) => m.id === id && m.sourceId === sourceId) ?? null);
+  const flagged = exact.some((m) => m?.status === "computed" && typeof m.value === "number" && m.value > 0);
+  // The report carries exact counts only; the pairs are listed from the loaded spectra when the engine flags any.
+  const pairs = useMemo(() => (flagged && sourceId ? exactDuplicatePairs(input, sourceId) : null), [flagged, input, sourceId]);
   if (!sourceId || !hasBlock(view, BLOCK_SECTIONS[1]!.prefixes)) return null;
   const all = extractDuplicates(view, sourceId);
   const computed = all.filter((d) => d.state.status === "computed");
+  const missing = unavailableMetrics(view, BLOCK_SECTIONS[1]!.prefixes, sourceId);
+  const notEvaluated = missing.filter((m) => m.reasonCode && TOLERANCE_REASONS[m.reasonCode]);
+  const [partition, physical] = exact;
+  const count = (m: QualificationMetricView | null) => (m?.status === "computed" && typeof m.value === "number" ? m.value : null);
+  const leak = count(partition ?? null);
+  const dup = count(physical ?? null);
+  const d = (m: QualificationMetricView | null | undefined, k: string) => m?.denominators[k] ?? null;
+  const listing = [
+    { metric: partition, total: leak, list: pairs?.crossPartition, columns: [t("dupCalSample"), t("dupCalObs"), t("dupTestSample"), t("dupTestObs")] },
+    { metric: physical, total: dup, list: pairs?.crossPhysical, columns: [t("dupSampleA"), t("dupObsA"), t("dupSampleB"), t("dupObsB")] },
+  ].filter((x) => x.metric && (x.total ?? 0) > 0);
   return (
     <Section id="s-duplicates" icon="evidence" accent="rose" title={t("dupTitle")} lead={t("dupLead")}>
+      {partition || physical ? (
+        <div className={`card${(leak ?? 0) > 0 ? " card-critical" : (dup ?? 0) > 0 ? " card-warm" : ""}`} id="dup-exact">
+          <h3 className="card-title">{t("dupExactTitle")}</h3>
+          <p className="hint help">{t("dupExactExplain")}</p>
+          <div className="stats">
+            {partition ? (
+              <StatTile
+                label={metricLabel(partition.id, locale)}
+                value={leak === null ? <StateBadge state={{ status: partition.status, reasonCode: partition.reasonCode }} locale={locale} /> : n(leak, locale)}
+                suffix={leak === null ? undefined : t("dupPairs")}
+                hint={leak === null ? undefined : fill(t("dupPartitionHint"), { a: n(d(partition, "n_affected_development_observations"), locale), nd: n(d(partition, "n_development_observations"), locale), b: n(d(partition, "n_affected_retained_test_observations"), locale), nt: n(d(partition, "n_retained_test_observations"), locale) })}
+                tone={leak === null ? "neutral" : leak > 0 ? "critical" : "good"}
+                href={`#ev-${partition.id}`}
+              />
+            ) : null}
+            {physical ? (
+              <StatTile
+                label={metricLabel(physical.id, locale)}
+                value={dup === null ? <StateBadge state={{ status: physical.status, reasonCode: physical.reasonCode }} locale={locale} /> : n(dup, locale)}
+                suffix={dup === null ? undefined : t("dupPairs")}
+                hint={dup === null ? undefined : fill(t("dupPhysicalHint"), { nd: n(d(physical, "n_development_observations"), locale) })}
+                tone={dup === null ? "neutral" : dup > 0 ? "warning" : "good"}
+                href={`#ev-${physical.id}`}
+              />
+            ) : null}
+          </div>
+          {listing.map(({ metric, total, list, columns }) => list && list.total === total ? (
+            <ChartDataTable
+              key={metric!.id}
+              open
+              locale={locale}
+              caption={`${metricLabel(metric!.id, locale)}${list.listed.length < list.total ? ` — ${fill(t("dupFirstPairs"), { k: list.listed.length, n: list.total })}` : ""}`}
+              columns={columns}
+              rows={list.listed.map(([a, b]) => [pairSide(a), a.observationId, pairSide(b), b.observationId])}
+            />
+          ) : <p className="hint" key={metric!.id}>{fill(t("dupListUnavailable"), { n: total ?? 0 })}</p>)}
+        </div>
+      ) : null}
       {computed.length ? <div className="stats">
-        {computed.map((d) => (
-          <StatTile
-            key={`${d.id}${d.targetId ?? ""}`}
-            label={`${metricLabel(d.id, locale)}${d.targetId ? ` · ${d.targetId}` : ""}`}
-            value={n(d.pairs, locale)}
-            suffix={d.candidatePairs !== null ? `/ ${n(d.candidatePairs, locale)}` : undefined}
-            hint={d.tolerance !== null ? fill(t("dupTolerance"), { tol: n(d.tolerance, locale), unit: d.toleranceUnit ?? "" }) : undefined}
-            tone={(d.pairs ?? 0) > 0 ? (d.id === "integrity.cross_partition_quasi_duplicate_pairs" ? "critical" : "warning") : "good"}
-            href={`#ev-${d.id}`}
-          />
-        ))}
+        {computed.map((d) => {
+          const nothing = d.candidatePairs === 0;
+          return (
+            <StatTile
+              key={`${d.id}${d.targetId ?? ""}`}
+              label={`${metricLabel(d.id, locale)}${d.targetId ? ` · ${d.targetId}` : ""}`}
+              value={n(d.pairs, locale)}
+              suffix={d.candidatePairs !== null ? `/ ${n(d.candidatePairs, locale)}` : undefined}
+              hint={nothing ? t("dupNothingCompared") : d.tolerance !== null ? fill(t("dupTolerance"), { tol: n(d.tolerance, locale), unit: d.toleranceUnit ?? "" }) : undefined}
+              tone={(d.pairs ?? 0) > 0 ? (d.id === "integrity.cross_partition_quasi_duplicate_pairs" ? "critical" : "warning") : nothing ? "neutral" : "good"}
+              href={`#ev-${d.id}`}
+            />
+          );
+        })}
       </div> : null}
       <div className="grid-2">
         {computed.filter((d) => d.listed.length).map((d) => (
@@ -243,7 +283,15 @@ export function DuplicatesSection({ t, locale, view, sourceId }: Scope) {
           </div>
         ))}
       </div>
-      <Unavailable metrics={unavailableMetrics(view, BLOCK_SECTIONS[1]!.prefixes, sourceId)} locale={locale} />
+      {notEvaluated.length ? (
+        <ul className="plain small unavailable not-evaluated">
+          {[...new Map(notEvaluated.map((m) => [`${m.id}|${m.reasonCode}`, m])).values()].map((m) => (
+            <li key={`${m.id}${m.reasonCode}`}>{metricLabel(m.id, locale)} : <strong>{t(TOLERANCE_REASONS[m.reasonCode!]!)}</strong> <code>{m.reasonCode}</code></li>
+          ))}
+          {onOpenSettings ? <li><button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>{t("dupOpenSettings")}</button></li> : null}
+        </ul>
+      ) : null}
+      <Unavailable metrics={missing.filter((m) => !notEvaluated.includes(m))} locale={locale} />
     </Section>
   );
 }
@@ -458,7 +506,8 @@ export function ConfoundingSection({ t, locale, view, sourceId }: Scope) {
 
 // --- domain shift ----------------------------------------------------------------------------
 
-export function DomainShiftSection({ t, locale, view, sourceId }: Scope) {
+export function DomainShiftSection(scope: Scope & { onOpenSettings?: (() => void) | undefined }) {
+  const { t, locale, view, sourceId } = scope;
   if (!sourceId || !hasBlock(view, ["domain_shift."])) return null;
   const factors = extractDomainShift(view, sourceId);
   const tests: HypothesisTestRow[] = factors.filter((f) => f.test).map((f) => ({
@@ -483,8 +532,9 @@ export function DomainShiftSection({ t, locale, view, sourceId }: Scope) {
     { id: "beyond", label: t("shiftBeyond"), hint: t("shiftBeyondHint"), format: "fraction" as const },
     { id: "dy", label: t("shiftDy"), format: "signed" as const },
   ];
-  return (
-    <Section id="s-shift" icon="flow" accent="indigo" title={t("shiftTitle")} lead={t("shiftLead")}>
+  // Wave 2: interpretable views (characterization/domains); the engine matrix stays as the full numerical table.
+  const engineTable = (
+    <>
       {factors.filter((f) => f.comparisons.length).map((f) => (
         <div className="card" key={f.factor}>
           <h3 className="card-title">{f.audit ? t("auditFactor") : fill(t("shiftFactor"), { f: f.factor })}{f.test?.rejects ? <span className="tag tag-warn">{t("rejected")}</span> : null}</h3>
@@ -507,8 +557,9 @@ export function DomainShiftSection({ t, locale, view, sourceId }: Scope) {
       <ul className="plain small">{["domain_shift.center_shift", "domain_shift.dispersion", "domain_shift.coverage", "domain_shift.target_change"].map((id) => <li key={id}><strong>{metricLabel(id, locale)}</strong> — {metricHelp(id, locale)}</li>)}</ul>
       {tests.length ? <div className="card card-flush"><HypothesisTestTable rows={tests} caption={metricLabel("domain_shift.energy_test", locale)} alpha={0.05} locale={locale} /></div> : null}
       <Unavailable metrics={view.metrics.filter((m) => m.sourceId === sourceId && m.id === "domain_shift.design" && m.status !== "computed")} locale={locale} />
-    </Section>
+    </>
   );
+  return <DomainShiftView {...scope} engineTable={engineTable} />;
 }
 
 // --- metadata associations -------------------------------------------------------------------
@@ -625,83 +676,3 @@ export function ProbeSection({ t, locale, view, sourceId, targetId }: Scope) {
   );
 }
 
-// --- spectral quality: in-sample T²/Q, spikes, jumps, noise (options.intrinsic_qc) --------------
-
-const ATYPICAL_MAX = 20;
-
-/** A scan of the demo input (`[source, partition, row, declared id]`): its declared id, else its partition row. */
-function scanLabel(observationId: string): string {
-  try {
-    const [, part, row, declared] = JSON.parse(observationId) as [number, string, number, string | null];
-    return declared ?? `${part} #${row + 1}`;
-  } catch {
-    return observationId;
-  }
-}
-
-export function SpectralQualitySection(scope: Scope) {
-  const { t, locale, view, sourceId } = scope;
-  const intrinsic = sourceId ? extractIntrinsic(view, sourceId) : null;
-  if (!intrinsic) return null;
-  const t2 = intrinsic.signals["pca.pca_t2"];
-  const q = intrinsic.signals["pca.pca_q"];
-  const pcaReady = t2?.state.status === "computed" && q?.state.status === "computed";
-  const atypical = pcaReady ? atypicalSpectra(t2, q) : [];
-  const flagged = new Set(atypical.map((a) => a.observationId));
-  const points: ScorePoint[] = pcaReady
-    ? t2.values.flatMap((value, i) => {
-      const residual = q.values[i];
-      if (value === null || residual === null || residual === undefined) return [];
-      const id = t2.observationIds[i] ?? "";
-      return [{ id: scanLabel(id), details: [t2.sampleIds[i] ?? ""], x: value, y: residual, group: flagged.has(t2.observationIds[i] ?? "") ? t("qualityAtypical") : t("qualityTypical") }];
-    })
-    : [];
-  const unavailable = Object.values(intrinsic.signals).filter((s) => s.state.status !== "computed" && /^(pca|events|noise|reference)\./.test(s.id));
-  return (
-    <Section id="s-quality" icon="data" accent="rose" title={t("qualityTitle")} lead={t("qualityLead")}>
-      <div className="stats">
-        <StatTile label={t("qualityAtypicalCount")} value={pcaReady ? n(atypical.length, locale) : "—"} hint={pcaReady ? fill(t("qualityAtypicalHint"), { t2: n(t2.p95, locale), q: n(q.p95, locale) }) : "—"} tone={atypical.length ? "warning" : "neutral"} />
-      </div>
-      <IntegrityPanel {...scope} />
-      <SnrPanel {...scope} />
-      <DiversityPanel {...scope} />
-      {pcaReady ? (
-        <div className="grid-3-2">
-          <div className="card">
-            <h3 className="card-title">{t("qualityMap")}</h3>
-            <Measured>{(w) => <ScoreMap
-              width={w}
-              height={Math.min(420, Math.max(280, w * 0.66))}
-              points={points}
-              colorBy="group"
-              groupColors={{ [t("qualityTypical")]: "#0d9488", [t("qualityAtypical")]: "#e11d48" }}
-              xLabel="T²"
-              yLabel="Q"
-              xReference={t2.p95 === null ? null : { value: t2.p95, label: "T² 95th percentile" }}
-              yReference={q.p95 === null ? null : { value: q.p95, label: "Q 95th percentile" }}
-              colorLabel={t("qualityMap")}
-              title={t("qualityMap")}
-              locale={locale}
-            />}</Measured>
-            <p className="hint">{t("qualityMapHint")}</p>
-          </div>
-          <div className="card">
-            <h3 className="card-title">{t("qualityList")}</h3>
-            {atypical.length ? (
-              <ChartDataTable
-                locale={locale}
-                caption={`${t("qualityList")}${atypical.length > ATYPICAL_MAX ? ` — first ${ATYPICAL_MAX} of ${atypical.length} atypical spectra` : ""}`}
-                columns={[t("sampleCol"), t("scanCol"), "T²", "Q"]}
-                rows={atypical.slice(0, ATYPICAL_MAX).map((a) => [a.sampleId, scanLabel(a.observationId), cellNumber(a.t2), cellNumber(a.q)])}
-              />
-            ) : <p className="note">{t("qualityNone")}</p>}
-            {atypical.length > ATYPICAL_MAX ? <p className="note">{t("tableCap")} {ATYPICAL_MAX} / {atypical.length}</p> : null}
-          </div>
-        </div>
-      ) : null}
-      {unavailable.length ? (
-        <div className="card">{unavailable.map((s) => <p key={s.id}>{metricLabel(`intrinsic.${s.id}`, locale)} : <AvailabilityBadge status={s.state.status} reason={s.state.reasonCode} locale={locale} /></p>)}</div>
-      ) : null}
-    </Section>
-  );
-}

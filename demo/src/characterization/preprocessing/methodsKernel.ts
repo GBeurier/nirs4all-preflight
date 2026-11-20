@@ -1,4 +1,4 @@
-// `@nirs4all/methods` 1.4.1 implementation of the explorer kernel. Marshalling only: every
+// `@nirs4all/methods` 1.5 implementation of the explorer kernel. Marshalling only: every
 // transform and diagnostic is a native Methods method. The diagnostics are the same procedures the
 // Preflight engine calls for the intrinsic `noise` and `events` families and the measurement noise
 // proxy / repeatability, run with fixed parameters on the explorer subset.
@@ -10,6 +10,7 @@ import {
   SavitzkyGolay,
   SpectralNoiseProxy,
   SpectralPopulationEventsQc,
+  SpectralReferenceQc,
   WaveletDenoise,
   loadModule,
   preflightNoiseProxy,
@@ -81,7 +82,7 @@ export function methodsKernel(): ExplorerKernel {
     },
     noise(X): NoiseResult {
       const out = new SpectralNoiseProxy({}).run(X) as Output;
-      return { snrDb: perRow(out, "signal_noise_db", X.rows), sigma: perRow(out, "noise_sigma", X.rows) };
+      return { snrDb: perRow(out, "signal_noise_db", X.rows), sigma: perRow(out, "noise_sigma", X.rows), meanAbs: perRow(out, "signal_mean_abs", X.rows) };
     },
     events(X: Matrix, s: DiagnosticSettings): EventsResult {
       const out = new SpectralPopulationEventsQc({ outlier_threshold: s.eventThreshold, min_spectra: s.eventMinSpectra, axis_basis: "index" }).run(X) as Output;
@@ -96,6 +97,9 @@ export function methodsKernel(): ExplorerKernel {
       if (s.noiseWindow > X.cols) return null;
       const r = preflightNoiseProxy(X, s.noiseWindow, s.noisePolyorder);
       return { band: Array.from(r.bandNoise, (v) => (Number.isFinite(v) ? v : null)), pooled: Number.isFinite(r.pooled) ? r.pooled : null };
+    },
+    reference(X) {
+      return perRow(new SpectralReferenceQc({ reference_mode: "dataset_mean" }).run(X) as Output, "rms", X.rows);
     },
     repeatability(X, groups) {
       // Replicated samples only; band status 0 computed, 1 insufficient, 2 unbalanced (pooled SD

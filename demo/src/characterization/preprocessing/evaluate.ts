@@ -20,6 +20,8 @@ import {
 export interface NoiseResult {
   snrDb: (number | null)[];
   sigma: (number | null)[];
+  /** Per-spectrum mean |x| (the SNR numerator), signal unit. */
+  meanAbs: (number | null)[];
 }
 export interface EventsResult {
   spikes: (number | null)[];
@@ -43,6 +45,8 @@ export interface ExplorerKernel {
   events(X: Matrix, settings: DiagnosticSettings): EventsResult | null;
   noiseProfile(X: Matrix, settings: DiagnosticSettings): ProfileResult | null;
   repeatability(X: Matrix, groups: readonly number[]): RepeatResult | null;
+  /** Per-spectrum RMS distance to the mean spectrum of `X` (engine `reference.rms` procedure). */
+  reference(X: Matrix): (number | null)[] | null;
 }
 
 export interface Diagnostics {
@@ -50,6 +54,8 @@ export interface Diagnostics {
   events: EventsResult | null;
   profile: ProfileResult | null;
   repeat: RepeatResult | null;
+  /** Per-spectrum RMS distance to the subset mean spectrum. */
+  reference: (number | null)[] | null;
   envelope: { median: number[]; p5: number[]; p95: number[] };
   diversity: (number | null)[];
 }
@@ -75,6 +81,7 @@ export function diagnose(kernel: ExplorerKernel, input: EvaluationInput, X: Matr
     events: safe(() => kernel.events(X, input.settings)),
     profile: safe(() => kernel.noiseProfile(X, input.settings)),
     repeat: input.replicatedSamples >= 2 ? safe(() => kernel.repeatability(X, input.groups)) : null,
+    reference: safe(() => kernel.reference(X)),
     envelope: bandEnvelope(X),
     diversity: bandSd(X),
   };
@@ -171,21 +178,70 @@ export interface BenchmarkPoint {
   error: string | null;
 }
 
+/** Savitzky–Golay windows of the benchmark trajectory (polyorder 2), as in the request mockup. */
+export const SG_SWEEP_WINDOWS = [5, 7, 9, 11, 15, 21, 31, 51] as const;
+export const SG_SWEEP_POLYORDER = 2;
+
 /** Comparable-family grid: smoothing and denoising only (units and scale preserved). */
 export function benchmarkGrid(bands: number): { label: string; steps: StepRecipe[] }[] {
   const out: { label: string; steps: StepRecipe[] }[] = [];
-  for (const window of [5, 7, 9, 11, 15, 21, 31]) {
-    for (const polyorder of [2, 3]) {
-      if (window <= bands && polyorder < window) out.push({ label: `SG smoothing w${window} p${polyorder}`, steps: [{ kind: "savgol", params: { window, polyorder } }] });
-    }
+  for (const window of SG_SWEEP_WINDOWS) {
+    if (window <= bands) out.push({ label: `SG ${window}`, steps: [{ kind: "savgol", params: { window, polyorder: SG_SWEEP_POLYORDER } }] });
   }
-  for (const sigma of [0.5, 1, 1.5, 2, 3, 4, 6]) out.push({ label: `Gaussian σ${sigma}`, steps: [{ kind: "gaussian", params: { sigma } }] });
+  for (const window of [7, 11, 15, 21, 31]) {
+    if (window <= bands) out.push({ label: `SG ${window} (order 3)`, steps: [{ kind: "savgol", params: { window, polyorder: 3 } }] });
+  }
+  for (const sigma of [0.5, 1, 1.5, 2, 3, 4, 6]) out.push({ label: `Gaussian σ ${sigma}`, steps: [{ kind: "gaussian", params: { sigma } }] });
   for (const family of ["db4", "sym4", "haar"]) {
     for (const level of [1, 2, 3, 4]) {
       if (2 ** level <= bands) out.push({ label: `Wavelet ${family} L${level}`, steps: [{ kind: "wavelet", params: { family, level, threshold_mode: "soft" } }] });
     }
   }
   return out;
+}
+
+/** Parameter sweep a single-step configuration belongs to (one trajectory per sweep), or null. */
+export interface Sweep {
+  key: string;
+  label: string;
+  /** Position along the sweep (window, sigma or level). */
+  order: number;
+  /** Short point label, e.g. "SG 11". */
+  short: string;
+}
+
+export function sweepOf(steps: readonly StepRecipe[]): Sweep | null {
+  if (steps.length !== 1) return null;
+  const { kind, params: p } = steps[0]!;
+  if (kind === "savgol") {
+    const k = Number(p.polyorder);
+    return { key: `savgol:${k}`, label: `Savitzky–Golay, order ${k} (window)`, order: Number(p.window), short: k === SG_SWEEP_POLYORDER ? `SG ${p.window}` : `SG ${p.window} o${k}` };
+  }
+  if (kind === "gaussian") return { key: "gaussian", label: "Gaussian (sigma)", order: Number(p.sigma), short: `σ ${p.sigma}` };
+  if (kind === "wavelet") return { key: `wavelet:${p.family}:${p.threshold_mode}`, label: `Wavelet ${p.family}, ${p.threshold_mode} (level)`, order: Number(p.level), short: `${p.family} L${p.level}` };
+  return null;
+}
+
+/** Sweeps present among the evaluated points, in first-appearance order. */
+export function sweeps(points: readonly BenchmarkPoint[]): { key: string; label: string }[] {
+  const seen = new Map<string, string>();
+  for (const p of points) {
+    const s = sweepOf(p.steps);
+    if (s && !seen.has(s.key)) seen.set(s.key, s.label);
+  }
+  return [...seen].map(([key, label]) => ({ key, label }));
+}
+
+/**
+ * Indices of the evaluated points of one sweep, ordered by its parameter: the dashed trajectory of the
+ * trade-off chart (drawn from the raw origin, distortion 0 and reduction 0 by definition).
+ */
+export function sweepTrajectory(points: readonly BenchmarkPoint[], key = `savgol:${SG_SWEEP_POLYORDER}`): number[] {
+  return points
+    .map((p, i) => ({ p, i, s: sweepOf(p.steps) }))
+    .filter(({ p, s }) => s?.key === key && p.distortion !== null && p.reduction !== null)
+    .sort((a, b) => a.s!.order - b.s!.order)
+    .map(({ i }) => i);
 }
 
 export const recipeKey = (steps: readonly StepRecipe[]) => JSON.stringify(steps.map((s) => [s.kind, Object.entries(s.params).sort()]));

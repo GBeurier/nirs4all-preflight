@@ -59,3 +59,55 @@
 .qm-swatch-na { background: repeating-linear-gradient(45deg, #9aa3ad 0 2px, #e5e7eb 2px 4px); }
 .qm-stack { display: flex; height: 10px; border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
 .qm-unavailable { font-size: .84rem; color: var(--text-2); }
+
+/* ── rubric sections (wave 2): same-type visuals grouped ── */
+.rb-headlines { display: grid; gap: 12px; margin-top: 12px; }
+.rb-comments { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; font-size: .9rem; color: var(--text); }
+.rb-comments li { position: relative; padding-left: 18px; line-height: 1.45; }
+.rb-comments li::before { content: ""; position: absolute; left: 2px; top: .55em; width: 8px; height: 8px; border-radius: 50%; background: var(--cz-grey); }
+.rb-comments li[data-tone="attention"]::before { background: var(--cz-copper); border-radius: 2px; transform: rotate(45deg); }
+.rb-comments li[data-tone="info"]::before { background: var(--cz-teal); }
+.rb-comments li[data-tone="unavailable"] { color: var(--text-2); }
+.rb-comments li[data-tone="unavailable"]::before { background: repeating-linear-gradient(45deg, var(--cz-na) 0 2px, var(--cz-na-line) 2px 3px); }
+.rb-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.rb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 12px; margin-top: 16px; align-items: start; }
+.rb-grid > .rb-full { grid-column: 1 / -1; }
+.rb-grid > div > .cz-card + .cz-card { margin-top: 12px; }
+.rb-tracks { margin-top: 16px; }
+.rb-block:not(:empty) { margin-top: 16px; display: grid; gap: 12px; }
+.rb-details { margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); padding: 8px 14px; background: var(--card); }
+.rb-details > summary { cursor: pointer; font-weight: 600; font-size: .9rem; color: var(--text-2); }
+.rb-details-body { display: grid; gap: 14px; margin-top: 10px; }
+.rb-method { font-size: .86rem; color: var(--text-2); display: grid; gap: 6px; }
+.rb-method h4 { font-size: .9rem; color: var(--text); }
+.rb-investigate { font-size: .86rem; color: var(--text-2); margin: 0; padding-left: 18px; }
+
+/* ── overview KPI cards (image (15) top block) ── */
+.ov-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 640px) { .ov-kpis { grid-template-columns: 1fr; } }
+.ov-kpi { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px 12px; border-radius: 10px; background: var(--cz-surface-2); border: 1px solid var(--cz-border); color: var(--cz-ink); text-decoration: none; min-width: 0; transition: border-color .15s; }
+.ov-kpi:hover { border-color: var(--cz-teal-2); color: var(--cz-ink); }
+.ov-kpi-label { font-size: .8rem; color: var(--cz-ink-2); }
+.ov-kpi-value { font-size: 1.65rem; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ov-kpi-value small { font-size: .95rem; font-weight: 600; color: var(--cz-ink-2); margin-left: 2px; }
+.ov-kpi-bar { display: block; height: 4px; border-radius: 2px; background: var(--cz-track); overflow: hidden; margin: 2px 0; }
+.ov-kpi-bar > span { display: block; height: 100%; background: var(--cz-copper); }
+.ov-kpi-sub { font-size: .78rem; color: var(--cz-ink-3); }
+.ov-kpi-na { font-size: .85rem; color: var(--cz-ink-3); padding: 8px 0; }
+.ov-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ov-chip { display: inline-flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--cz-ink-2); border: 1px solid var(--cz-border); border-radius: 999px; padding: 3px 6px 3px 10px; text-decoration: none; background: var(--cz-surface); }
+.ov-chip strong { color: var(--cz-ink); font-weight: 600; }
+.ov-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cz-teal); flex: none; }
+.ov-chip[data-state="unavailable"] .ov-chip-dot { background: repeating-linear-gradient(45deg, var(--cz-na) 0 2px, var(--cz-na-line) 2px 3px); }
+.ov-comments-title { font-size: .95rem; font-weight: 600; margin: 0 0 8px; }
+.ov-comments { margin-top: 14px; }
+.ov-more summary { cursor: pointer; font-size: .84rem; color: var(--text-2); margin-top: 6px; }
+.ov-more .ov-comment-list { margin-top: 8px; }
+.ov-comment-list li { font-size: .88rem; }
+
+/* ── page flow arrows between the four blocks ── */
+.ov-arrow { display: flex; justify-content: center; margin: 10px 0 -14px; color: var(--text-3); font-size: 1rem; line-height: 1; }
+.ov-detail-head { margin-top: 0; }
+.dp-chart { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 10px); padding: 10px 12px 6px; }
+.dp-links { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: .84rem; font-weight: 600; }
+.dp-links a { color: var(--teal-d); }

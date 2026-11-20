@@ -218,7 +218,8 @@ export function valueHistogram(entries: readonly { id: string; value: number }[]
   if (!xs.length) return [];
   const lo = Math.min(...xs.map((e) => e.value));
   const hi = Math.max(...xs.map((e) => e.value));
-  if (hi === lo) return [{ lo, hi, count: xs.length, ids: xs.map((e) => e.id) }];
+  // Constant (or numerically constant) values: one bin, never a range of float noise.
+  if (hi - lo <= 1e-9 * Math.max(Math.abs(lo), Math.abs(hi))) return [{ lo, hi: lo, count: xs.length, ids: xs.map((e) => e.id) }];
   const k = Math.max(1, Math.min(bins, xs.length));
   const w = (hi - lo) / k;
   const out: HistogramBin[] = Array.from({ length: k }, (_, i) => ({ lo: lo + i * w, hi: lo + (i + 1) * w, count: 0, ids: [] }));
@@ -355,3 +356,46 @@ export function topKOverlap(ids: readonly string[], a: readonly (number | null)[
 }
 
 export { finite };
+
+// --- illustrative noise scale (chat §5: "what does N dB look like?") ----------------------------
+
+/** Deterministic standard normal draws (Box–Muller over a fixed LCG), so the illustration is stable. */
+export function gaussianSequence(n: number, seed = 12345): Float64Array {
+  const out = new Float64Array(n);
+  let s = seed >>> 0;
+  const next = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return (s + 1) / 4294967297;
+  };
+  for (let i = 0; i < n; i += 2) {
+    const r = Math.sqrt(-2 * Math.log(next()));
+    const t = 2 * Math.PI * next();
+    out[i] = r * Math.cos(t);
+    if (i + 1 < n) out[i + 1] = r * Math.sin(t);
+  }
+  return out;
+}
+
+/**
+ * ILLUSTRATION ONLY: `values` plus Gaussian noise whose σ = mean|x| × 10^(−dB/20), i.e. the noise
+ * that the dataset SNR definition (20·log10(mean|x|/σ)) maps to `db`. Missing values stay missing;
+ * the input is not modified. Returns null when the spectrum has no finite non-zero level.
+ */
+export function addIllustrativeNoise(values: readonly (number | null)[], db: number, draws: Float64Array): { values: (number | null)[]; sigma: number } | null {
+  let sum = 0;
+  let n = 0;
+  for (const v of values) if (v !== null && Number.isFinite(v)) { sum += Math.abs(v); n++; }
+  if (!n || !(sum > 0) || !Number.isFinite(db)) return null;
+  const sigma = (sum / n) * 10 ** (-db / 20);
+  return { sigma, values: values.map((v, i) => (v === null || !Number.isFinite(v) ? null : v + sigma * (draws[i % draws.length] ?? 0))) };
+}
+
+/** The evaluated spectrum whose SNR is closest to the median (a typical spectrum for illustrations). */
+export function medianSnrSpectrum(stats: SnrStats): string | null {
+  let best: { id: string; d: number } | null = null;
+  for (const e of stats.entries) {
+    const d = Math.abs(e.value - stats.medianDb);
+    if (!best || d < best.d) best = { id: e.id, d };
+  }
+  return best?.id ?? null;
+}

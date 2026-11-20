@@ -1,11 +1,13 @@
 // On-demand bridge to snv.worker.ts (Methods WASM is loaded only when the user asks).
 export interface SnvRequest { id: number; rows: number; cols: number; data: Float64Array }
-export type SnvResponse = { id: number; ok: true; raw: (number | null)[]; snv: (number | null)[] } | { id: number; ok: false; error: string };
+/** PC1/PC2 scores of the complete spectra (null when the component is unresolved) and explained variance shares. */
+export interface PcaProjection { pc1: number[] | null; pc2: number[] | null; explained: (number | null)[] }
+export type SnvResponse = { id: number; ok: true; raw: (number | null)[]; snv: (number | null)[]; pca: PcaProjection } | { id: number; ok: false; error: string };
 
 let worker: Worker | null = null;
 let next = 1;
 
-export function runSnvComparison(matrix: { rows: number; cols: number; data: Float64Array }): Promise<{ raw: (number | null)[]; snv: (number | null)[] }> {
+export function runSnvComparison(matrix: { rows: number; cols: number; data: Float64Array }): Promise<{ raw: (number | null)[]; snv: (number | null)[]; pca: PcaProjection }> {
   if (typeof Worker === "undefined") return Promise.reject(new Error("Web workers are not available in this environment."));
   worker ??= new Worker(new URL("./snv.worker.ts", import.meta.url), { type: "module" });
   const w = worker;
@@ -14,7 +16,7 @@ export function runSnvComparison(matrix: { rows: number; cols: number; data: Flo
     const onMessage = (event: MessageEvent<SnvResponse>) => {
       if (event.data.id !== id) return;
       w.removeEventListener("message", onMessage);
-      if (event.data.ok) resolve({ raw: event.data.raw, snv: event.data.snv });
+      if (event.data.ok) resolve({ raw: event.data.raw, snv: event.data.snv, pca: event.data.pca });
       else reject(new Error(event.data.error));
     };
     w.addEventListener("message", onMessage);

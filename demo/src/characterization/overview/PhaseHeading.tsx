@@ -14,3 +14,8 @@ export function PhaseHeading({ id, index, title, lead }: { id: string; index: st
     </div>
   );
 }
+
+/** Small "↓" connector between the four blocks of the page (overview → diagnostics → explorer → map). */
+export function PhaseArrow() {
+  return <div className="ov-arrow" aria-hidden="true">↓</div>;
+}
