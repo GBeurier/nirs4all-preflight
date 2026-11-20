@@ -296,3 +296,66 @@ export function interpret(c: ComparisonModel, inference: InferenceModel, extra: 
   if (inference.status === "unavailable") investigate.push("Declare independent units, technical replicate grouping and exchangeability in the dataset settings to enable the permutation test.");
   return { findings, investigate };
 }
+
+// --- engine permutation plan of a valid test (input of the local null distribution) ----------------------------
+
+export interface TestPlan {
+  factor: string;
+  /** Decimal u64 seed of the engine plan (derived per source and factor). */
+  seed: string;
+  permutations: number;
+  statistic: number | null;
+  pValue: number | null;
+  pValueHolm: number | null;
+  atLeast: number | null;
+  family: string | null;
+  /** Engine p-values entered in the Holm family, with this test at `member`. */
+  familyPValues: number[] | null;
+  familyFactors: string[];
+  member: number;
+  familyAlpha: number | null;
+  exchangeableUnit: string | null;
+  restrictions: string | null;
+  drawMethod: string | null;
+  rng: string | null;
+  convention: string | null;
+  seedDerivation: string | null;
+  space: string | null;
+}
+
+/** Plan of a computed energy test of one factor (the audit is factor `partition`), or null when not valid. */
+export function testPlan(view: QualificationReportView, sourceId: string, factor: string): TestPlan | null {
+  const t = view.metrics.find((m) => m.sourceId === sourceId && m.id === "domain_shift.energy_test" && m.status === "computed" && str(m.parameters.factor) === factor);
+  if (!t) return null;
+  const plan = rec(t.parameters.permutation_plan);
+  const v = rec(t.value);
+  const seed = plan.seed;
+  const permutations = num(plan.n_permutations_executed);
+  if ((typeof seed !== "string" && typeof seed !== "number") || permutations === null || permutations < 1) return null;
+  const family = str(t.parameters.family);
+  const fm = view.metrics.find((m) => m.sourceId === sourceId && m.id === "domain_shift.test_family" && str(m.parameters.family) === family);
+  const members = Array.isArray(rec(fm?.value).members) ? (rec(fm?.value).members as unknown[]).map(rec) : [];
+  const ps = members.map((x) => num(x.p_value_entered));
+  const member = members.findIndex((x) => str(x.factor) === factor);
+  return {
+    factor,
+    seed: String(seed),
+    permutations,
+    statistic: num(v.statistic),
+    pValue: num(v.p_value),
+    pValueHolm: num(v.p_value_holm),
+    atLeast: num(v.n_at_least_observed),
+    family,
+    familyPValues: member >= 0 && ps.every((p) => p !== null) ? (ps as number[]) : null,
+    familyFactors: members.map((x) => str(x.factor) ?? "—"),
+    member,
+    familyAlpha: num(rec(fm?.value).family_alpha),
+    exchangeableUnit: str(plan.exchangeable_unit),
+    restrictions: str(plan.restrictions),
+    drawMethod: str(plan.draw_method),
+    rng: str(plan.rng_algorithm),
+    convention: str(plan.p_value_convention),
+    seedDerivation: str(plan.seed_derivation),
+    space: spaceOf(t, "space"),
+  };
+}

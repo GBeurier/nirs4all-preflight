@@ -6,11 +6,13 @@ import { ChartDataTable, formatEngineNumber } from "nirs4all-ui/qualification";
 import { Section, type Scope } from "../../Sections";
 import { downloadText } from "../../download";
 import { useDistortionProfile } from "../preprocessing/distortion";
-import { AlignedTracks, type Track } from "../repeatability/AlignedTracks";
-import { ChartCard, Responsive, SegmentStrip } from "../shared/charts";
+import { AlignedTracks, nearestBand, type Track } from "../repeatability/AlignedTracks";
+import { MeasurementContextSelect, useMeasurementContext } from "../repeatability/ContextSelect";
+import { ChartCard, Responsive, SegmentStrip, type StripView } from "../shared/charts";
 import { stripRows } from "./stripRows";
 import { qualityMapInputs } from "./mapInputs";
-import { regionsExport, useCharacterizationSelection } from "./selection";
+import { explorerTrackInputs, hasPublishedBands, type MapMode, type PublishedBands } from "./processed";
+import { regionsExport, useCharacterizationSelection, useSharedCursor } from "./selection";
 import { MAP, PHASES } from "./strings";
 import { NON_EVALUABLE_COLOR, buildTracks, categoryOf, categoryShares, colorOf, summarizeInterval, type QualityTrack, type TrackId, type TrackInputs, type TrackSummary } from "./tracks";
 import "./overview.css";
@@ -106,23 +108,46 @@ export function SpectralQualityMap(props: Scope) {
   const chart = useRef<HTMLDivElement>(null);
   const shared = useCharacterizationSelection();
   // Per-band distortion of the configuration currently loaded in the preprocessing explorer, if any.
-  const profile = useDistortionProfile(sourceId);
+  const profile = useDistortionProfile(sourceId) as unknown as PublishedBands | null;
   const distortion = useMemo<TrackInputs["distortion"]>(
-    () => (profile ? { axis: profile.axis, values: profile.values, unit: "fraction of mean |raw|", provenance: `Pipeline "${profile.label}" evaluated on ${profile.n} spectra in the preprocessing explorer: |mean residual| ÷ mean |raw| per band (interim explorer metric; raw − processed on one scale).` } : null),
+    () => (profile && profile.values ? { axis: profile.axis, values: profile.values, unit: "fraction of mean |raw|", provenance: `Pipeline "${profile.label}" evaluated on ${profile.n} spectra in the preprocessing explorer: |mean residual| ÷ mean |raw| per band (interim explorer metric; raw − processed on one scale).` } : null),
     [profile],
   );
+  const context = useMeasurementContext(props);
+  const repeatIndex = context.current ? context.current.repeatIndex : undefined;
+  const noiseIndex = context.current ? context.current.noiseIndex : undefined;
+  const [mode, setMode] = useState<MapMode>("raw");
+  const published = source && hasPublishedBands(profile, source.axis) ? profile : null;
+  // The explorer can withdraw its profile (pipeline cleared, source changed): fall back to the engine view.
+  const effective: MapMode = published ? mode : "raw";
   const tracks = useMemo(() => {
-    const inputs = qualityMapInputs({ view, input, sourceId }, distortion);
+    const inputs = effective !== "raw" && published ? explorerTrackInputs(published, effective, source?.signal_unit ?? "") : qualityMapInputs({ view, input, sourceId }, distortion, { repeatIndex, noiseIndex });
     return inputs ? buildTracks(inputs) : [];
-  }, [view, input, sourceId, distortion]);
+  }, [view, input, sourceId, distortion, repeatIndex, noiseIndex, effective, published, source]);
   const drawnTracks = useMemo(() => tracks.filter((t) => !t.unavailable), [tracks]);
   const drawn = useMemo(() => alignedTracks(tracks), [tracks]);
   const rows = useMemo(() => stripRows(tracks, fmtNumber), [tracks]);
-  const [cursor, setCursor] = useState<number | null>(null);
+  const [cursor, setCursor] = useSharedCursor(sourceId);
+  const [zoom, setZoom] = useState<StripView>(null);
+  const [valuesOpen, setValuesOpen] = useState(false);
   const ownSelection = shared.selection && shared.selection.sourceId === sourceId ? shared.selection : null;
   const regions = shared.regions.filter((r) => r.sourceId === sourceId);
   const summaries = useMemo(() => (ownSelection ? summarizeInterval(tracks, ownSelection.i0, ownSelection.i1) : []), [tracks, ownSelection]);
-  if (!source || !sourceId || !drawnTracks.length) return null;
+  // The engine view must have something to draw; the explorer views keep the section (and its toggle) visible.
+  if (!source || !sourceId || (!drawnTracks.length && effective === "raw")) return null;
+  const subsetSmaller = published ? published.n < source.x.length : false;
+  const modeNote = effective === "raw"
+    ? `Engine results on the development spectra${context.current && context.contexts.length > 1 ? `, measurement context ${context.current.label}` : ""}.`
+    : effective === "subset"
+      ? `Raw spectra of the explorer subset (${published!.n} of ${source.x.length} spectra): the like-for-like reference of the preprocessed view. Contexts are pooled by the explorer.`
+      : `Recomputed on the explorer's current processed spectra ("${published!.label}", ${published!.n} spectra)${published!.bands.preservesUnits ? "" : "; the pipeline changes the signal scale, so SD and noise values are in processed units"}. Contexts are pooled by the explorer.`;
+  const domain: [number, number] | null = zoom ? [source.axis[Math.min(zoom.i0, zoom.i1)]!, source.axis[Math.max(zoom.i0, zoom.i1)]!] : null;
+  const onDomain = (d: [number, number] | null) => {
+    if (!d) return setZoom(null);
+    const a = nearestBand(source.axis, d[0]);
+    const b = nearestBand(source.axis, d[1]);
+    setZoom(Math.abs(b - a) + 1 >= source.axis.length ? null : { i0: Math.min(a, b), i1: Math.max(a, b) });
+  };
   const axisLabel = `${source.axis_unit ? `Spectral axis (${source.axis_unit})` : "Band index / spectral axis"}`;
   const tableRows = source.axis.map((x, i) => [x, ...drawnTracks.flatMap((t) => [t.values[i] ?? null, ...(t.kind === "categorical" ? [categoryOf(t, t.values[i] ?? null)?.label ?? null] : [])])]);
   const columns = [axisLabel, ...drawnTracks.flatMap((t) => [`${t.label}${t.unit ? ` (${t.unit})` : ""}`, ...(t.kind === "categorical" ? [`${t.label} — class`] : [])])];
@@ -140,7 +165,19 @@ export function SpectralQualityMap(props: Scope) {
   return (
     <Section id="s-quality-map" index="4 / 4" icon="composition" accent="indigo" title={MAP.title} lead={PHASES.mapLead}>
       <ChartCard title={`${MAP.title} — ${sourceId}`} subtitle={MAP.stripLead} footnote={MAP.warning}>
+        <div className="qm-controls">
+          <div className="seg" role="group" aria-label={MAP.modeLabel}>
+            <button type="button" aria-pressed={effective === "raw"} onClick={() => setMode("raw")}>{MAP.modeRaw}</button>
+            {published && subsetSmaller ? <button type="button" aria-pressed={effective === "subset"} onClick={() => setMode("subset")}>{MAP.modeSubset}</button> : null}
+            <button type="button" aria-pressed={effective === "processed"} disabled={!published} title={published ? undefined : MAP.modeDisabled} onClick={() => setMode("processed")}>{MAP.modeProcessed}</button>
+          </div>
+          {effective === "raw" ? <MeasurementContextSelect state={context} /> : null}
+        </div>
+        <p className="hint qm-mode-note" role="status">{published ? modeNote : `${modeNote} ${MAP.modeDisabled}`}{effective !== "raw" ? ` ${MAP.modeProvenance}` : ""}</p>
+        {!drawnTracks.length ? <p className="cz-empty">{MAP.modeEmpty}</p> : null}
         <SegmentStrip
+          view={zoom}
+          onView={setZoom}
           axis={source.axis}
           axisLabel={axisLabel}
           rows={rows}
@@ -184,12 +221,15 @@ export function SpectralQualityMap(props: Scope) {
           <button type="button" className="btn btn-ghost btn-sm" disabled={!regions.length} onClick={shared.clearRegions}>{MAP.regionsClear}</button>
         </div>
       </div>
-      <details className="rb-details">
+      <details className="rb-details" onToggle={(e) => setValuesOpen(e.currentTarget.open)}>
         <summary>{MAP.valuesTitle}</summary>
-        <div className="card qm-card" ref={chart} onClick={onChartClick} style={{ marginTop: 10 }}>
+        {/* Rendered only when open: the per-band rectangles of every strip are costly to redraw on each hover. */}
+        {valuesOpen ? <div className="card qm-card" ref={chart} onClick={onChartClick} style={{ marginTop: 10 }}>
           <Responsive min={420}>
             {(w) => (
               <AlignedTracks
+                domain={domain}
+                onDomainChange={onDomain}
                 axis={source.axis}
                 axisLabel={axisLabel}
                 tracks={drawn}
@@ -204,7 +244,7 @@ export function SpectralQualityMap(props: Scope) {
             )}
           </Responsive>
           <p className="hint">{MAP.interaction}</p>
-        </div>
+        </div> : null}
         <h3 className="qm-subtitle">{MAP.legendsTitle}</h3>
         <p className="hint">{MAP.scaleNote}</p>
         <div className="qm-legends">{drawnTracks.map((t) => <Legend key={t.id} track={t} />)}</div>

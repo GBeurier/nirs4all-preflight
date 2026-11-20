@@ -14,7 +14,7 @@ export const S = {
   up: "Move up",
   down: "Move down",
   emptyPipeline: "No step: processed = raw.",
-  unavailable: "not in this build",
+  localSteps: "Median filter and despiking: computed locally in the demo (interim, no Methods transformer yet); every other step runs @nirs4all/methods.",
   computing: "Recomputing…",
   shownSpectra: "Spectra drawn",
   comparabilityTitle: { comparable: "Comparable scale", caution: "Interpret with caution", not_comparable: "Not directly comparable" },
@@ -49,7 +49,19 @@ export const S = {
   principle: "Principle: a smoother spectrum is not necessarily a better spectrum",
   principleCaption: "Schematic illustration (synthetic curves, not the loaded data). Excessive smoothing removes noise and also band resolution.",
   workflowLabel: "Recommended organisation",
-  chemometricNote: "Optional, not available: with a declared target Y, compare preprocessing by PLS RMSECV/RMSEP, bias and latent variables under leak-free cross-validation (preprocessing fitted inside each fold). That scheduling belongs to the DAG-ML owner.",
+  chemoTitle: "Chemometric validation (optional)",
+  chemoSub: "Raw versus the current pipeline: PLS under nested grouped cross-validation on the calibration (development) spectra. Runs only on request.",
+  chemoRun: "Run grouped cross-validation",
+  chemoRerun: "Rerun for the current pipeline",
+  chemoIdle: "Not run yet. The comparison refits the pipeline and the PLS model inside every fold; it can take a few seconds.",
+  chemoNotModel: "Exploratory comparison, not a validated model: no retained-test evaluation, no calibrated decision, no designated best preprocessing.",
+  chemoProvenance: "Computed locally in the demo (interim): PLS fit = Methods models.pls.pls_regression (NIPALS, X and y centred on the training rows, no scaling); grouped folds, nested LV selection and scoring are demo code pending DAG-ML.",
+  chemoPopulation: (target: string, model: string, c: { development: number; notDevelopment: number; noReference: number; incomplete: number; capped: number; used: number; samples: number; groups: number }, unitRule: string, cap: number) =>
+    `Target “${target}”, ${model}. ${c.used} of ${c.development} development spectra used (${c.noReference} without an exact reference value, ${c.incomplete} incomplete${c.capped ? `, ${c.capped} beyond the deterministic cap of ${cap}` : ""}); ${c.samples} samples in ${c.groups} independent groups (grouped by ${unitRule}). ${c.notDevelopment} retained-test, prediction or augmented spectra are excluded and never read.`,
+  chemoProtocol: (outer: number, inner: number, maxLv: number, tol: number, seed: number) =>
+    `Protocol: up to ${outer} outer grouped folds (repeats of one sample never split). In each outer training set, the preprocessing (e.g. the MSC reference) and the PLS centring are fitted on training rows only, and the LV count (1–${maxLv}) is chosen by up to ${inner} inner grouped folds as the smallest count within ${Math.round((tol - 1) * 100)} % of the minimum inner RMSECV. Scores per sample (repeats averaged): RMSECV, R²CV = 1 − PRESS/SS about the mean, bias = mean(predicted − reference). Seed ${seed}.`,
+  chemoCurveTitle: "RMSECV versus latent variables",
+  chemoCurveNote: "Fixed LV count over the same outer folds: a descriptive curve, never used to choose the LV count (the nested result above is the comparison).",
   syntheticNote: "Synthetic noise scenarios (dataset picker) remain only an optional validation of the noise estimator.",
 };
 
@@ -59,7 +71,7 @@ export const WORKFLOW: readonly { n: number; title: string; caption: string; hre
   { n: 2, title: "Preprocessing explorer", caption: "Real spectra, pipeline, parameters, residuals.", href: "#pp-controls" },
   { n: 3, title: "Impact assessment", caption: "Before/after table, SNR distributions, preserved information.", href: "#pp-impact" },
   { n: 4, title: "Benchmark", caption: "Parameter sweep, noise/distortion trade-off.", href: "#pp-bench" },
-  { n: 5, title: "Chemometric validation", caption: "Optional; not available in this demo.", href: null },
+  { n: 5, title: "Chemometric validation", caption: "Optional: grouped-CV PLS, raw vs pipeline.", href: "#pp-chemo" },
 ];
 
 /** Methodological precautions: which preprocessing families allow a before/after SNR comparison. */

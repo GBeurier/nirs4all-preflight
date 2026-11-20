@@ -10,9 +10,13 @@ import { AlignedTracks, type Track } from "../repeatability/AlignedTracks";
 import { ChartCard, EmptyState, Histogram, KpiStrip, ProportionBars, Responsive, StackedShareBar, ValueBars, type HistBin, type KpiItem } from "../shared/charts";
 import { defaultFmt as f } from "../shared/charts/scale";
 import { DOMAIN_COLORS, DomainLegend, Ecdf, PcaOverlap, RatioScale, ShiftIllustration, TqScatter } from "./charts";
-import { bandProfiles, computeDiagnostics, dominantRegion, MAX_PAIRWISE_UNITS, type BandProfiles, type DomainDiagnostics } from "./kernels";
+import { domainTask } from "./host";
+import { bandProfiles, dominantRegion, MAX_PAIRWISE_UNITS, type BandProfiles, type DomainDiagnostics, type ResidualProfiles } from "./kernels";
 import { domainModel, interpret, type ComparisonModel, type FactorModel, type InferenceModel } from "./model";
-import { domainPopulations, type DomainPopulations } from "./populations";
+import { PairwiseMatrix } from "./PairwiseMatrix";
+import { PermutationCard } from "./PermutationPanel";
+import { domainPopulations, unitDescriber, unitLabel, type DomainPopulations } from "./populations";
+import { ShiftExplorer } from "./ShiftExplorer";
 import { DOMAINS } from "./strings";
 import "./domains.css";
 
@@ -58,25 +62,6 @@ function InferenceAlert({ inference, onOpenSettings }: { inference: InferenceMod
   );
 }
 
-function PermutationCard({ inference }: { inference: InferenceModel }) {
-  const t = inference.test;
-  if (inference.status !== "valid" || !t) return null;
-  return (
-    <ChartCard title="Energy permutation test" subtitle={DOMAINS.testHeader} footnote={`${t.rejects ? DOMAINS.significant : DOMAINS.nonSignificant} The null distribution itself is not published by the engine (debt).`}>
-      <table className="dm-table">
-        <tbody>
-          <tr><th>Statistic (K-sample energy, Σ nₐn_b/(nₐ+n_b)·E)</th><td className="num">{nf(t.statistic, 5)}</td></tr>
-          <tr><th>Permutations B (Monte Carlo, p = (b+1)/(B+1))</th><td className="num">{nf(t.nPermutations, 6)}</td></tr>
-          <tr><th>Raw p</th><td className="num">{nf(t.pValue, 3)}</td></tr>
-          <tr><th>Conservative p (undecidable draws as ties)</th><td className="num">{nf(t.pValueConservative, 3)}</td></tr>
-          <tr><th>Holm-adjusted p (family {t.family ?? "of this source"})</th><td className="num">{nf(t.pValueHolm, 3)}</td></tr>
-          <tr><th>Rejects at the family level</th><td className="num">{t.rejects === null ? "—" : t.rejects ? "yes" : "no"}</td></tr>
-        </tbody>
-      </table>
-    </ChartCard>
-  );
-}
-
 function useDiagnostics(pop: DomainPopulations | null, c: ComparisonModel, scope: Scope): { data: DomainDiagnostics | null; error: string | null; busy: boolean } {
   const [state, setState] = useState<{ data: DomainDiagnostics | null; error: string | null; busy: boolean }>({ data: null, error: null, busy: !!pop });
   const opts = scope.input.options.domain_shift ?? {};
@@ -84,7 +69,7 @@ function useDiagnostics(pop: DomainPopulations | null, c: ComparisonModel, scope
     if (!pop) return;
     let live = true;
     setState({ data: null, error: null, busy: true });
-    computeDiagnostics(pop, { audit: c.audit, energyOnSpectra: Boolean(opts.energy_on_spectra), monitorOnSpectra: Boolean(opts.monitor_on_spectra) }, c.energy.value)
+    domainTask({ op: "diagnostics", pop, opts: { audit: c.audit, energyOnSpectra: Boolean(opts.energy_on_spectra), monitorOnSpectra: Boolean(opts.monitor_on_spectra) }, engineEnergy: c.energy.value })
       .then((data) => live && setState({ data, error: null, busy: false }))
       .catch((e: unknown) => live && setState({ data: null, error: e instanceof Error ? e.message : String(e), busy: false }));
     return () => { live = false; };
@@ -112,6 +97,24 @@ function profileTracks(b: BandProfiles, unit: string): Track[] {
   ];
 }
 
+const RESIDUAL_STYLES = [
+  { color: "var(--dm-cmp)", dash: undefined },
+  { color: "var(--cz-accent)", dash: "5 3" },
+  { color: "var(--cz-teal)", dash: undefined },
+  { color: "var(--cz-ink-2)", dash: "2 2" },
+  { color: "var(--cz-copper-2)", dash: "5 3" },
+  { color: "var(--cz-blue)", dash: "2 2" },
+];
+
+function residualTracks(r: ResidualProfiles, ids: readonly string[], unit: string): Track[] {
+  const short = (s: string) => (s.length > 28 ? `${s.slice(0, 27)}…` : s);
+  return [{
+    id: "residual", title: `Residual x − x̂ (reference PCA, ${r.components} components)`, unit, height: 170, includeZero: true, refLines: [{ y: 0, label: "0" }],
+    envelopes: [{ id: "ref-res", label: "Reference residuals P5–P95 (in-sample)", lower: r.refP5, upper: r.refP95, color: DOMAIN_COLORS.reference }],
+    series: r.units.map((u, k) => ({ id: `res-${u}`, label: short(ids[u] ?? String(u)), values: r.profiles[k]!, color: RESIDUAL_STYLES[k % RESIDUAL_STYLES.length]!.color, dash: RESIDUAL_STYLES[k % RESIDUAL_STYLES.length]!.dash })),
+  }];
+}
+
 function energyBins(values: readonly number[], observed: number | null): HistBin[] {
   const hi = Math.max(...values, observed ?? 0) * 1.05;
   const n = 24;
@@ -130,8 +133,11 @@ function ComparisonDetail({ c, factor, pop, scope }: { c: ComparisonModel; facto
   const region = useMemo(() => (bands && pop ? dominantRegion(bands.diff) : null), [bands, pop]);
   const regionText = region && pop ? `${f(pop.axis[region.i0]!, 5)}–${f(pop.axis[region.i1]!, 5)}${source?.axis_unit ? ` ${source.axis_unit}` : ""}` : null;
   const it = interpret(c, factor.inference, { support: d?.neighbours?.support ?? null, energy: d?.energy ?? null, region: regionText });
-  const refIds = pop?.reference.map((u) => u.members.join(", ")) ?? [];
-  const cmpIds = pop?.compared.map((u) => u.members.join(", ")) ?? [];
+  const refIds = pop?.reference.map(unitLabel) ?? [];
+  const cmpIds = pop?.compared.map(unitLabel) ?? [];
+  const describe = useMemo(() => unitDescriber(scope.input), [scope.input]);
+  const refInfo = useMemo(() => pop?.reference.map(describe), [pop, describe]);
+  const cmpInfo = useMemo(() => pop?.compared.map(describe), [pop, describe]);
   const unitsMatch = pop && c.nReferenceUnits !== null && c.nComparedUnits !== null ? pop.reference.length === c.nReferenceUnits && pop.compared.length === c.nComparedUnits : null;
   const mon = d?.monitor ?? null;
   const cats = mon ? mon.comparedT2.map((t, i) => {
@@ -203,6 +209,15 @@ function ComparisonDetail({ c, factor, pop, scope }: { c: ComparisonModel; facto
           </ChartCard>
         </div>
       ) : busy ? null : <EmptyState>No individual T²/Q value: {d?.notes.join(" ") || "per-unit diagnostics unavailable."}</EmptyState>}
+      {d?.residuals && pop ? (
+        <ChartCard title="Residual spectral profiles of high-Q units" subtitle={`${d.residuals.units.length} of ${d.residuals.total} compared units above the Q limit${d.residuals.total > d.residuals.units.length ? " (highest Q first)" : ""}.`} footnote={`${DOMAINS.residualHeader} ${d.residuals.sameSpace ? "The monitor ran on complete spectra: ‖x − x̂‖² reproduces its Q." : `The monitor ran in the ${spaceLabel(c.monitorSpace)}: these complete-spectrum residuals show where the poorly represented structure lies, and their squared norm is not the monitor Q.`} ${DOMAINS.residualProvenance}`}>
+          <Responsive min={420}>{(w) => <AlignedTracks axis={pop.axis} axisLabel={axisLabel} tracks={residualTracks(d.residuals!, cmpIds, unit)} width={w} title="Residual spectral profiles of high-Q units" />}</Responsive>
+          <table className="dm-table">
+            <thead><tr><th>Unit (sample IDs)</th><th className="num">Q ÷ limit (monitor)</th><th className="num">‖x − x̂‖² (complete spectra)</th></tr></thead>
+            <tbody>{d.residuals.units.map((u, k) => <tr key={u}><td>{cmpIds[u]}</td><td className="num">{mon ? nf(mon.comparedQ[u]! / mon.qLimit, 3) : "—"}</td><td className="num">{nf(d.residuals!.q[k], 4)}</td></tr>)}</tbody>
+          </table>
+        </ChartCard>
+      ) : null}
 
       <h4 className="dm-h">Spectral population overlap</h4>
       <p className="dm-note">{DOMAINS.overlapHeader}</p>
@@ -210,7 +225,7 @@ function ComparisonDetail({ c, factor, pop, scope }: { c: ComparisonModel; facto
         {d?.overlap ? (
           <ChartCard title="PCA scores (reference-fitted)" subtitle="Centring and loadings from the reference units only; compared units projected." footnote={DOMAINS.twoPcNote}>
             <DomainLegend reference={c.referenceName} compared={c.comparedName} />
-            <PcaOverlap reference={d.overlap.reference} compared={d.overlap.compared} explained={d.overlap.explained} referenceIds={refIds} comparedIds={cmpIds} />
+            <PcaOverlap reference={d.overlap.reference} compared={d.overlap.compared} explained={d.overlap.explained} referenceIds={refIds} comparedIds={cmpIds} referenceInfo={refInfo} comparedInfo={cmpInfo} />
           </ChartCard>
         ) : null}
         {d?.neighbours ? (
@@ -235,7 +250,7 @@ function ComparisonDetail({ c, factor, pop, scope }: { c: ComparisonModel; facto
                 { label: "Typical internal (median)", value: nf(d.energy.typical, 4), unit: unit || undefined, tone: "blue" },
                 { label: "Internal reference percentile", value: d.energy.percentile === null ? "—" : f(100 * d.energy.percentile, 3), unit: "%", sub: d.energy.status === "approximate" ? "approximate" : "descriptive, not a p-value" },
               ]} />
-              <Histogram bins={energyBins(d.energy.values, c.energy.value)} tone="blue" xLabel={`Energy distance${unit ? ` (${unit})` : ""}`} yLabel="splits" title="Energy distances between internal reference subsets" markers={[...(c.energy.value !== null ? [{ value: c.energy.value, label: "Observed", tone: "copper" as const }] : []), ...(d.energy.typical !== null ? [{ value: d.energy.typical, label: "Typical", tone: "blue" as const }] : [])]} />
+              <Histogram bins={energyBins(d.energy.values, c.energy.value)} tone="blue" xLabel={`Energy distance${unit ? ` (${unit})` : ""}`} yLabel="splits" title="Energy distances between internal reference subsets" markers={[...(c.energy.value !== null ? [{ value: c.energy.value, label: "Observed", tone: "copper" as const }] : [])]} />
             </>
           ) : null}
         </ChartCard>
@@ -334,7 +349,8 @@ function FactorBlock({ factor, scope, onOpenSettings }: { factor: FactorModel; s
       {c.target ? <p className="dm-note">Target shift (development samples only, engine): median difference {nf(c.target.medianDifference)} {c.target.unit ?? ""}.</p> : null}
       <ComparisonDetail key={c.key} c={c} factor={factor} pop={pop} scope={scope} />
       <LevelMatrix f={factor} />
-      <PermutationCard inference={factor.inference} />
+      <PairwiseMatrix scope={scope} factor={factor} />
+      <PermutationCard scope={scope} factor={factor} />
     </div>
   );
 }
@@ -357,6 +373,7 @@ export function DomainShiftView(props: DomainShiftViewProps) {
       </div>
       <p className="dm-note">{DOMAINS.noScore}</p>
       {factors.length ? factors.map((fm) => <FactorBlock key={fm.factor} factor={fm} scope={scope} onOpenSettings={onOpenSettings} />) : <EmptyState>No domain comparison was computed for this source.</EmptyState>}
+      {factors.length ? <ShiftExplorer scope={scope} factors={factors} /> : null}
       <details className="dm-details">
         <summary>{DOMAINS.illustrationTitle}</summary>
         <DomainLegend reference="reference population" compared="compared population" />

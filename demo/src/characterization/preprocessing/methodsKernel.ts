@@ -6,6 +6,7 @@ import {
   Detrend,
   Gaussian,
   MSC,
+  PLSRegression,
   SNV,
   SavitzkyGolay,
   SpectralNoiseProxy,
@@ -19,8 +20,10 @@ import {
 } from "@nirs4all/methods";
 import type { StepRecipe } from "./catalog";
 import type { DiagnosticSettings } from "./data";
+import { localTransform } from "./localSteps";
 import type { EventsResult, ExplorerKernel, NoiseResult } from "./evaluate";
 import type { Matrix } from "./metrics";
+import type { PlsKernel } from "./chemometrics";
 
 type Output = Record<string, MethodsMatrix | number[] | number>;
 type Transformer = { fit(X: MethodsMatrix): unknown; transform(X: MethodsMatrix): MethodsMatrix; dispose(): void };
@@ -50,8 +53,13 @@ function transformer(step: StepRecipe, axisStep: number | null): Transformer {
       return new MSC();
     case "detrend":
       return new Detrend({ polyorder: Number(p.polyorder) });
+    case "median":
+    case "despike":
+      throw new Error(`${step.kind} is a local demo step, not a Methods transformer.`);
   }
 }
+
+const copyOut = (out: MethodsMatrix): Matrix => ({ data: Float64Array.from(out.data), rows: out.rows, cols: out.cols });
 
 /** Per-row values of one per-spectrum signal of a Methods intrinsic procedure (null when not evaluable). */
 function perRow(out: Output, signal: string, n: number): (number | null)[] {
@@ -68,14 +76,64 @@ function perRow(out: Output, signal: string, n: number): (number | null)[] {
 
 const ints = (out: Output, key: string): number[] => (Array.isArray(out[key]) ? (out[key] as number[]) : []);
 
-export function methodsKernel(): ExplorerKernel {
+/**
+ * PLS1 predictions for 1..A latent variables from ONE Methods `models.pls.pls_regression` fit (NIPALS,
+ * X and y centred on the fit rows, no scaling). NIPALS components are sequential, so the a-component
+ * model is the prefix of the A-component one: ŷ_a = ȳ + ((x − x̄)/s) R[:, :a] Q[:, :a]ᵀ, R and Q from the
+ * fitted latent structure (checked against separate a-component fits in methodsKernel.test.ts).
+ */
+export function methodsPlsPath(X: Matrix, y: Float64Array, components: number, Xt: Matrix): Float64Array[] {
+  const est = new PLSRegression({ n_components: components, solver: "nipals", center_x: true, scale_x: false, center_y: true, scale_y: false });
+  try {
+    est.fit(X, y);
+    const ls = est.latentStructure();
+    const A = ls.nComponents, p = X.cols;
+    const R = ls.xRotations.data, Q = ls.yLoadings.data;
+    let yMean = 0;
+    for (const v of y) yMean += v;
+    yMean /= y.length;
+    const out: Float64Array[] = [];
+    // Scores of the test rows, then cumulative predictions.
+    const t = new Float64Array(Xt.rows * A);
+    for (let i = 0; i < Xt.rows; i++) {
+      for (let j = 0; j < p; j++) {
+        const xc = (Xt.data[i * p + j]! - ls.xMean[j]!) / ls.xScale[j]!;
+        if (xc === 0) continue;
+        for (let a = 0; a < A; a++) t[i * A + a] = t[i * A + a]! + xc * R[j * A + a]!;
+      }
+    }
+    const acc = new Float64Array(Xt.rows).fill(yMean);
+    for (let a = 0; a < A; a++) {
+      for (let i = 0; i < Xt.rows; i++) acc[i] = acc[i]! + t[i * A + a]! * Q[a]!;
+      out.push(Float64Array.from(acc));
+    }
+    return out;
+  } finally {
+    est.dispose();
+  }
+}
+
+export function methodsKernel(): ExplorerKernel & PlsKernel {
   return {
+    plsPredictPath: methodsPlsPath,
     transform(step, X, axisStep) {
+      const local = localTransform(step, X);
+      if (local) return local;
       const t = transformer(step, axisStep);
       try {
         t.fit(X);
-        const out = t.transform(X);
-        return { data: Float64Array.from(out.data), rows: out.rows, cols: out.cols };
+        return copyOut(t.transform(X));
+      } finally {
+        t.dispose();
+      }
+    },
+    fitTransform(step, fit, apply, axisStep) {
+      const local = localTransform(step, fit);
+      if (local) return [local, ...apply.map((m) => localTransform(step, m)!)];
+      const t = transformer(step, axisStep);
+      try {
+        t.fit(fit);
+        return [copyOut(t.transform(fit)), ...apply.map((m) => copyOut(t.transform(m)))];
       } finally {
         t.dispose();
       }
@@ -119,9 +177,9 @@ export function methodsKernel(): ExplorerKernel {
   };
 }
 
-let ready: Promise<ExplorerKernel> | null = null;
+let ready: Promise<ExplorerKernel & PlsKernel> | null = null;
 /** Loads the Methods WASM module once per worker. */
-export function loadMethodsKernel(): Promise<ExplorerKernel> {
+export function loadMethodsKernel(): Promise<ExplorerKernel & PlsKernel> {
   ready ??= loadModule().then(() => methodsKernel());
   return ready;
 }

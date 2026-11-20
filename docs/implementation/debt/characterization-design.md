@@ -1,0 +1,20 @@
+# Characterization debt: experimental design, variance partition, statistical evidence, PERMDISP (wave 3, 2026-11-20)
+
+Demo-only upgrade of the Confounding factors and PERMANOVA/PERMDISP sections (`_upgrade_request/joint_interpretation.txt`
+§1–6, §11, share of §12–13). Code: `demo/src/characterization/design/`. `ConfoundingSection` (`demo/src/Blocks.tsx`) now
+renders `ConfoundingDetail` and keeps the former test table under "Original decisions"; the new `DesignSection` (`s-design`)
+holds the design overview, the dependency graph and the crossing coverage. Engine values are read from the raw
+`confounding.*` metrics (`model.ts:designModel`), shared with the joint-interpretation sections (`../joint`).
+
+| What | Where | Target owner | Migration step |
+| --- | --- | --- | --- |
+| Independence units of the confounding analysis rebuilt in TS (mirror of `confounding.rs:build_units` and core `independence_components`, union-find over identity links, unit coordinate = mean canonical PCA scores); checked against the engine unit and per-level counts, withheld on mismatch | `units.ts:designUnits`, `identityComponents` | Preflight engine | Publish per-unit coordinates (or unit membership) in `confounding.design` / `confounding.dispersion`. |
+| Per-unit distances to level centroids: Methods `statsPermdisp` (the engine's kernel, 0 permutations) on the rebuilt units; per-level means checked equal to the engine `mean_distance_to_centroid` (tolerance 1e-9) | `units.ts:factorDistances` | Preflight engine | Emit `distances` (already returned by Methods to the engine and discarded) in `confounding.dispersion`. |
+| Exploratory BH over each confounding Holm family (entered p-values, unreported members as 1); TS mirror of Methods `n4m_stats_bh_adjust`, tested equal to `statsBhAdjust`; display only, never a decision | `model.ts:bhAdjust` | Preflight engine | Emit `p_value_bh_exploratory` in the confounding test metrics, as the association family does. |
+| Holm mirror (`n4m_preflight_holm_adjust`) used only by tests to verify the engine families | `model.ts:holmAdjust` | — (test oracle) | Keep as an oracle or drop when the report is cross-checked elsewhere. |
+| Directional relations (determines / mutual / partial) and crossing coverage, min/max occupied cell size, single-unit cells, from the engine `crossings.unit_counts`; multivariate aliasing / unknown from the engine rank statuses | `model.ts:pairRelations`, `crossing` | Preflight engine | Emit a `confounding.design.relations` list (direction, coverage) next to `determined_by`. |
+| Resolution cause of an insufficient-resolution test (admissible permutations vs multiplicity vs Monte Carlo draws) derived from plan `resolution`, `log10_distinct_admissible_permutations` and the Holm per-test threshold | `model.ts:resolutionCause` | Preflight engine | Emit `resolution_cause` in the permutation plan. |
+| Evidence states (7) mapped from engine status/reason codes | `model.ts:evidenceState` | nirs4all-ui selectors | Move the mapping next to `extractConfounding`. |
+| Display consistency checks (ANOVA F = η²/(1−η²)·df2/df1, PERMANOVA pseudo-F from R², df, per-level unit sums, test↔descriptive join on target+metadata+type with equal effect size and units) | `consistency.ts` | nirs4all-ui selectors (join) / Preflight tests (identities) | `extractAssociations` should expose df1, df2, n_levels and join on association type; the identities belong in the engine test suite. No engine defect was found (tests on heterogeneous synthetic designs). |
+| Components: dependency graph, contingency heatmap, grouped effect-size bars with explicit non-identifiable states, log-axis p-value plot, unit PCA scatter, evidence matrix, shared selected-factor context | `charts.tsx`, `sections.tsx`, `selection.tsx` | nirs4all-ui | Port to `nirs4all-ui/qualification` with the selectors. |
+| Main-thread Methods WASM load for PERMDISP distances (small: units × PCA scores) | `sections.tsx:useDistances` | Demo | Run in the engine worker if the unit count grows. |

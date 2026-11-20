@@ -9,7 +9,7 @@ import type { IconName } from "../../icons";
 import { AlignedTracks, type BandSelection, type Track } from "../repeatability/AlignedTracks";
 import { ChartCard, KpiStrip, Responsive } from "../shared/charts";
 import { commentOf, renderSlot, type RubricBlock, type RubricBlocks } from "../shared/blocks";
-import { useCharacterizationSelection } from "./selection";
+import { useCharacterizationSelection, useSharedCursor } from "./selection";
 import "./overview.css";
 
 export interface RubricProps {
@@ -31,6 +31,8 @@ export interface RubricProps {
   tracksSubtitle?: string;
   /** Extra content placed after the inspection blocks. */
   children?: ReactNode;
+  /** Controls that change what every block shows (e.g. the measurement context), placed before the KPIs. */
+  controls?: ReactNode;
 }
 
 const sameAxis = (t: Track, n: number) =>
@@ -43,8 +45,9 @@ function BlockNode({ block }: { block: RubricBlock }) {
   return block.title ? <ChartCard title={block.title} subtitle={block.subtitle}>{block.node}</ChartCard> : <>{block.node}</>;
 }
 
-export function RubricSection({ id, index, icon, accent, title, lead, sourceId, axis, axisLabel, blocks, reference = null, tracksTitle = "Band profiles", tracksSubtitle = "One spectral axis for every profile: hover for local values, drag to select an interval (shared with the quality map).", children }: RubricProps) {
+export function RubricSection({ id, index, icon, accent, title, lead, sourceId, axis, axisLabel, blocks, reference = null, tracksTitle = "Band profiles", tracksSubtitle = "One spectral axis for every profile: hover for local values (the cursor follows the other charts), drag to select an interval (shared with the quality map).", children, controls }: RubricProps) {
   const shared = useCharacterizationSelection();
+  const [cursor, setCursor] = useSharedCursor(sourceId);
   const parts = blocks.filter((b): b is RubricBlocks => b !== null);
   if (!parts.length && !children) return null;
   const own = shared.selection && shared.selection.sourceId === sourceId ? shared.selection : null;
@@ -67,6 +70,7 @@ export function RubricSection({ id, index, icon, accent, title, lead, sourceId, 
   };
   return (
     <Section id={id} {...(index ? { index } : {})} icon={icon} accent={accent} title={title} lead={lead}>
+      {controls ? <div className="rb-controls">{controls}</div> : null}
       {kpis.length ? <KpiStrip items={kpis} label={`${title}: key figures`} /> : null}
       {parts.some((b) => b.headline) ? <div className="rb-headlines">{parts.map((b) => (b.headline ? <div key={b.id}>{b.headline}</div> : null))}</div> : null}
       {comments.length || unavailable.length ? (
@@ -84,7 +88,7 @@ export function RubricSection({ id, index, icon, accent, title, lead, sourceId, 
       {tracks.length ? (
         <ChartCard title={tracksTitle} subtitle={tracksSubtitle} className="rb-tracks">
           <Responsive min={420}>
-            {(w) => <AlignedTracks axis={axis} axisLabel={axisLabel} tracks={tracks} width={w} title={`${title} — ${tracksTitle}`} selection={selection} onSelect={onSelect} markRegions={marks} />}
+            {(w) => <AlignedTracks axis={axis} axisLabel={axisLabel} tracks={tracks} width={w} title={`${title} — ${tracksTitle}`} selection={selection} onSelect={onSelect} markRegions={marks} cursor={cursor} onCursor={setCursor} />}
           </Responsive>
         </ChartCard>
       ) : null}

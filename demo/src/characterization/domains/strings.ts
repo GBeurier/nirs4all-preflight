@@ -37,6 +37,16 @@ export const DOMAINS = {
   nonSignificant: "No statistically significant evidence of distribution shift under the specified test. This is not evidence of equivalence.",
   significant: "A significant test does not establish a deterioration of prediction performance.",
   computing: "Computing per-sample diagnostics with the Methods WASM kernels…",
+  permutationProvenance: "Null distribution computed locally in the demo (interim, mirrors the Preflight domain_shift energy test and Methods n4m_stats_energy_distance: same units, space, statistic, seed, PCG64 draws and tie rule); the engine p-value is the reference.",
+  residualHeader: "Residual spectral profiles x − x̂ of the compared units above the Q limit: x̂ is the reconstruction from the reference PCA (centred on the reference mean, the monitor's components). Structures in these profiles are not represented by the reference subspace.",
+  residualProvenance: "Computed locally in the demo (interim, mirrors the Methods PCA monitor reconstruction).",
+  explorerTitle: "Domain-shift preprocessing explorer",
+  explorerLead: "Effect of a preprocessing pipeline on the centre shift, dispersion, energy distance, T²/Q coverage and PCA overlap of one comparison. Metrics are normalized by the reference domain, so they stay comparable when the preprocessing changes the signal unit.",
+  explorerFit: "Learned parameters (for example the MSC reference spectrum) and the reference PCA are fitted on the reference domain only, then applied unchanged to the compared domain; they are never refitted on compared spectra.",
+  explorerAudit: "The retained test is audited on X only: preprocessing is not tuned on it, nothing is optimized, and retained-test target values are never read. Prefer development domains to explore preprocessing choices.",
+  explorerNotPerformance: "A reduced shift is not better performance: preprocessing can hide real compositional differences as well as acquisition effects. No setting is searched or recommended here.",
+  explorerMetrics: "Raw and preprocessed values use the same local definitions on complete spectra of the engine's independence units (engine values in the cards above may use the leading PCA space). Coverage counts use the Methods PCA monitor (out-of-fold empirical 95 % limits).",
+  explorerProvenance: "Computed locally in the demo (interim, mirrors the engine domain-shift definitions; preprocessing by the explorer's fitted pipeline).",
 } as const;
 
 /** Reason codes of a blocked energy permutation test → the missing declaration, in plain words. */

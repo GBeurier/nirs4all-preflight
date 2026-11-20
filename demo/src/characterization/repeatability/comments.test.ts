@@ -11,6 +11,7 @@ const repeat = (icc: (number | null)[], over: Partial<RepeatProfile> = {}): Repe
   uncertainty: null,
   sd: icc.map(() => 0.01),
   betweenSd: icc.map(() => null),
+  betweenKind: "anova",
   icc,
   iccKind: "icc_1_1",
   ratio: icc.map((k) => (k !== null && k >= 0 && k < 1 ? Math.sqrt(k / (1 - k)) : null)),
@@ -38,7 +39,7 @@ describe("repeatability comments", () => {
   });
 
   it("does not claim regions, negatives or R when not demonstrated (REML, all high)", () => {
-    const out = repeatabilityComments([repeat([0.95, 0.96, 0.97, 0.98, 0.95, 0.96, 0.97, 0.98], { iccKind: "icc_1_reml" })], axis, "nm").join("\n");
+    const out = repeatabilityComments([repeat([0.95, 0.96, 0.97, 0.98, 0.95, 0.96, 0.97, 0.98], { iccKind: "icc_1_reml", betweenKind: "approximate" })], axis, "nm").join("\n");
     expect(out).not.toMatch(/negative|contiguous region|times the within-sample/);
   });
 

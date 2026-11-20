@@ -7,7 +7,7 @@ import type { EngineInput } from "../../input";
 import type { Scope } from "../../Sections";
 import { diversityComments, eventComments, snrComments } from "./comments";
 import { INSTRUMENT_REFERENCES, NON_CONVERTIBLE_REFERENCES, referenceDb } from "./instruments";
-import { NoiseBenchmarkCard, benchmarkPosition, flaggedBins } from "./blocks";
+import { NoiseBenchmarkCard, benchmarkGroups, benchmarkPosition, flaggedBins } from "./blocks";
 import { NOISE_BENCHMARK } from "./noiseBenchmark";
 import { BoxPlotRows, DualScaleGauge } from "../shared/charts";
 import { SNR_BANDS } from "../shared/derive";
@@ -236,7 +236,10 @@ describe("panels and summaries", () => {
     expect(html).toContain("Methodological limitations");
     expect(html).toContain("Suggested investigation");
     expect(html).toContain("These are inspection flags, not automatic rejection criteria.");
-    expect(html).toContain("Spectra × wavelength map unavailable");
+    expect(html).toContain("Event positions: spectra × wavelength");
+    expect(html).toContain("interim, mirrors Methods spectral_population_events_qc");
+    expect(html).toContain("Inspection threshold");
+    expect(html).toContain("Estimator validation by synthetic noise injection (not a dataset result)");
     expect(html).toContain("6 robust deviations");
     expect(html).toContain("Estimated SNR");
     expect(html).toContain("47 dB | 0.447 %");
@@ -351,32 +354,45 @@ describe("noise scales read left = less noise", () => {
 });
 
 describe("empirical noise benchmark", () => {
-  it("holds only engine-computed rows of bundled public datasets, with provenance", () => {
-    expect(NOISE_BENCHMARK.rows.map((r) => r.id).sort()).toEqual(["anopheles", "beer"]);
+  it("holds only engine-computed rows of datasets with a documented instrument, with provenance", () => {
+    expect(NOISE_BENCHMARK.rows.length).toBeGreaterThanOrEqual(10);
+    expect(NOISE_BENCHMARK.rows.map((r) => r.id)).toEqual(expect.arrayContaining(["anopheles", "beer"]));
     expect(NOISE_BENCHMARK.generated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     for (const r of NOISE_BENCHMARK.rows) {
       expect(r.min <= r.p5 && r.p5 <= r.p25 && r.p25 <= r.p50 && r.p50 <= r.p75 && r.p75 <= r.p95 && r.p95 <= r.max).toBe(true);
       expect(r.n).toBeGreaterThan(0);
-      expect(r.source).toMatch(/https:\/\//);
+      expect(r.n).toBeLessThanOrEqual(r.spectra);
+      // Every instrument fact cites the documenting file and quotes it.
+      expect(r.documentation).toMatch(/^nirs4all-data .+"/);
+      if (r.manufacturer) expect(r.documentation.toLowerCase()).toContain(r.manufacturer.split(" ")[0]!.toLowerCase());
+      expect(r.source.length).toBeGreaterThan(0);
     }
   });
 
-  const p = { p5: 46, p25: 47, p50: 48.9, p75: 50, p95: 51 };
-  it("draws this dataset plus the references and states the coverage plainly", () => {
-    const html = renderToStaticMarkup(<NoiseBenchmarkCard medianDb={48.9} p={p} n={20} f={f} locale="en" />);
-    expect(html).toContain("Empirical noise benchmark");
-    expect(html).toContain("2 public reference datasets");
-    expect(html).toContain("Not a representative instrument benchmark");
-    expect(html).toContain("instrument not documented");
-    expect(html).toContain("This dataset");
-    expect(html).toContain("48.9 dB");
-    for (const brand of ["FOSS", "Büchi", "Bruker", "PerkinElmer", "VIAVI", "Texas"]) expect(html).not.toContain(brand);
+  it("groups references by documented manufacturer, undocumented last", () => {
+    const groups = benchmarkGroups(NOISE_BENCHMARK.rows);
+    expect(groups.reduce((a, g) => a + g.rows.length, 0)).toBe(NOISE_BENCHMARK.rows.length);
+    const nulls = groups.findIndex((g) => g.manufacturer === null);
+    if (nulls >= 0) expect(nulls).toBe(groups.length - 1);
+    for (const g of groups) expect(g.spectra).toBe(g.rows.reduce((a, r) => a + r.n, 0));
   });
 
-  it("marks a bundled reference as this dataset instead of duplicating it", () => {
+  const p = { p5: 46, p25: 47, p50: 48.9, p75: 50, p95: 51 };
+  it("draws this dataset plus the references by manufacturer and states the coverage plainly", () => {
+    const html = renderToStaticMarkup(<NoiseBenchmarkCard medianDb={48.9} p={p} n={20} f={f} locale="en" />);
+    expect(html).toContain("Empirical noise benchmark");
+    expect(html).toContain(`${NOISE_BENCHMARK.rows.length} public datasets whose instrument is documented`);
+    expect(html).toContain("Not a representative instrument benchmark");
+    expect(html).toContain("Reference datasets per manufacturer");
+    expect(html).toContain("ASD · LabSpec 4i");
+    expect(html).toContain("This dataset");
+    expect(html).toContain("48.9 dB");
+  });
+
+  it("marks a reference as this dataset instead of duplicating it", () => {
     const beer = NOISE_BENCHMARK.rows.find((r) => r.id === "beer")!;
     const html = renderToStaticMarkup(<NoiseBenchmarkCard medianDb={beer.p50} p={{ p5: beer.p5, p25: beer.p25, p50: beer.p50, p75: beer.p75, p95: beer.p95 }} n={beer.n} f={f} locale="en" />);
-    expect(html).toContain("this dataset · instrument not documented");
+    expect(html).toContain("this dataset · Beer");
     expect(html).not.toContain("analysed now");
   });
 

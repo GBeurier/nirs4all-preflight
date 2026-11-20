@@ -2,17 +2,21 @@
 // dropped), and cancels a benchmark by terminating the worker; the next call re-initialises it.
 import type { StepRecipe } from "./catalog";
 import type { BenchmarkPoint, Diagnostics, Evaluation, EvaluationInput } from "./evaluate";
+import type { CalibrationPopulation, ChemoResult } from "./chemometrics";
 
 export type ExplorerRequest =
   | { id: number; op: "init"; input: EvaluationInput }
   | { id: number; op: "evaluate"; steps: StepRecipe[] }
-  | { id: number; op: "benchmark"; configs: { label: string; steps: StepRecipe[] }[] };
+  | { id: number; op: "benchmark"; configs: { label: string; steps: StepRecipe[] }[] }
+  | { id: number; op: "chemometrics"; population: CalibrationPopulation; configs: { label: string; steps: StepRecipe[] }[] };
 
 export type ExplorerResponse =
   | { id: number; ok: true; op: "init"; before: Diagnostics }
   | { id: number; ok: true; op: "evaluate"; evaluation: Evaluation }
   | { id: number; ok: true; op: "progress"; done: number; total: number; point: BenchmarkPoint }
   | { id: number; ok: true; op: "benchmark_done" }
+  | { id: number; ok: true; op: "chemo_progress"; done: number; total: number }
+  | { id: number; ok: true; op: "chemometrics"; result: ChemoResult }
   | { id: number; ok: false; message: string };
 
 /** Request without its id (distributive over the union). */
@@ -39,7 +43,7 @@ export class CancelledError extends Error {
 interface Pending {
   resolve: (r: ExplorerResponse) => void;
   reject: (e: Error) => void;
-  onProgress?: (r: Extract<ExplorerResponse, { op: "progress" }>) => void;
+  onProgress?: (r: Extract<ExplorerResponse, { op: "progress" | "chemo_progress" }>) => void;
 }
 
 export interface ExplorerHost {
@@ -47,6 +51,8 @@ export interface ExplorerHost {
   /** Resolves with the latest request only; an older pending request rejects with StaleError. */
   evaluate(steps: StepRecipe[]): Promise<Evaluation>;
   benchmark(configs: { label: string; steps: StepRecipe[] }[], onPoint: (point: BenchmarkPoint, done: number, total: number) => void): Promise<void>;
+  /** Exploratory nested grouped CV of PLS per pipeline (independent of the explorer subset). */
+  chemometrics(population: CalibrationPopulation, configs: { label: string; steps: StepRecipe[] }[], onProgress?: (done: number, total: number) => void): Promise<ChemoResult>;
   /** Terminates the worker (stops a running benchmark); pending calls reject with CancelledError. */
   cancel(): void;
   dispose(): void;
@@ -71,7 +77,7 @@ export function createExplorerHost(spawn: () => WorkerLike): ExplorerHost {
       const m = event.data;
       const p = pending.get(m.id);
       if (!p) return;
-      if (m.ok && m.op === "progress") {
+      if (m.ok && (m.op === "progress" || m.op === "chemo_progress")) {
         p.onProgress?.(m);
         return;
       }
@@ -125,7 +131,13 @@ export function createExplorerHost(spawn: () => WorkerLike): ExplorerHost {
     },
     async benchmark(configs, onPoint) {
       await ready();
-      await send({ op: "benchmark", configs }, (m) => onPoint(m.point, m.done, m.total));
+      await send({ op: "benchmark", configs }, (m) => {
+        if (m.op === "progress") onPoint(m.point, m.done, m.total);
+      });
+    },
+    async chemometrics(population, configs, onProgress) {
+      const r = await send({ op: "chemometrics", population, configs }, (m) => onProgress?.(m.done, m.total));
+      return (r as Extract<ExplorerResponse, { op: "chemometrics" }>).result;
     },
     cancel: terminate,
     dispose: terminate,

@@ -146,11 +146,34 @@ export function contextGroups(input: EngineInput, source: InputSource, ctx: Pick
   return [...groups].map(([id, rows]) => ({ id, rows }));
 }
 
+/**
+ * Per-band REML variance components σb², σw² of one context, as the engine publishes them with
+ * `measurement.icc_1_reml` (parameters `sigma2_between` / `sigma2_within`, Methods
+ * `stats_variance_components_reml`). Bands whose REML ICC the engine withheld (status not 0, 2 or 4) stay null.
+ */
+export function remlComponents(view: QualificationReportView, sourceId: string, ctx: Pick<RepeatabilityContext, "repeatType" | "instrument" | "campaign">): { between: Values; within: Values } | null {
+  const m = view.metrics.find((x) => x.id === "measurement.icc_1_reml" && x.sourceId === sourceId && x.status === "computed"
+    && (x.parameters.repeat_type ?? null) === (ctx.repeatType ?? null) && (x.parameters.instrument ?? "") === (ctx.instrument ?? "") && (x.parameters.campaign ?? "") === (ctx.campaign ?? ""));
+  if (!m) return null;
+  const b = m.parameters.sigma2_between;
+  const w = m.parameters.sigma2_within;
+  const icc = Array.isArray(m.value) ? (m.value as unknown[]) : null;
+  if (!Array.isArray(b) || !Array.isArray(w) || b.length !== w.length) return null;
+  const num = (v: unknown, i: number) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && (!icc || icc[i] !== null) ? v : null);
+  return { between: b.map(num), within: w.map(num) };
+}
+
 export interface RepeatProfile {
   context: RepeatabilityContext;
   uncertainty: RepeatabilityUncertainty | null;
   sd: Values;
   betweenSd: Values;
+  /**
+   * How σb was obtained: "anova" = √((MSB − MSW)/r) from the balanced ICC(1,1) (exact); "reml" = √σb² of the
+   * engine's REML components (exact for the REML model); "approximate" = REML ICC with the ANOVA pooled SD
+   * (only when the engine did not publish the components).
+   */
+  betweenKind: "anova" | "reml" | "approximate";
   icc: Values | null;
   iccKind: "icc_1_1" | "icc_1_reml";
   /** R = σb/σw per band (one-way model; null for negative ICC, ICC = 1 or a non-evaluable band) */
@@ -163,15 +186,24 @@ export function repeatProfiles(view: QualificationReportView, sourceId: string):
   const uncertainty = extractRepeatabilityUncertainty(view, sourceId);
   return withRepeatabilityUncertainty(extractRepeatability(view, sourceId), uncertainty).map((c) => {
     const icc = c.icc ? [...c.icc] : null;
-    const betweenSd = betweenSampleSd(c.pooledSd, icc);
+    const reml = c.iccKind === "icc_1_reml" ? remlComponents(view, sourceId, c) : null;
+    // REML: σb and R = σb/σw from the engine's own variance components (σw is the REML one, not √MSW).
+    const betweenSd = reml ? reml.between.map((v) => (v === null ? null : Math.sqrt(v))) : betweenSampleSd(c.pooledSd, icc);
+    const ratio = reml
+      ? reml.between.map((b, i) => {
+          const w = reml.within[i];
+          return b === null || w === null || w === undefined || !(w > 0) ? null : Math.sqrt(b / w);
+        })
+      : (icc ?? c.pooledSd.map(() => null)).map((k) => (k === null ? null : iccToRatio(k)));
     return {
       context: c,
       uncertainty: uncertainty.find((u) => u.id === c.id) ?? null,
       sd: [...c.pooledSd],
       betweenSd,
+      betweenKind: c.iccKind === "icc_1_reml" ? (reml ? "reml" : "approximate") : "anova",
       icc,
       iccKind: c.iccKind ?? "icc_1_1",
-      ratio: (icc ?? c.pooledSd.map(() => null)).map((k) => (k === null ? null : iccToRatio(k))),
+      ratio,
       nonEvaluable: c.pooledSd.map((_, i) => (icc ? icc[i] === null : true)),
       categories: (icc ?? c.pooledSd.map(() => null)).map((k) => (k === null ? null : iccBand(k))),
     };
@@ -261,6 +293,13 @@ export function topRegions(axis: readonly number[], values: readonly (number | n
   return out.sort((a, b) => b.peak - a.peak).slice(0, max);
 }
 
+/** Provenance sentence of the between-sample SD of a repeatability context. */
+export function betweenProvenance(kind: RepeatProfile["betweenKind"]): string {
+  if (kind === "reml") return "Between-sample SD σb = √σb² from the engine's per-band REML variance components (measurement.icc_1_reml, Methods stats_variance_components_reml), unbalanced design.";
+  if (kind === "approximate") return "Between-sample SD σb = σw·√(ICC/(1 − ICC)) with the REML ICC(1) and the ANOVA pooled SD (approximate: the engine did not publish the REML variance components).";
+  return "Between-sample SD σb = σw·√(ICC/(1 − ICC)) = √((MSB − MSW)/r) from the engine one-way model (balanced ICC(1,1), exact).";
+}
+
 /** Per-band arrays for the spectral quality map (first context of each family; nulls = non-evaluable). */
 export interface BandProfiles {
   axis: number[];
@@ -287,14 +326,36 @@ export interface BandProfiles {
   noise: NoiseProfile[];
 }
 
-export function bandProfiles(scope: ProfileScope): BandProfiles | null {
+/** Repeatability and noise-proxy profiles of every context of a source, cached per (report, input, source). */
+const profileCache = new WeakMap<QualificationReportView, WeakMap<EngineInput, Map<string, { repeats: RepeatProfile[]; noise: NoiseProfile[] }>>>();
+export function sourceProfiles(view: QualificationReportView, input: EngineInput, sourceId: string): { repeats: RepeatProfile[]; noise: NoiseProfile[] } {
+  let byInput = profileCache.get(view);
+  if (!byInput) profileCache.set(view, (byInput = new WeakMap()));
+  let bySource = byInput.get(input);
+  if (!bySource) byInput.set(input, (bySource = new Map()));
+  let hit = bySource.get(sourceId);
+  if (!hit) {
+    const repeats = repeatProfiles(view, sourceId);
+    hit = { repeats, noise: noiseProfiles(view, input, sourceId, repeats) };
+    bySource.set(sourceId, hit);
+  }
+  return hit;
+}
+
+/** Which repeatability / noise-proxy context the per-band arrays come from (indices; default: the first of each). */
+export interface ContextChoice {
+  repeatIndex?: number | null | undefined;
+  noiseIndex?: number | null | undefined;
+}
+
+export function bandProfiles(scope: ProfileScope, choice: ContextChoice = {}): BandProfiles | null {
   const { view, input, sourceId } = scope;
   const source = sourceId ? input.sources.find((s) => s.source_id === sourceId) : undefined;
   if (!source || !sourceId) return null;
-  const repeats = repeatProfiles(view, sourceId);
-  const noise = noiseProfiles(view, input, sourceId, repeats);
-  const r = repeats[0];
-  const q = noise[0];
+  const { repeats, noise } = sourceProfiles(view, input, sourceId);
+  // An explicit null means "this context has no such result" (no fallback to another context).
+  const r = choice.repeatIndex === null ? undefined : repeats[choice.repeatIndex ?? 0];
+  const q = choice.noiseIndex === null ? undefined : noise[choice.noiseIndex ?? 0];
   return {
     axis: [...source.axis],
     axisUnit: source.axis_unit ?? "",
@@ -319,12 +380,16 @@ export function bandProfiles(scope: ProfileScope): BandProfiles | null {
       ...(q ? {
         noise_proxy: `Savitzky–Golay residual RMS / white-noise gain (window ${q.windowBands ?? "—"}, order ${q.polyorder ?? "—"}), ${q.id}, engine measurement.noise_proxy.`,
         noise_to_diversity: `Noise proxy / ${q.diversityKind} SD${q.diversityContext ? ` (${q.diversityContext})` : ""}; null where the denominator is zero or negligible.`,
-        diversity: q.diversityKind === "between-sample" ? `Between-sample SD σb = σw·√(ICC/(1 − ICC)) from the engine one-way model${repeats.find((x) => x.context.id === q.diversityContext)?.iccKind === "icc_1_reml" ? " (approximate: REML ICC(1) with the ANOVA pooled SD)" : ""}.` : "Per-band SD across the development spectra of the noise context (no replicate groups).",
+        diversity: q.diversityKind === "between-sample" ? betweenProvenance(repeats.find((x) => x.context.id === q.diversityContext)?.betweenKind ?? "anova") : "Per-band SD across the development spectra of the noise context (no replicate groups).",
       } : {}),
     },
     unavailable: {
-      ...(r ? {} : { repeatability_sd: "Not available: no technical replicate groups have been declared.", icc: "Not available: no technical replicate groups have been declared." }),
-      ...(q ? {} : { noise_proxy: "Not available: the per-band noise proxy was not computed.", noise_to_diversity: "Not available: the per-band noise proxy was not computed." }),
+      ...(r ? {} : repeats.length
+        ? { repeatability_sd: "Not available in this measurement context: it has no technical replicate groups.", icc: "Not available in this measurement context: it has no technical replicate groups." }
+        : { repeatability_sd: "Not available: no technical replicate groups have been declared.", icc: "Not available: no technical replicate groups have been declared." }),
+      ...(q ? {} : noise.length
+        ? { noise_proxy: "Not available in this measurement context: no noise proxy for its instrument and campaign.", noise_to_diversity: "Not available in this measurement context." }
+        : { noise_proxy: "Not available: the per-band noise proxy was not computed.", noise_to_diversity: "Not available: the per-band noise proxy was not computed." }),
     },
     repeats,
     noise,

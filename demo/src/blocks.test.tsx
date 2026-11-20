@@ -14,6 +14,7 @@ import { translate, type TextKey } from "./i18n";
 import type { EngineInput } from "./input";
 import { StructureSection, type Scope } from "./Sections";
 import { IntegrityRubric, NoiseRubric } from "./characterization/overview";
+import { DesignSection } from "./characterization/design";
 import { DataView } from "./DataView";
 import { MetadataRoles } from "./Workspace";
 import { exactDuplicatePairs } from "./views";
@@ -119,10 +120,11 @@ describe("0.1.0 capability sections", () => {
     const out = html(<ConfoundingSection {...scope("en")} />);
     expect(out).toContain("H0 rejected");
     expect(out).toContain("Partial (Freedman–Lane)");
-    expect(out).toContain("Units per crossing instrument × campaign");
+    // Crossings and identifiability moved to the experimental design section (characterization/design).
+    expect(html(<DesignSection {...scope("en")} />)).toContain("Contingency table instrument × campaign");
     const mir = html(<ConfoundingSection {...scope("en", { sourceId: "mir" })} />);
-    expect(mir).toContain("aliased with campaign");
     expect(mir).toContain("FACTOR_ALIASED_WITH_OTHER_FACTORS");
+    expect(html(<DesignSection {...scope("en", { sourceId: "mir" })} />)).toMatch(/aliased|determined by/);
   });
 
   it("domain shift: one matrix per factor, the X-only audit apart", () => {

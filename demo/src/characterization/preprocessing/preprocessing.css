@@ -78,3 +78,8 @@
 .pp-defs dt { font-weight: 600; margin-top: 8px; color: var(--cz-ink); }
 .pp-defs dd { margin: 2px 0 0 10px; color: var(--cz-ink-2); line-height: 1.45; }
 .pp-explorer .cz-card .pp-details { margin-top: 8px; }
+
+.pp-lv { margin: 8px 0 0; }
+.pp-lv-svg { display: block; }
+.pp-lv-tick { font-size: 11px; fill: var(--cz-ink-3); font-variant-numeric: tabular-nums; }
+.pp-lv-axis { font-size: 12px; fill: var(--cz-ink-2); }

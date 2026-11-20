@@ -11,10 +11,12 @@ import { BoxPlotRows, ChartCard, DotPlot, DualScaleGauge, EmptyState, Histogram,
 import { commentOf, type RubricBlock, type RubricBlocks, type RubricComment } from "../shared/blocks";
 import { AlignedTracks, type BandSelection, type Track } from "../repeatability/AlignedTracks";
 import { makeFmt } from "./format";
-import { NOISE_BENCHMARK } from "./noiseBenchmark";
+import { NOISE_BENCHMARK, type NoiseBenchmarkRow } from "./noiseBenchmark";
 import { INSTRUMENT_DISCLAIMER, INSTRUMENT_REFERENCES, NON_CONVERTIBLE_REFERENCES, referenceDb } from "./instruments";
-import { addIllustrativeNoise, bandEnvelope, countHistogram, completeMatrix, gaussianSequence, medianSnrSpectrum, rowsFor, topKOverlap, valueHistogram, type EventStats, type HistogramBin } from "./model";
+import { addIllustrativeNoise, bandEnvelope, countHistogram, completeMatrix, eventThreshold, gaussianSequence, medianSnrSpectrum, rowsFor, topKOverlap, valueHistogram, type EventStats, type HistogramBin } from "./model";
 import { runSnvComparison, type PcaProjection } from "./snv-client";
+import { EventPositions, PROVENANCE as EVENTS_PROVENANCE, useLocalEvents } from "./EventPositions";
+import { NoiseValidationCard } from "./NoiseValidationCard";
 import "./integrity.css";
 import { S } from "./strings";
 import { diversityData, integrityData, snrData } from "./summaries";
@@ -121,6 +123,7 @@ export function useIntegrityBlocks(scope: Scope): ABlocks | null {
   const [bin, setBin] = useState<{ type: "spike" | "jump"; index: number } | null>(null);
   const [band, setBand] = useState<BandSelection | null>(null);
   const onBandSelect = useCallback((sel: BandSelection | null) => { setBin(null); setBand(sel); }, []);
+  const local = useLocalEvents(scope, eventThreshold(input.options));
   const source = input.sources.find((s) => s.source_id === sourceId);
   if (!data || !source) return null;
   const { spikes, jumps, overlap, spikeBands, jumpBands, threshold } = data;
@@ -203,10 +206,13 @@ export function useIntegrityBlocks(scope: Scope): ABlocks | null {
   for (const s of types) for (const r of s.ranked) ranked.set(r.observationId, (ranked.get(r.observationId) ?? 0) + r.count);
   const byCount = [...ranked.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
   let view0: ReactNode = null;
+  const positions = local.status !== "unavailable";
   if (bin) {
     const s = bin.type === "spike" ? spikes : jumps;
     const b = s ? flaggedBins(s)[bin.index] : undefined;
     if (b) view0 = <SpectraView scope={scope} title={`${NAMES[bin.type]}: spectra with ${b.hi - b.lo === 1 ? b.lo : `${b.lo}–${b.hi - 1}`} event(s)`} ids={b.ids} />;
+  } else if (positions) {
+    view0 = null;
   } else if (band && byCount.length) {
     const margin = Math.max(3, Math.round((band.i1 - band.i0) / 2));
     const range: [number, number] = [Math.max(0, band.i0 - margin), Math.min(source.axis.length - 1, band.i1 + margin)];
@@ -226,8 +232,8 @@ export function useIntegrityBlocks(scope: Scope): ABlocks | null {
           warning={S.eventsWarning}
           methodology={[
             `Threshold: ${f(threshold)} robust deviations (engine option intrinsic_qc.outlier_threshold). Each derivative is compared with the other spectra at the same band.`,
-            "In the band profile a spike also counts on its two neighbouring bands; band counts are therefore not event counts.",
-            S.heatmapUnavailable,
+            "In the band profile each flag counts at one band: the middle band of its second-difference stencil (isolated peaks) or the upper band of its first-difference pair (abrupt changes).",
+            positions ? `Event positions, the event map, markers and merged physical events: ${EVENTS_PROVENANCE}` : S.heatmapUnavailable,
           ]}
           limits={S.eventsLimits}
           investigate={S.eventsInvestigate}
@@ -254,7 +260,10 @@ export function useIntegrityBlocks(scope: Scope): ABlocks | null {
     distributions,
     bandTracks,
     onBandSelect,
-    inspection: view0 ? [{ id: "events-spectra", node: view0 }] : [],
+    inspection: [
+      ...(positions ? [{ id: "events-positions", node: <EventPositions scope={scope} local={local} engineFlags={{ spike: spikes?.events ?? null, jump: jumps?.events ?? null }} band={band} scanLabel={scanLabel} f={f} /> }] : []),
+      ...(view0 ? [{ id: "events-spectra", node: view0 }] : []),
+    ],
     details,
   };
 }
@@ -348,34 +357,50 @@ function SnrGaugeCard({ db, p5, p95, f }: { db: number; p5: number; p95: number;
 /** Position of a value against a reference P5–P95 interval, in words. */
 export const benchmarkPosition = (db: number, r: { p5: number; p95: number }) => (db > r.p95 ? "above its P95 (less noise)" : db < r.p5 ? "below its P5 (more noise)" : "within its P5–P95");
 
-/** Chat §4: this dataset against the same engine estimator computed on bundled public datasets (noiseBenchmark.ts). */
+/** Rows of the benchmark grouped by documented manufacturer (undocumented last), then by median SNR. */
+export function benchmarkGroups(rows: readonly NoiseBenchmarkRow[]): { manufacturer: string | null; rows: NoiseBenchmarkRow[]; spectra: number }[] {
+  const groups = new Map<string | null, NoiseBenchmarkRow[]>();
+  for (const r of rows) groups.set(r.manufacturer, [...(groups.get(r.manufacturer) ?? []), r]);
+  return [...groups.entries()]
+    .map(([manufacturer, list]) => ({ manufacturer, rows: [...list].sort((a, b) => b.p50 - a.p50), spectra: list.reduce((a, r) => a + r.n, 0) }))
+    .sort((a, b) => (a.manufacturer === null ? 1 : b.manufacturer === null ? -1 : b.rows.length - a.rows.length || a.manufacturer.localeCompare(b.manufacturer)));
+}
+
+/** Chat §4: this dataset against the same engine estimator on public datasets with a documented instrument (noiseBenchmark.ts). */
 export function NoiseBenchmarkCard({ medianDb, p, n, f, locale }: { medianDb: number; p: { p5: number; p25: number; p50: number; p75: number; p95: number }; n: number; f: (v: number, d?: number) => string; locale: Scope["locale"] }) {
   const refs = NOISE_BENCHMARK.rows;
   if (!refs.length) return <EmptyState>No public reference dataset has been computed with this estimator yet.</EmptyState>;
-  // The analysed dataset may itself be a bundled reference (same count and median): mark it instead of duplicating.
+  // The analysed dataset may itself be a reference (same count and median): mark it instead of duplicating.
   const self = refs.find((r) => r.n === n && Math.abs(r.p50 - medianDb) < 0.01);
-  const undocumented = refs.filter((r) => !r.instrument).length;
+  const groups = benchmarkGroups(refs);
+  const documented = groups.filter((g) => g.manufacturer !== null);
   const rows: BoxRow[] = [
     ...(self ? [] : [{ label: "This dataset", sub: "analysed now", n, emphasis: true, stats: { lo: p.p5, q1: p.p25, median: p.p50, q3: p.p75, hi: p.p95 } }]),
-    ...refs.map((r) => ({
-      label: r.instrument ?? r.dataset,
-      sub: `${r === self ? "this dataset · " : ""}${r.instrument ? r.dataset : "instrument not documented"}`,
+    ...groups.flatMap((g) => g.rows.map((r) => ({
+      label: `${g.manufacturer ?? "Manufacturer not documented"} · ${r.instrument}`,
+      sub: `${r === self ? "this dataset · " : ""}${r.dataset}`,
       n: r.n,
       emphasis: r === self,
       stats: { lo: r.p5, q1: r.p25, median: r.p50, q3: r.p75, hi: r.p95 },
-    })),
+    }))),
   ];
-  const coverage = `${refs.length} public reference dataset${refs.length === 1 ? "" : "s"} (those bundled with this demo)${undocumented ? `; instrument not documented for ${undocumented === refs.length ? "any of them" : undocumented}` : ""}. Not a representative instrument benchmark; no percentile is reported.`;
+  const coverage = `${refs.length} public dataset${refs.length === 1 ? "" : "s"} whose instrument is documented, ${documented.length} manufacturer${documented.length === 1 ? "" : "s"}${groups.length > documented.length ? " plus one instrument without a stated manufacturer" : ""}; one row per dataset, n = spectra analysed. Not a representative instrument benchmark: few datasets per manufacturer and different matrices, ranges and signal representations; no percentile is reported.`;
   return (
-    <ChartCard title="Empirical noise benchmark (public datasets)" subtitle="The same engine estimator (per-spectrum SNR) on documented public NIR datasets. Box: P25–P75 with the median bar; whiskers: P5–P95; dashed line: median of this dataset." footnote={`Computed ${NOISE_BENCHMARK.generated} with Preflight engine ${NOISE_BENCHMARK.engine} and Methods ${NOISE_BENCHMARK.methods} (demo/scripts/noise-benchmark.test.ts). Differences also reflect matrix, spectral range, resolution and signal representation, not only the instrument.`}>
+    <ChartCard title="Empirical noise benchmark (public datasets, by manufacturer)" subtitle="The same engine estimator (per-spectrum SNR, development partition) on public NIR datasets with a documented instrument, grouped by manufacturer. Box: P25–P75 with the median bar; whiskers: P5–P95; dashed line: median of this dataset." footnote={`Computed ${NOISE_BENCHMARK.generated} with Preflight engine ${NOISE_BENCHMARK.engine} and Methods ${NOISE_BENCHMARK.methods} (demo/scripts/noise-benchmark.test.ts) from the nirs4all-data checkout and the demo's bundled datasets; only summary statistics are stored. Differences also reflect matrix, spectral range, resolution, averaging and signal representation, not only the instrument.`}>
       <p className="ig-bench-coverage" role="note">{coverage}</p>
-      <BoxPlotRows rows={rows} reference={{ value: medianDb, label: `${f(medianDb, 3)} dB` }} referenceLegend="This dataset (median)" axisLabel="SNR (dB)" reversed ends={NOISE_ENDS} fmt={f} title="Per-spectrum estimated SNR: this dataset and public reference datasets" />
+      <BoxPlotRows rows={rows} reference={{ value: medianDb, label: `${f(medianDb, 3)} dB` }} referenceLegend="This dataset (median)" axisLabel="SNR (dB)" reversed ends={NOISE_ENDS} fmt={f} title="Per-spectrum estimated SNR: this dataset and public reference datasets by manufacturer" />
+      <ChartDataTable
+        locale={locale}
+        caption="Reference datasets per manufacturer"
+        columns={["Manufacturer", "Datasets", "Spectra analysed", "Instruments", "Median SNR per dataset (dB)"]}
+        rows={groups.map((g) => [g.manufacturer ?? "not documented", g.rows.length, g.spectra, [...new Set(g.rows.map((r) => r.instrument))].join(", "), g.rows.map((r) => f(r.p50, 3)).join(", ")])}
+      />
       <Collapsible title="Reference datasets: provenance and values">
         <ChartDataTable
           locale={locale}
           caption="Empirical noise references (per-spectrum engine SNR, dB)"
-          columns={["Dataset", "Instrument", "Matrix", "Measurement", "Spectral axis", "Bands", "Spectra analysed", "Min", "P5", "P25", "Median", "P75", "P95", "Max", "This dataset's median", "Source"]}
-          rows={refs.map((r) => [r.dataset, r.instrument ?? "not documented", r.matrix, r.measurement, r.axis, r.bands, `${r.n} of ${r.spectra}${r.n === r.developmentSpectra ? " (development partition)" : ""}`, r.min, r.p5, r.p25, r.p50, r.p75, r.p95, r.max, r === self ? "this dataset" : benchmarkPosition(medianDb, r), r.source])}
+          columns={["Dataset", "Manufacturer", "Instrument", "Matrix", "Signal", "Measurement", "Spectral axis", "Bands", "Spectra analysed", "Min", "P5", "P25", "Median", "P75", "P95", "Max", "This dataset's median", "Instrument documentation", "Read from", "Source"]}
+          rows={groups.flatMap((g) => g.rows).map((r) => [r.dataset, r.manufacturer ?? "not documented", r.instrument, r.matrix, r.representation ?? "not documented", r.measurement, r.axis, r.bands, `${r.n} of ${r.developmentSpectra} development spectra (${r.spectra} in total)`, r.min, r.p5, r.p25, r.p50, r.p75, r.p95, r.max, r === self ? "this dataset" : benchmarkPosition(medianDb, r), r.documentation, r.location, r.source])}
         />
       </Collapsible>
     </ChartCard>
@@ -506,6 +531,7 @@ export function useSnrBlocks(scope: Scope): ABlocks | null {
   const typicalId = medianSnrSpectrum(stats);
   const details: RubricBlock[] = [
     ...(typicalId ? [{ id: "snr-simulation", node: <Collapsible title="What does a given SNR look like? (simulation)"><NoiseIllustration scope={scope} spectrumId={typicalId} datasetDb={stats.medianDb} f={f} /></Collapsible> }] : []),
+    { id: "snr-validation", node: <Collapsible title="Estimator validation by synthetic noise injection (not a dataset result)"><NoiseValidationCard scope={scope} f={f} /></Collapsible> },
     {
       id: "snr-method",
       node: (
@@ -515,7 +541,7 @@ export function useSnrBlocks(scope: Scope): ABlocks | null {
           S.snrDefinition,
           <>Indicative bands: {SNR_BANDS.map((b, i) => `${i === 0 ? "< 20" : Number.isFinite(b.maxDb) ? `${SNR_BANDS[i - 1]!.maxDb}–${b.maxDb}` : "> 80"} dB ${b.label.toLowerCase()}`).join(" · ")}. {S.snrBandsNote}</>,
           S.contrastNote,
-          "Empirical benchmark: the same estimator computed on the public datasets bundled with the demo only. A percentile among comparable instruments needs a curated catalogue of documented public datasets per instrument, stratified by matrix, range, resolution and preprocessing.",
+          "Empirical benchmark: the same estimator computed on public datasets whose instrument is documented (nirs4all-data checkout and the demo datasets), grouped by manufacturer. A percentile among comparable instruments needs a curated catalogue with many datasets per instrument, stratified by matrix, range, resolution and preprocessing.",
           S.snrCompare,
         ]}
         limits={S.snrLimits}

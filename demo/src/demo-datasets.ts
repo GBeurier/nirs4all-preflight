@@ -5,9 +5,10 @@ import type { EngineInput } from "./input";
 /** Same real CSV extracts and original splits as Web; provenance accompanies them. */
 export const DEMO_DATASETS = [
   { id: "beer", name: "Beer — original extract", task: "regression", samples: 60, bands: 576, train: 40, test: 20,
-    target: "original_extract", attribution: "OHPL — You-Wu Lin & Nan Xiao", source: "https://ohpl.io/doc/", license: "GPL-3.0", licenseFile: "GPL-3.0.txt" },
+    target: "original_extract", attribution: "OHPL — You-Wu Lin & Nan Xiao", source: "https://ohpl.io/doc/", license: "GPL-3.0", licenseFile: "GPL-3.0.txt", caveat: null },
   { id: "anopheles", name: "Anopheles — oocyst presence", task: "classification", samples: 333, bands: 2151, train: 227, test: 106,
-    target: "oocyst_presence", attribution: "Maia et al. — Harvard Dataverse", source: "https://doi.org/10.7910/DVN/YD34OX", license: "CC BY 4.0", licenseFile: "CC-BY-4.0.txt" },
+    target: "oocyst_presence", attribution: "Maia et al. — Harvard Dataverse", source: "https://doi.org/10.7910/DVN/YD34OX", license: "CC BY 4.0", licenseFile: "CC-BY-4.0.txt",
+    caveat: null },
 ] as const;
 export type DemoDataset = typeof DEMO_DATASETS[number];
 export type DemoDatasetId = DemoDataset["id"];

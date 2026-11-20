@@ -31,3 +31,20 @@
 :root{--ig-noise-0:#b2452e;--ig-noise-1:#c46a3f;--ig-noise-2:#d69e6e;--ig-noise-3:#c9c29a;--ig-noise-4:#93bb8f;--ig-noise-5:#5e9e6e;--ig-noise-6:#2e7d4f}
 :root[data-theme="dark"]{--ig-noise-0:#d9634a;--ig-noise-1:#d4824f;--ig-noise-2:#cf9f6e;--ig-noise-3:#a9a585;--ig-noise-4:#7fae84;--ig-noise-5:#5fae78;--ig-noise-6:#4caf75}
 .ig-bench-coverage{font-size:.8rem;margin:0 0 6px;color:var(--cz-ink-2,#52657a)}
+
+/* wave 3: event positions (interim local recomputation) */
+.ig-threshold{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:.84rem}
+.ig-threshold input[type=range]{flex:1 1 180px;max-width:320px}
+.ig-merge{list-style:none;margin:6px 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:8px}
+.ig-merge li{background:var(--cz-surface-2);border:1px solid var(--cz-border);border-radius:8px;padding:6px 10px;display:grid;gap:2px;font-size:.8rem;color:var(--cz-ink-2)}
+.ig-merge strong{font-size:1rem;color:var(--cz-ink);display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap}
+.ig-glyph{display:inline-block;vertical-align:middle}
+.ig-map-head{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:6px}
+.ig-legend{display:inline-flex;gap:6px;align-items:center;font-size:.78rem;color:var(--cz-ink-2);flex-wrap:wrap}
+.ig-legend-bar{display:inline-block;width:18px;height:8px;background:var(--cz-track);border:1px solid var(--cz-border);border-radius:2px}
+.ig-map{position:relative;user-select:none;touch-action:none}
+.ig-map canvas{display:block;cursor:crosshair}
+.ig-map-brush{position:absolute;background:var(--cz-sel);border:1px dashed var(--cz-accent);pointer-events:none}
+.ig-map-tip{position:absolute;z-index:2;max-width:240px;background:var(--cz-surface);color:var(--cz-ink);border:1px solid var(--cz-border);border-radius:6px;padding:4px 8px;font-size:.75rem;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none}
+.ig-map-ylabel{position:absolute;left:0;display:flex;align-items:center;justify-content:flex-end;font-size:.72rem;color:var(--cz-ink-3);pointer-events:none}
+.ig-map-tick{position:absolute;transform:translateX(-50%);font-size:.7rem;color:var(--cz-ink-3);font-variant-numeric:tabular-nums;pointer-events:none}

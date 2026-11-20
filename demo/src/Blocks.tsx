@@ -42,6 +42,8 @@ import { fill, isTextKey, type TextKey } from "./i18n";
 import { Measured } from "./Measured";
 import { Section, type Scope } from "./Sections";
 import { DomainShiftView } from "./characterization/domains";
+import { ConfoundingDetail } from "./characterization/design";
+import { TargetAssociations } from "./characterization/joint";
 import { exactDuplicatePairs, type ExactPairSide } from "./views";
 
 
@@ -440,7 +442,8 @@ const TEST_LABEL: Record<string, TextKey> = {
   "confounding.permdisp_test": "testPermdisp",
 };
 
-export function ConfoundingSection({ t, locale, view, sourceId }: Scope) {
+export function ConfoundingSection(scope: Scope) {
+  const { t, locale, view, sourceId } = scope;
   if (!sourceId || !hasBlock(view, ["confounding."])) return null;
   const c = extractConfounding(view, sourceId);
   const missing = unavailableMetrics(view, ["confounding.design", "confounding.variance_partition", "confounding.dispersion"], sourceId);
@@ -448,57 +451,11 @@ export function ConfoundingSection({ t, locale, view, sourceId }: Scope) {
   const share = (factor: string) => c.partition?.shares.find((s) => s.factor === factor) ?? null;
   const rows = c.tests.map((x) => testRow(x, t(TEST_LABEL[x.test] ?? "testMarginal"), x.test === "confounding.permdisp_test" ? null : { label: x.test === "confounding.permanova_marginal_test" ? "R²" : "R² unique", value: x.test === "confounding.permanova_marginal_test" ? (share(x.factor)?.r2Marginal ?? null) : x.test === "confounding.permanova_conditional_test" ? (share(x.factor)?.r2UniqueGivenOtherFactors ?? null) : (share(x.factor)?.r2UniqueGivenOtherMainEffects ?? null) }, locale, t("withinBlocks")));
   const alpha = c.families[0]?.alpha ?? null;
+  // Design overview, dependencies and crossings are in the "Experimental design" section (s-design); this section
+  // holds the variance partition, the statistical evidence and PERMDISP (characterization/design).
   return (
-    <Section id="s-confounding" icon="composition" accent="amber" title={t("confTitle")} lead={t("confLead")}>
-      <div className="grid-2">
-        <div className="card">
-          <CardTitle id="confounding.design" locale={locale} />
-          <ul className="plain">
-            {c.factors.map((f) => (
-              <li key={f.factor}>
-                <strong>{f.factor}</strong> — {f.levels.map((l) => `${l.level} (${l.nUnits ?? "—"})`).join(", ")}
-                {f.aliasedWithOtherFactorCells ? <span className="tag tag-warn">{fill(t("aliasedWith"), { f: f.determinedBy.join(", ") || "—" })}</span> : null}
-                {f.identifiableUnderAdditiveModel === false ? <span className="tag tag-warn">{t("notIdentifiableAdditive")}</span> : null}
-              </li>
-            ))}
-          </ul>
-          {c.crossings.map((x) => {
-            const cols = [...new Set(Object.values(x.unitCounts).flatMap((r) => Object.keys(r)))].sort();
-            return <ChartDataTable key={x.factors.join("×")} open locale={locale} caption={`${t("crossing")} ${x.factors.join(" × ")}`} columns={[x.factors[0] ?? "", ...cols]} rows={Object.entries(x.unitCounts).map(([k, r]) => [k, ...cols.map((col) => r[col] ?? 0)])} />;
-          })}
-        </div>
-        {c.partition ? (
-          <div className="card">
-            <CardTitle id="confounding.variance_partition" locale={locale} />
-            <Measured>{(w) => (
-              <MeasureBars
-                width={w}
-                format="fraction"
-                title={metricLabel("confounding.variance_partition", locale)}
-                valueLabel={t("r2Marginal")}
-                compareLabel={t("r2Unique")}
-                reference={c.partition!.r2AllFactorCells !== null ? { value: c.partition!.r2AllFactorCells, label: t("r2Joint") } : null}
-                locale={locale}
-                rows={c.partition!.shares.map((s) => ({ id: s.factor, label: s.factor, value: s.r2Marginal, compare: s.r2UniqueGivenOtherFactors, note: s.reasonCode ? reasonLabel(s.reasonCode) : undefined }))}
-              />
-            )}</Measured>
-            <p className="hint">{t("notAdditive")}</p>
-          </div>
-        ) : null}
-      </div>
-      {rows.length ? (
-        <div className="card card-flush">
-          <HypothesisTestTable rows={rows} caption={t("confTests")} alpha={alpha} locale={locale} />
-        </div>
-      ) : null}
-      {c.dispersion.some((d) => d.state.status === "computed") ? (
-        <ChartDataTable
-          locale={locale}
-          caption={metricLabel("confounding.dispersion", locale)}
-          columns={[t("factor"), t("level"), t("meanDistance"), t("units")]}
-          rows={c.dispersion.flatMap((d) => d.levels.map((l) => [d.factor, l.level, cellNumber(l.meanDistance), l.nUnits]))}
-        />
-      ) : null}
+    <Section id="s-confounding" icon="composition" accent="amber" title={t("confTitle")} lead={t("dzConfLead")}>
+      <ConfoundingDetail scope={scope} original={rows.length ? <div className="card card-flush"><HypothesisTestTable rows={rows} caption={t("confTests")} alpha={alpha} locale={locale} /></div> : null} />
       <Unavailable metrics={missing} locale={locale} />
     </Section>
   );
@@ -564,7 +521,8 @@ export function DomainShiftSection(scope: Scope & { onOpenSettings?: (() => void
 
 // --- metadata associations -------------------------------------------------------------------
 
-export function AssociationSection({ t, locale, view, targetId }: Scope) {
+export function AssociationSection(scope: Scope) {
+  const { t, locale, view, targetId } = scope;
   if (!hasBlock(view, ["association."])) return null;
   const rows = extractAssociations(view).filter((a) => !targetId || a.targetId === targetId);
   const family = extractAssociationFamily(view);
@@ -583,18 +541,20 @@ export function AssociationSection({ t, locale, view, targetId }: Scope) {
   }));
   const withLevels = rows.filter((a) => a.levels.some((l) => l.target));
   return (
-    <Section id="s-association" icon="target" accent="amber" title={t("assocTitle")} lead={t("assocLead")}>
-      <div className="card card-flush">
+    <Section id="s-association" icon="target" accent="amber" title={t("assocTitle")} lead={t("jtTargetLead")}>
+      <TargetAssociations scope={scope} />
+      <details className="card card-flush">
+        <summary>{metricLabel("association.metadata_target", locale)} — {t("assocLead")}</summary>
         <HypothesisTestTable rows={tests} caption={metricLabel("association.metadata_target", locale)} alpha={family?.alpha ?? null} locale={locale} />
-      </div>
-      {withLevels.length ? (
-        <ChartDataTable
-          locale={locale}
-          caption={t("assocLevels")}
-          columns={[t("metadata"), t("level"), t("units"), t("median"), "Q1", "Q3"]}
-          rows={withLevels.flatMap((a) => a.levels.map((l) => [a.metadata, l.level, l.nUnits, cellNumber(l.target?.median), cellNumber(l.target?.q25), cellNumber(l.target?.q75)]))}
-        />
-      ) : null}
+        {withLevels.length ? (
+          <ChartDataTable
+            locale={locale}
+            caption={t("assocLevels")}
+            columns={[t("metadata"), t("level"), t("units"), t("median"), "Q1", "Q3"]}
+            rows={withLevels.flatMap((a) => a.levels.map((l) => [a.metadata, l.level, l.nUnits, cellNumber(l.target?.median), cellNumber(l.target?.q25), cellNumber(l.target?.q75)]))}
+          />
+        ) : null}
+      </details>
       <p className="hint">{t("assocNotCausal")}</p>
     </Section>
   );

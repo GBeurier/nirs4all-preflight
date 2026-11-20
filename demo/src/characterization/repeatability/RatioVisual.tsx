@@ -1,6 +1,6 @@
 // "Sample diversity vs. measurement variability" (chat mockup): an illustration of the one-way
 // variance model, ICC = R²/(1 + R²) with R = σb/σw. Simulated dots, never dataset values; the slider
-// starts at the dataset's median R when the engine model makes it exact (balanced ICC(1,1)).
+// starts at the dataset's median R when the engine model makes it exact (balanced ICC(1,1) or REML components).
 import { useId, useState } from "react";
 import { Responsive } from "../shared/charts";
 import { ratioToIcc } from "../shared/derive";

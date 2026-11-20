@@ -4,6 +4,7 @@
 // arranges it (KPIs, comments, distributions, per-band tracks, inspection, collapsed details).
 import type { ReactNode } from "react";
 import { ChartDataTable } from "nirs4all-ui/qualification";
+import { translate } from "../../i18n";
 import type { Scope } from "../../Sections";
 import { Histogram, ValueBars, type KpiItem } from "../shared/charts";
 import type { RubricBlock, RubricBlocks, RubricComment } from "../shared/blocks";
@@ -12,7 +13,8 @@ import type { BandSelection, Track } from "./AlignedTracks";
 import { NO_REPLICATES_COMMENT, bandRuns, fmt, noiseComments, noiseStats, repeatStats, repeatabilityComments } from "./comments";
 import { GroupInspection } from "./GroupInspection";
 import { NoReplicatesCard } from "./NoReplicatesCard";
-import { bandEnvelope, contextGroups, developmentRows, noiseProfiles, repeatProfiles, topRegions, typicalSignalLevel } from "./profiles";
+import { ContextComparison } from "./ContextComparison";
+import { bandEnvelope, contextGroups, developmentRows, sourceProfiles, topRegions, typicalSignalLevel } from "./profiles";
 import { RatioVisual } from "./RatioVisual";
 import { ResidualInspection } from "./ResidualInspection";
 import { medianSnrDb } from "./summary";
@@ -39,9 +41,9 @@ const note = (text: string, i: number, tone: RubricComment["tone"] = "info"): Ru
 /** Attention tone for comments that point at a region or a limitation, info otherwise (text carries the meaning). */
 const toComments = (lines: readonly string[], prefix: string): RubricComment[] => lines.map((t, i) => note(t, i, /below|exceeds|elevated|Several|One contiguous|imprecise|unbalanced|negative|higher|lower|not available/i.test(t) ? "attention" : "info")).map((c) => ({ ...c, id: `${prefix}-${c.id}` }));
 
-export const REPEAT_LEAD = "Assess how closely repeated measurements of the same physical sample agree at each wavelength. Compare within-sample measurement variability with between-sample spectral diversity to identify regions where sample differences are distinguishable from technical measurement variation.";
-export const REPEAT_WARNING = "High ICC indicates good repeatability relative to sample diversity. Low ICC may reflect limited between-sample variability rather than poor absolute measurement repeatability.";
-export const NOISE_LEAD = "Estimate local fine-scale spectral fluctuations using Savitzky–Golay smoothing residuals. This diagnostic identifies spectral regions with substantial high-frequency variation when technical replicates are unavailable. Real narrow spectral features and systematic artifacts may also contribute to the residuals.";
+export const REPEAT_LEAD = translate("czRpRepeatLead", "en");
+export const REPEAT_WARNING = translate("czRpRepeatWarning", "en");
+export const NOISE_LEAD = translate("czRpNoiseLead", "en");
 
 /** Indicative ICC bands (Koo & Li, 2016): general ICC conventions, not NIR instrument criteria. Ordinal tones, no green/red. */
 export const KOO_LI_BANDS = [
@@ -90,13 +92,19 @@ const empty = (id: BBlocks["id"], title: string, lead: string, unavailable: stri
   details: { limitations: "", methodology: null, tables: null, investigate: [] }, unavailable, contexts: [],
 });
 
-export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: (() => void) | undefined; contextIndex?: number | undefined } = {}): BBlocks {
+/** `contextIndex`: index of the repeatability context (default 0); null = the selected measurement context has none. */
+export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: (() => void) | undefined; contextIndex?: number | null | undefined; contextLabel?: string | undefined } = {}): BBlocks {
   const title = "Technical repeatability";
   const source = sourceOf(scope);
-  const profiles = source && scope.sourceId ? repeatProfiles(scope.view, scope.sourceId) : [];
+  const profiles = source && scope.sourceId ? sourceProfiles(scope.view, scope.input, scope.sourceId).repeats : [];
   if (!source) return empty("repeatability", title, REPEAT_LEAD, null);
   // No replicate groups: an explicit card (no zero, no ICC), never an empty chart.
   if (!profiles.length) return empty("repeatability", title, REPEAT_LEAD, null, [{ id: "rp-none", node: <NoReplicatesCard onOpenSettings={options.onOpenSettings} />, span: "full" }], [note(NO_REPLICATES_COMMENT, 0, "neutral")]);
+  // The shared context has no technical repeats (noise-only context): say so, never borrow another context.
+  if (options.contextIndex === null) {
+    const text = `No technical replicate groups in the selected measurement context${options.contextLabel ? ` (${options.contextLabel})` : ""}: technical repeatability is computed in ${profiles.length} other context${profiles.length > 1 ? "s" : ""}. Select one of them to read it.`;
+    return { ...empty("repeatability", title, REPEAT_LEAD, null, [{ id: "rp-other-context", node: <p className="cz-empty">{text}</p>, span: "full" }], [note(text, 0, "neutral")]), contexts: profiles.map((q, i) => q.context.id || `Context ${i + 1}`) };
+  }
   const p = profiles[Math.min(options.contextIndex ?? 0, profiles.length - 1)]!;
   const groups = contextGroups(scope.input, source, p.context);
   const unit = p.context.unit ?? source.signal_unit ?? "";
@@ -104,6 +112,8 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
   const s = repeatStats(p);
   const rc = p.uncertainty?.repeatCounts;
   const exact = p.iccKind === "icc_1_1";
+  // R = σb/σw is model-exact for the balanced ANOVA and for the engine's REML components alike.
+  const rExact = p.betweenKind !== "approximate";
   const iccName = exact ? "ICC(1,1)" : "ICC(1) REML";
   const ctxTag = profiles.length > 1 ? ` · ${p.context.id}` : "";
   const counts = { poor: 0, moderate: 0, good: 0, excellent: 0, none: 0 };
@@ -117,7 +127,7 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
     { label: `Median ${iccName}`, value: s.medianIcc === null ? "—" : fmt(s.medianIcc), sub: `ICC P5 ${s.p5Icc === null ? "—" : fmt(s.p5Icc)} · ${s.evaluable} bands`, tone: "teal" },
     { label: "Evaluable ICC bands", value: s.bands ? fmt((100 * s.evaluable) / s.bands) : "—", unit: "%", bar: pctOf(s.evaluable, s.bands), sub: `${s.evaluable} of ${s.bands} bands`, tone: "teal" },
     { label: "Physical samples", value: rc?.nGroups ?? p.context.physicalGroups ?? "—", sub: rc ? `${rc.nRepeatedGroups ?? "—"} with ≥ 2 repeats · ${rc.rMin ?? "—"}–${rc.rMax ?? "—"} repeats (median ${rc.rMedian ?? "—"})` : `${p.context.observations ?? "—"} observations`, tone: "grey" },
-    ...(exact && s.medianRatio !== null ? [{ label: "Median R = σb / σw", value: fmt(s.medianRatio), unit: "×", sub: "Between- over within-sample SD", tone: "teal" as const }] : []),
+    ...(rExact && s.medianRatio !== null ? [{ label: "Median R = σb / σw", value: fmt(s.medianRatio), unit: "×", sub: "Between- over within-sample SD", tone: "teal" as const }] : []),
   ];
 
   const distributions: RubricBlock[] = [
@@ -138,8 +148,8 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
             ]}
           />
           <table className="rp-ref-table rp-icc-table">
-            <caption>Indicative ICC reading{exact ? " and the equivalent R = σb/σw" : ""}</caption>
-            <thead><tr><th>ICC</th><th>Indicative</th>{exact ? <th>R</th> : null}</tr></thead>
+            <caption>Indicative ICC reading{rExact ? " and the equivalent R = σb/σw" : ""}</caption>
+            <thead><tr><th>ICC</th><th>Indicative</th>{rExact ? <th>R</th> : null}</tr></thead>
             <tbody>{KOO_LI_BANDS.map((b) => <tr key={b.id}><td>{b.range}</td><td><span className={`cz-swatch cz-tone-${b.tone}`} aria-hidden="true" /> {b.label}</td>{exact ? <td>{b.from === -Infinity ? "< 1×" : `${fmt(iccToRatio(b.from)!, 3)}×`}</td> : null}</tr>)}</tbody>
           </table>
         </>
@@ -148,8 +158,15 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
     {
       id: "rp-ratio",
       title: "Sample diversity vs. measurement variability",
-      node: <RatioVisual datasetRatio={exact ? s.medianRatio : null} />,
+      node: <RatioVisual datasetRatio={rExact ? s.medianRatio : null} />,
     },
+    ...(profiles.length > 1 ? [{
+      id: "rp-contexts",
+      title: `ICC and repeatability SD across ${profiles.length} measurement contexts`,
+      subtitle: "Each context is estimated separately (never pooled); compare before pooling repeats from different instruments, campaigns or repeat types.",
+      span: "full" as const,
+      node: <ContextComparison source={source} profiles={profiles} selectedId={p.context.id} axisLabel={axisLabel} unit={unit} sourceId={scope.sourceId!} />,
+    }] : []),
     ...(rc?.histogram.length ? [{
       id: "rp-counts",
       title: `Repeats per physical sample${ctxTag}`,
@@ -165,7 +182,7 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
       includeZero: true,
       series: [
         { id: "sw", label: "Repeatability SD (within-sample)", values: p.sd, color: "var(--cz-copper)" },
-        { id: "sb", label: `Between-sample SD${exact ? "" : " (approx.)"}`, values: p.betweenSd, color: "var(--cz-teal-2)", dash: "5 3" },
+        { id: "sb", label: `Between-sample SD${p.betweenKind === "approximate" ? " (approx.)" : p.betweenKind === "reml" ? " (REML σb)" : ""}`, values: p.betweenSd, color: "var(--cz-teal-2)", dash: "5 3" },
       ],
       envelopes: p.context.sdInterval ? [{ id: "sdci", label: "Repeatability SD interval", lower: p.context.sdInterval.lower, upper: p.context.sdInterval.upper, color: "var(--cz-copper)" }] : [],
       nonEvaluable: p.sd.map((v) => v === null),
@@ -201,7 +218,11 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
       methodology: (
         <>
           <p>Model: x = μ + b(sample) + e, b ~ N(0, σb²), e ~ N(0, σw²), repeats exchangeable within each physical sample and σw homogeneous across samples. Repeatability SD = √MSW (pooled within-sample SD); {exact ? "ICC(1,1) = (MSB − MSW)/(MSB + (r − 1)·MSW) for balanced groups of size r" : "REML ICC(1) for unbalanced groups (the balanced ICC(1,1) is undefined)"}. Physical samples come from the declared physical sample identifiers (else sample identifiers); repeats are the rows declared as {p.context.repeatType ?? "technical"} repeats in this context. Biological repeats, instruments, sessions and operators are separate contexts and are never pooled.</p>
-          <p>Between-sample SD in the same model: σb = σw·√(ICC/(1 − ICC)) = √((MSB − MSW)/r), defined for 0 ≤ ICC &lt; 1 (a gap otherwise){exact ? "" : "; with the REML ICC it combines the REML ratio with the ANOVA pooled SD and is approximate"}. ICC = R²/(1 + R²) with R = σb/σw{exact ? "" : " (shown only for the balanced model)"}. Negative ICC estimates (MSB &lt; MSW) are kept unclipped.</p>
+          <p>{exact
+            ? "Between-sample SD in the same model: σb = σw·√(ICC/(1 − ICC)) = √((MSB − MSW)/r), defined for 0 ≤ ICC < 1 (a gap otherwise)."
+            : p.betweenKind === "reml"
+              ? "Between-sample SD: σb = √σb² from the engine's per-band REML variance components (σb², σw² published with measurement.icc_1_reml); REML ICC(1) = σb²/(σb² + σw²) exactly. A boundary estimate σb² = 0 gives σb = 0. The repeatability SD track stays the ANOVA pooled SD √MSW (engine measurement.repeatability_sd), which can differ slightly from the REML σw in unbalanced designs."
+              : "Between-sample SD: σb = σw·√(ICC/(1 − ICC)) with the REML ICC and the ANOVA pooled SD (approximate: the engine did not publish the REML variance components)."}{" "}ICC = R²/(1 + R²) with R = σb/σw{rExact ? "" : " (shown only when exact)"}. Negative ICC estimates (MSB &lt; MSW) are kept unclipped.</p>
           <p>ICC bands follow general ICC interpretation conventions (Koo &amp; Li, 2016); they are indicative and not NIR instrument criteria. Shaded regions mark ≥ 3 contiguous bands with ICC &lt; 0.50.</p>
         </>
       ),
@@ -210,7 +231,7 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
           locale={scope.locale}
           caption={`Per-band repeatability — ${p.context.id}`}
           columns={["Band", `Repeatability SD${unit ? ` (${unit})` : ""}`, `Between-sample SD${unit ? ` (${unit})` : ""}`, iccName, "R = σb/σw"]}
-          rows={source.axis.map((x, i) => [x, p.sd[i] ?? null, p.betweenSd[i] ?? null, p.icc?.[i] ?? null, exact ? (p.ratio[i] ?? null) : null])}
+          rows={source.axis.map((x, i) => [x, p.sd[i] ?? null, p.betweenSd[i] ?? null, p.icc?.[i] ?? null, rExact ? (p.ratio[i] ?? null) : null])}
         />
       ),
       investigate: [
@@ -224,11 +245,13 @@ export function repeatabilityBlocks(scope: Scope, options: { onOpenSettings?: ((
   };
 }
 
-export function noiseBlocks(scope: Scope, options: { contextIndex?: number | undefined; relative?: boolean | undefined } = {}): BBlocks {
+/** `contextIndex`: index of the noise-proxy context (default 0); null = the selected measurement context has none. */
+export function noiseBlocks(scope: Scope, options: { contextIndex?: number | null | undefined; relative?: boolean | undefined; contextLabel?: string | undefined } = {}): BBlocks {
   const title = "Per-band noise proxy";
   const source = sourceOf(scope);
-  const profiles = source && scope.sourceId ? noiseProfiles(scope.view, scope.input, scope.sourceId) : [];
+  const profiles = source && scope.sourceId ? sourceProfiles(scope.view, scope.input, scope.sourceId).noise : [];
   if (!source || !profiles.length) return empty("noise_proxy", title, NOISE_LEAD, source ? "The per-band noise proxy was not computed for this source." : null);
+  if (options.contextIndex === null) return empty("noise_proxy", title, NOISE_LEAD, `The per-band noise proxy was not computed for the selected measurement context${options.contextLabel ? ` (${options.contextLabel})` : ""}.`);
   const p = profiles[Math.min(options.contextIndex ?? 0, profiles.length - 1)]!;
   const level = typicalSignalLevel(scope.view, scope.sourceId!);
   const snrDb = medianSnrDb(scope);

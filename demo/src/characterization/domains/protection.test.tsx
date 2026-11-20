@@ -9,6 +9,8 @@ import { domainModel, interpret } from "./model";
 import { domainPopulations } from "./populations";
 import { auditInput, auditView } from "./testkit";
 import { computeDiagnostics } from "./kernels";
+import { exploreRequest } from "./ShiftExplorer";
+import { runTask } from "./tasks";
 
 /** Input whose targets throw on any access (retained-test rows included). */
 function guardedInput(): EngineInput {
@@ -27,6 +29,13 @@ describe("retained-test Y protection", () => {
     const html = renderToStaticMarkup(<DomainShiftView t={((k: string) => k) as never} locale="en" view={view} input={input} sourceId="nir" targetId="y" />);
     expect(html).toContain("Target shift is intentionally not evaluated. Retained-test target values remain protected.");
     expect(html).toContain("Statistical inference unavailable");
+    // Preprocessing explorer on the retained-test audit: X only, fitted on calibration, no target access.
+    expect(html).toContain("Domain-shift preprocessing explorer");
+    const scope = { t: ((k: string) => k) as never, locale: "en" as const, view, input, sourceId: "nir", targetId: "y" };
+    const req = exploreRequest(scope, f!.comparisons[0]!, [{ id: "a", kind: "msc", params: {} }]);
+    expect("error" in req).toBe(false);
+    const out = await runTask({ op: "explore", req: req as Exclude<typeof req, { error: string }> });
+    expect(out).toHaveProperty("processed");
   });
 
   it("no source file of the module references input targets", () => {
