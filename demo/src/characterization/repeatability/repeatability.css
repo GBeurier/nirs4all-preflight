@@ -1,0 +1,28 @@
+/* Repeatability / noise-proxy panels (interim demo styles). */
+.rp-block { display: flex; flex-direction: column; gap: 10px; }
+.rp-lead { margin: 0; color: var(--text-2, #334155); }
+.rp-interpretation h4, .rp-investigate h4 { margin: 0 0 4px; font-size: .85rem; }
+.rp-interpretation ul, .rp-investigate ul { margin: 0; padding-left: 18px; font-size: .9rem; }
+.rp-limits { font-size: .85rem; color: var(--text-2, #334155); }
+.rp-limits > summary { cursor: pointer; }
+.rp-limits p, .rp-limits ul { margin: 6px 0 0; }
+.rp-warning { padding: 8px 12px; border-left: 3px solid var(--amber, #d97706); background: rgba(217, 119, 6, .07); border-radius: 4px; font-size: .9rem; }
+.rp-empty { padding: 14px; border: 1px dashed var(--border, #cbd5e1); border-radius: 8px; }
+.rp-empty p { margin: 0 0 8px; }
+.rp-stack { margin: 0; }
+.rp-stack figcaption { font-size: .85rem; font-weight: 600; margin-bottom: 4px; }
+.rp-stack-bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border, #e2e8f0); }
+.rp-stack-bar > span { display: block; height: 100%; }
+.rp-stack-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; padding: 0; margin: 6px 0 0; font-size: .8rem; }
+.rp-swatch { display: inline-block; width: 12px; height: 12px; margin-right: 5px; vertical-align: -2px; border: 1px solid rgba(15, 23, 42, .25); border-radius: 2px; }
+.rp-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rp-groups { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.rp-groups th, .rp-groups td { padding: 3px 6px; border-bottom: 1px solid var(--border, #e2e8f0); text-align: right; }
+.rp-groups th:first-child, .rp-groups td:first-child { text-align: left; }
+.rp-groups tr[aria-selected="true"] { background: rgba(14, 165, 233, .1); }
+.rp-heat { position: relative; }
+.rp-heat canvas { display: block; width: 100%; image-rendering: pixelated; cursor: pointer; border: 1px solid var(--border, #e2e8f0); }
+.rp-scale { display: flex; align-items: center; gap: 6px; font-size: .78rem; }
+.rp-scale-bar { width: 160px; height: 10px; border-radius: 2px; background: linear-gradient(90deg, #2563eb, #f8fafc, #dc2626); border: 1px solid var(--border, #e2e8f0); }
+.rp-ref-table { font-size: .8rem; border-collapse: collapse; }
+.rp-ref-table td, .rp-ref-table th { padding: 2px 8px; border-bottom: 1px solid var(--border, #e2e8f0); }

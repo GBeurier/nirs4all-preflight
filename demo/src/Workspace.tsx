@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import { buildQualificationReportView, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
 import timings from "./data/analysis-timings.json";
@@ -14,6 +14,7 @@ import { Icon, type IconName } from "./icons";
 import { countIndependenceGroups, defaultConfig, parseSeed, ANALYSIS_FAMILIES, metadataColumns, type MetadataRole, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
 import { DECLARABLE_REPETITIONS, type RepetitionDeclaration } from "./dataset";
 import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, SpectralQualitySection, presentSections } from "./Blocks";
+import { CharacterizationOverview, CharacterizationProvider, PHASES, PhaseHeading, SpectralQualityMap, hasQualityMap } from "./characterization/overview";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, RepeatSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
 type View = "data" | "diagnosis" | "evidence" | "export";
@@ -26,6 +27,14 @@ const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-repeat", label: "navRepeat" },
   { id: "s-target", label: "navTarget" },
 ];
+/** Characterization sections (not in the shared i18n table): menu entries with their own English labels. */
+const CHARACTERIZATION_LINKS: readonly { id: string; label: string }[] = [
+  { id: "s-characterization", label: "Characterization overview" },
+  { id: "s-preprocessing", label: PHASES.preprocessingNav },
+  { id: "s-quality-map", label: PHASES.mapNav },
+];
+/** The explorer loads the Methods WASM and its worker: fetched only when the diagnosis page opens. */
+const PreprocessingExplorer = lazy(() => import("./characterization/preprocessing/PreprocessingExplorer").then((m) => ({ default: m.PreprocessingExplorer })));
 
 /** One line per issue code: an input can repeat the same issue on thousands of values. */
 function issueGroups(validation: EngineValidation) {
@@ -39,14 +48,24 @@ function issueGroups(validation: EngineValidation) {
   return [...groups.values()].sort((a, b) => Number(b.blocking) - Number(a.blocking));
 }
 
-/** Diagnosis sections in display order; the menu lists those present in the report. */
-const DIAG_ORDER = ["s-overview", "s-populations", "s-quality", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-repeat", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
-const diagMenu = (scope: Scope): { id: string; label: TextKey }[] =>
-  [{ id: "s-overview", label: "diagTitle" as TextKey }, ...DIAG_LINKS, ...presentSections(scope)].filter((item) => (item.id !== "s-repeat" || scope.input.options.analysis_families?.repeatability !== false) && (item.id !== "s-target" || scope.targetId !== null)).sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
+/**
+ * Diagnosis sections in display order; the menu lists those present in the report. The page follows the
+ * characterization mockup: overview, detailed diagnostics (spectral quality, repeatability), preprocessing
+ * explorer, spectral quality map, then the remaining analyses.
+ */
+const DIAG_ORDER = ["s-overview", "s-populations", "s-characterization", "s-quality", "s-repeat", "s-preprocessing", "s-quality-map", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
+const diagMenu = (scope: Scope, qualityMap: boolean): { id: string; label: string }[] =>
+  [
+    { id: "s-overview", label: scope.t("diagTitle" as TextKey) },
+    ...[...DIAG_LINKS, ...presentSections(scope)].map((item) => ({ id: item.id, label: scope.t(item.label) })),
+    ...CHARACTERIZATION_LINKS.filter((item) => item.id !== "s-quality-map" || qualityMap),
+  ]
+    .filter((item) => (item.id !== "s-repeat" || scope.input.options.analysis_families?.repeatability !== false) && (item.id !== "s-target" || scope.targetId !== null))
+    .sort((a, b) => DIAG_ORDER.indexOf(a.id) - DIAG_ORDER.indexOf(b.id));
 
 /** Sticky left menu of the diagnosis sections; the section in view is highlighted. */
 type Alerts = Record<string, { n: number; critical: boolean }>;
-function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id: string; label: TextKey }[] }) {
+function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id: string; label: string }[] }) {
   const [active, setActive] = useState(items[0]?.id ?? "");
   const side = useRef<HTMLElement>(null);
   const ids = items.map((i) => i.id).join(" ");
@@ -73,7 +92,7 @@ function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id
         <p className="diag-side-title">{t("diagCharts")}</p>
         <ol>
           {items.map((item) => (
-            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{t(item.label)}{alerts[item.id] ? <span className="alert-dot" data-level={alerts[item.id]!.critical ? "critical" : "attention"} aria-label={`${alerts[item.id]!.n} ${alerts[item.id]!.critical ? "critical " : ""}alert${alerts[item.id]!.n > 1 ? "s" : ""}`}>{alerts[item.id]!.n}</span> : null}</a></li>
+            <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{item.label}{alerts[item.id] ? <span className="alert-dot" data-level={alerts[item.id]!.critical ? "critical" : "attention"} aria-label={`${alerts[item.id]!.n} ${alerts[item.id]!.critical ? "critical " : ""}alert${alerts[item.id]!.n > 1 ? "s" : ""}`}>{alerts[item.id]!.n}</span> : null}</a></li>
           ))}
         </ol>
       </nav>
@@ -134,6 +153,12 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   const observations = input.sources.reduce((n, s) => n + s.observation_ids.length, 0);
   const bands = input.sources.reduce((n, s) => n + s.axis.length, 0);
   const scope: Scope | null = report && result ? { t, locale, view: report, input: result.input, sourceId: source, targetId: target } : null;
+  // The quality map is listed only when at least one local diagnostic exists for the selected source.
+  const qualityMapPresent = useMemo(() => (report && result ? hasQualityMap({ view: report, input: result.input, sourceId: source }) : false), [report, result, source]);
+  const openSettings = () => {
+    setSettingsOpen(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const checks = scope ? buildChecks(scope.view, scope.input, source, target, t, locale) : [];
   const review = needsReview(checks);
   const selected = new Set(report?.metrics.map(metricKey).filter((key) => !excludedMetrics.has(key)) ?? []);
@@ -299,22 +324,32 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
 
         {view === "diagnosis" && scope ? (
           <div className="diag-layout">
-            <DiagnosisMenu t={t} items={diagMenu(scope)} alerts={alerts} />
+            <DiagnosisMenu t={t} items={diagMenu(scope, qualityMapPresent)} alerts={alerts} />
             <div className="diag-main">
             {preliminary ? <p className="alert alert-info" role="status">{running ? <span className="spinner" aria-hidden="true" /> : null}{t(running ? "preliminaryRunning" : "preliminaryStopped")}</p> : null}
+            <CharacterizationProvider>
             <DiagnosisSummary {...scope} checks={checks} />
             <PopulationsSection {...scope} />
-            <SpectralQualitySection {...scope} />
+            <CharacterizationOverview key={`char-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
+            <PhaseHeading id="s-detailed" index="2 / 4" title={PHASES.detailedTitle} lead={PHASES.detailedLead} />
+            <SpectralQualitySection key={`quality-${source ?? ""}`} {...scope} />
+            <RepeatSection key={`repeat-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
+            <Section id="s-preprocessing" index="3 / 4" icon="flow" accent="cyan" title={PHASES.preprocessingNav}>
+              <Suspense fallback={<p className="note" role="status">Loading the preprocessing explorer…</p>}>
+                <PreprocessingExplorer key={`pre-${source ?? ""}`} scope={scope} />
+              </Suspense>
+            </Section>
+            <SpectralQualityMap key={`map-${source ?? ""}`} {...scope} />
             <DuplicatesSection {...scope} />
             <StructureSection key={`pca-${source ?? ""}`} {...scope} />
             <SensitivitySection {...scope} />
             <ClusteringSection {...scope} />
-            <RepeatSection {...scope} />
             <TargetSection {...scope} />
             <AssociationSection {...scope} />
             <ConfoundingSection {...scope} />
             <DomainShiftSection {...scope} />
             <ProbeSection {...scope} />
+            </CharacterizationProvider>
             <NextStep label={t("stepEvidence")} t={t} onClick={() => go("evidence")} />
             </div>
           </div>
