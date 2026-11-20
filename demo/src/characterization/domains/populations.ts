@@ -17,6 +17,8 @@ export interface Unit {
   /** Spectra (X rows) aggregated into the unit. */
   rows: number;
   spectrum: number[];
+  /** Source row indices of each aggregated group (the unit spectrum is the equal-weight mean of the group means). */
+  groupRows?: number[][];
 }
 
 interface Group {
@@ -88,7 +90,7 @@ function units(gs: Group[], spectra: Map<string, number[]>, samples: Map<string,
     const p = spectra.get(list[0]!.key)!.length;
     const spectrum = new Array<number>(p).fill(0);
     for (const g of list) spectra.get(g.key)!.forEach((v, c) => (spectrum[c]! += v / list.length));
-    return { key: k, members: list.map((g) => g.sampleId), rows: list.reduce((a, g) => a + g.rows.length, 0), spectrum };
+    return { key: k, members: list.map((g) => g.sampleId), rows: list.reduce((a, g) => a + g.rows.length, 0), spectrum, groupRows: list.map((g) => [...g.rows]) };
   });
 }
 
@@ -131,3 +133,80 @@ export function domainPopulations(input: EngineInput, sourceId: string, c: Pick<
     axis: source.axis,
   };
 }
+
+/**
+ * Rows of the engine's energy permutation test of one factor, in the engine order: the development units whose
+ * samples share one level (`analyzed`), coded by the index of their level in the sorted level names; for the
+ * audit, development units then retained-test units (codes 0 / 1).
+ */
+export interface TestPopulation {
+  units: Unit[];
+  codes: number[];
+  levels: string[];
+  /** Index of each unit in `development` (factor tests; the leading PCA space is fitted on every development unit). */
+  developmentIndex: number[] | null;
+  development: Unit[];
+}
+
+export function testPopulation(input: EngineInput, sourceId: string, factor: string, audit: boolean): TestPopulation | null {
+  const source = input.sources.find((s) => s.source_id === sourceId);
+  if (!source || !source.axis.length) return null;
+  const samples = new Map(input.samples.map((s) => [s.sample_id, s]));
+  const byGroup = input.options.independence_unit === "group";
+  const dev = groups(source, samples, "development");
+  const development = units(dev.groups, dev.spectra, samples, byGroup);
+  if (audit) {
+    const test = groups(source, samples, "retained_test");
+    const retained = units(test.groups, test.spectra, samples, byGroup);
+    return { units: [...development, ...retained], codes: [...development.map(() => 0), ...retained.map(() => 1)], levels: ["development", "retained_test"], developmentIndex: null, development };
+  }
+  const levelOfUnit = development.map((u) => {
+    const ls = new Set(u.members.map((id) => levelOf(input, samples.get(id)!, factor)));
+    return ls.size === 1 && !ls.has(null) ? [...ls][0]! : null;
+  });
+  const index = development.map((_, i) => i).filter((i) => levelOfUnit[i] !== null);
+  // Engine: BTreeSet of level names (byte order; equal to code-unit order for these ASCII/BMP names).
+  const levels = [...new Set(index.map((i) => levelOfUnit[i]!))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return { units: index.map((i) => development[i]!), codes: index.map((i) => levels.indexOf(levelOfUnit[i]!)), levels, developmentIndex: index, development };
+}
+
+/**
+ * Tooltip text of units: member samples, physical samples, instrument, campaign, declared metadata and the
+ * number of spectra. Sample metadata only; target values are never read.
+ */
+export function unitDescriber(input: EngineInput): (u: Unit) => string {
+  const samples = new Map(input.samples.map((s) => [s.sample_id, s]));
+  const columns = input.metadata?.columns.map((c) => c.name) ?? [];
+  const shared = (vals: (string | number | null | undefined)[]) => {
+    const set = new Set(vals.map((v) => (v === null || v === undefined ? "—" : String(v))));
+    return set.size === 1 ? [...set][0]! : "varies";
+  };
+  return (u) => {
+    const ss = u.members.map((id) => samples.get(id)).filter((s): s is InputSample => !!s);
+    const parts = [
+      `Samples: ${u.members.slice(0, 4).map(sampleLabel).join(", ")}${u.members.length > 4 ? ` +${u.members.length - 4}` : ""}`,
+      `Physical sample: ${shared(ss.map((s) => s.physical_sample_id ?? s.sample_id))}`,
+    ];
+    if (ss.some((s) => s.instrument)) parts.push(`Instrument: ${shared(ss.map((s) => s.instrument))}`);
+    if (ss.some((s) => s.campaign)) parts.push(`Campaign: ${shared(ss.map((s) => s.campaign))}`);
+    for (const c of columns.slice(0, 8)) parts.push(`${c}: ${shared(ss.map((s) => input.metadata?.values[s.sample_id]?.[c]))}`);
+    parts.push(`Spectra: ${u.rows}`);
+    return parts.join("\n");
+  };
+}
+
+/** Readable sample id: JSON-array ids of the demo import (e.g. ["test", 1]) read as "test #1". */
+export function sampleLabel(id: string): string {
+  if (!id.startsWith("[")) return id;
+  try {
+    const v = JSON.parse(id) as unknown;
+    if (!Array.isArray(v)) return id;
+    if (v.length === 2 && typeof v[1] === "number") return `${String(v[0])} #${v[1]}`;
+    return v.map(String).join(" · ");
+  } catch {
+    return id;
+  }
+}
+
+/** Readable label of a unit: its member samples. */
+export const unitLabel = (u: Unit) => u.members.map(sampleLabel).join(", ");

@@ -13,6 +13,9 @@ const GROUP_COLORS = ["var(--cz-copper)", "var(--cz-teal)", "var(--cz-blue)", "v
 const GROUP_DASH = [undefined, "5 3", "2 2", "8 3 2 3", "1 3", "10 4"];
 const MAX_GROUP_ROWS = 60;
 
+/** ICC text: 4 decimals near ±1 so that 0.9996 is never shown as "1" (an ICC of exactly 1 means zero within-sample variance). */
+export const iccText = (v: number) => (Math.abs(v) >= 0.99 && Math.abs(v) < 1 ? v.toFixed(4) : fmt(v, 3));
+
 /** Mean of valid cells of row `r` over bands i0..i1 (null when none). */
 export const rangeMean = (source: InputSource, r: number, i0: number, i1: number) => {
   let s = 0;
@@ -86,10 +89,11 @@ export function GroupInspection({ source, profile, groups, selection, axisLabel,
   const [chosen, setChosen] = useState<string[]>([]);
   if (!selection) return <p className="hint rp-hint">Click a band or drag over a region in the tracks to inspect the repeats of each physical sample.</p>;
   const sel = selection;
-  const exact = profile.iccKind === "icc_1_1";
+  const exact = profile.betweenKind !== "approximate";
   const iccs = finite((profile.icc ?? []).slice(sel.i0, sel.i1 + 1));
-  const ratio = quantile(profile.ratio.slice(sel.i0, sel.i1 + 1), 0.5);
   const medIcc = quantile(iccs, 0.5);
+  // Same convention as the rubric KPI: ANOVA R from the median ICC (negative ICC → no R), REML median of exact R.
+  const ratio = profile.betweenKind === "anova" ? (medIcc === null || medIcc < 0 || medIcc >= 1 ? null : Math.sqrt(medIcc / (1 - medIcc))) : quantile(profile.ratio.slice(sel.i0, sel.i1 + 1), 0.5);
   const negative = iccs.filter((v) => v < 0).length;
   const bands = sel.i1 - sel.i0 + 1;
   const rows = groupSummaries(source, groups, sel);
@@ -106,8 +110,8 @@ export function GroupInspection({ source, profile, groups, selection, axisLabel,
     <section className="cz-card rp-inspect" aria-label="Replicate inspection">
       <h4>Repeats in {span} <span className="hint">({bands} band{bands > 1 ? "s" : ""})</span></h4>
       <p>
-        Median ICC {medIcc === null ? "—" : fmt(medIcc, 3)}{negative ? ` (${negative} negative band${negative > 1 ? "s" : ""}, unclipped)` : ""}.
-        {exact && ratio !== null ? ` Between-sample spectral variability is approximately ${fmt(ratio, 2)} times greater than within-sample measurement variability in the selected wavelength region (ICC = R²/(1 + R²) = ${fmt(ratioToIcc(ratio), 3)}).` : ""}
+        Median ICC {medIcc === null ? "—" : iccText(medIcc)}{negative ? ` (${negative} negative band${negative > 1 ? "s" : ""}, unclipped)` : ""}.
+        {exact && ratio !== null ? ` Between-sample spectral variability is approximately ${fmt(ratio, 2)} times greater than within-sample measurement variability in the selected wavelength region (ICC = R²/(1 + R²) = ${iccText(ratioToIcc(ratio))}).` : ""}
       </p>
       <RepeatStrip rows={rows} unit={unit} />
       <table className="rp-groups">

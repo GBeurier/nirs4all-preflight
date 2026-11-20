@@ -10,6 +10,7 @@ import * as repeatability from "../repeatability";
 import { NoiseProxyPanel } from "../repeatability/NoiseProxyPanel";
 import { RepeatabilityPanel } from "../repeatability/RepeatabilityPanel";
 import type { Track } from "../repeatability/AlignedTracks";
+import { MeasurementContextSelect, useMeasurementContext } from "../repeatability/ContextSelect";
 import type { RubricBlocks } from "../shared/blocks";
 import { RubricSection } from "./RubricSection";
 import { RUBRICS } from "./strings";
@@ -77,6 +78,7 @@ export function NoiseRubric(scope: RubricScope) {
   const proxy = useNoiseProxyBlocks(scope, { onOpenSettings: scope.onOpenSettings });
   const repeat = useRepeatabilityBlocks(scope, { onOpenSettings: scope.onOpenSettings });
   const design = useMemo(() => repeatDesignBlocks(scope), [scope.view, scope.sourceId, scope.locale]);
+  const context = useMeasurementContext(scope);
   if (!source || !scope.sourceId) return null;
   const repeatOn = scope.input.options.analysis_families?.repeatability !== false;
   // Until the repeatability module exposes its hooks, its panels are shown as they are.
@@ -87,7 +89,7 @@ export function NoiseRubric(scope: RubricScope) {
     </>
   );
   return (
-    <RubricSection id="s-repeat" index="2.2" icon="repeat" accent="green" title={RUBRICS.noise.title} lead={RUBRICS.noise.lead} sourceId={scope.sourceId} axis={source.axis} axisLabel={axisLabel} blocks={[snr, proxy, repeatOn ? repeat : null, repeatOn ? design : null]} reference={reference} tracksTitle={RUBRICS.noise.tracks}>
+    <RubricSection id="s-repeat" index="2.2" icon="repeat" accent="green" title={RUBRICS.noise.title} lead={RUBRICS.noise.lead} sourceId={scope.sourceId} axis={source.axis} axisLabel={axisLabel} blocks={[snr, proxy, repeatOn ? repeat : null, repeatOn ? design : null]} reference={reference} tracksTitle={RUBRICS.noise.tracks} controls={<MeasurementContextSelect state={context} />}>
       {legacy}
     </RubricSection>
   );

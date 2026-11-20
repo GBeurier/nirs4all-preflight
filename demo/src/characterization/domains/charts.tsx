@@ -89,10 +89,56 @@ export function TqScatter({ compared, reference, t2Limit, qLimit, height = 320 }
 
 // --- PCA overlap ------------------------------------------------------------------------------------------------
 
-export function PcaOverlap({ reference, compared, explained, referenceIds, comparedIds, height = 320 }: { reference: readonly number[][]; compared: readonly number[][]; explained: readonly (number | null)[]; referenceIds: readonly string[]; comparedIds: readonly string[]; height?: number }) {
+/**
+ * Empirical concentration ellipse of 2-D points: shape from the sample covariance (ddof 1), size = the `level`
+ * type-7 quantile of the points' own Mahalanobis distances, so about that share of the points lies inside it
+ * without any normality assumption. Not a prediction region and not a confidence region of the centroid.
+ * Returns polygon vertices in data coordinates, or null (fewer than 3 points or a degenerate covariance).
+ */
+export function concentrationEllipse(pts: readonly (readonly [number, number])[], level = 0.9, vertices = 72): [number, number][] | null {
+  const n = pts.length;
+  if (n < 3) return null;
+  const mx = pts.reduce((a, p) => a + p[0], 0) / n;
+  const my = pts.reduce((a, p) => a + p[1], 0) / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const [x, y] of pts) {
+    sxx += (x - mx) ** 2;
+    syy += (y - my) ** 2;
+    sxy += (x - mx) * (y - my);
+  }
+  sxx /= n - 1;
+  syy /= n - 1;
+  sxy /= n - 1;
+  const det = sxx * syy - sxy * sxy;
+  if (!(det > 1e-12 * Math.max(sxx * syy, 1e-300))) return null;
+  const d = pts.map(([x, y]) => {
+    const u = x - mx;
+    const v = y - my;
+    return Math.sqrt(Math.max(0, (syy * u * u - 2 * sxy * u * v + sxx * v * v) / det));
+  }).sort((a, b) => a - b);
+  const h = (n - 1) * level;
+  const r = d[Math.floor(h)]! + (h - Math.floor(h)) * ((d[Math.ceil(h)] ?? d[Math.floor(h)]!) - d[Math.floor(h)]!);
+  const tr = sxx + syy;
+  const disc = Math.sqrt(((sxx - syy) / 2) ** 2 + sxy * sxy);
+  const l1 = tr / 2 + disc;
+  const l2 = Math.max(0, tr / 2 - disc);
+  const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const [c, s] = [Math.cos(th), Math.sin(th)];
+  return Array.from({ length: vertices }, (_, k) => {
+    const t = (2 * Math.PI * k) / vertices;
+    const a = r * Math.sqrt(l1) * Math.cos(t);
+    const b = r * Math.sqrt(l2) * Math.sin(t);
+    return [mx + a * c - b * s, my + a * s + b * c];
+  });
+}
+
+export const ELLIPSE_LEVEL = 0.9;
+
+export function PcaOverlap({ reference, compared, explained, referenceIds, comparedIds, referenceInfo, comparedInfo, height = 320, ellipsesDefault = true }: { reference: readonly number[][]; compared: readonly number[][]; explained: readonly (number | null)[]; referenceIds: readonly string[]; comparedIds: readonly string[]; referenceInfo?: readonly string[] | undefined; comparedInfo?: readonly string[] | undefined; height?: number; ellipsesDefault?: boolean }) {
   const k = Math.min(reference[0]?.length ?? 0, explained.length);
   const pairs: [number, number][] = k >= 3 ? [[0, 1], [0, 2], [1, 2]] : k === 2 ? [[0, 1]] : [];
   const [pair, setPair] = useState(0);
+  const [ellipses, setEllipses] = useState(ellipsesDefault);
   if (!pairs.length) return <EmptyState>Fewer than two resolved reference components.</EmptyState>;
   const [a, b] = pairs[Math.min(pair, pairs.length - 1)]!;
   const pts = [...reference, ...compared];
@@ -102,13 +148,19 @@ export function PcaOverlap({ reference, compared, explained, referenceIds, compa
   const cr = [centroid(reference, a), centroid(reference, b)];
   const cc = [centroid(compared, a), centroid(compared, b)];
   const pcLabel = (c: number) => `PC${c + 1}${explained[c] !== null && explained[c] !== undefined ? ` (${(100 * explained[c]!).toPrecision(3)} % of reference variance)` : ""}`;
+  const ellR = ellipses ? concentrationEllipse(reference.map((p) => [p[a]!, p[b]!] as const), ELLIPSE_LEVEL) : null;
+  const ellC = ellipses ? concentrationEllipse(compared.map((p) => [p[a]!, p[b]!] as const), ELLIPSE_LEVEL) : null;
+  const tip = (side: string, ids: readonly string[], info: readonly string[] | undefined, i: number) => `${side} ${ids[i] ?? i}${info?.[i] ? `\n${info[i]}` : ""}`;
   return (
     <div>
-      {pairs.length > 1 ? (
-        <div className="dm-seg" role="group" aria-label="Component pair">
-          {pairs.map(([p, q], i) => <button key={i} type="button" aria-pressed={i === pair} onClick={() => setPair(i)}>PC{p + 1} / PC{q + 1}</button>)}
-        </div>
-      ) : null}
+      <div className="dm-controls">
+        {pairs.length > 1 ? (
+          <div className="dm-seg" role="group" aria-label="Component pair">
+            {pairs.map(([p, q], i) => <button key={i} type="button" aria-pressed={i === pair} onClick={() => setPair(i)}>PC{p + 1} / PC{q + 1}</button>)}
+          </div>
+        ) : null}
+        <label className="dm-toggle"><input type="checkbox" checked={ellipses} onChange={(e) => setEllipses(e.target.checked)} /> Empirical {Math.round(100 * ELLIPSE_LEVEL)} % concentration ellipses</label>
+      </div>
       <Responsive min={300}>
         {(width) => {
           const pad = { l: 56, r: 16, t: 12, b: 44 };
@@ -119,15 +171,21 @@ export function PcaOverlap({ reference, compared, explained, referenceIds, compa
           const dx = x(cc[0]!) - x(cr[0]!);
           const dy = y(cc[1]!) - y(cr[1]!);
           const len = Math.hypot(dx, dy);
+          const poly = (e: [number, number][]) => e.map(([u, v]) => `${x(u).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
           return (
-            <svg className="cz-svg" width={width} height={height} role="img" aria-label={`Scores on ${pcLabel(a)} and ${pcLabel(b)} of a PCA fitted on the reference units only; compared units projected; centroids joined by an arrow.`}>
+            <svg className="cz-svg" width={width} height={height} role="img" aria-label={`Scores on ${pcLabel(a)} and ${pcLabel(b)} of a PCA fitted on the reference units only; compared units projected; centroids joined by an arrow${ellipses ? "; dashed outlines: empirical concentration ellipses" : ""}.`}>
               <defs>
                 <marker id="dm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" className="dm-ink-fill" /></marker>
+                <clipPath id="dm-plot-clip"><rect x={pad.l} y={pad.t} width={width - pad.l - pad.r} height={height - pad.t - pad.b} /></clipPath>
               </defs>
               {xt.map((t) => <g key={`x${t}`}><line x1={x(t)} x2={x(t)} y1={pad.t} y2={height - pad.b} className="cz-grid" /><text x={x(t)} y={height - pad.b + 14} textAnchor="middle" className="cz-t-axis">{defaultFmt(t)}</text></g>)}
               {yt.map((t) => <g key={`y${t}`}><line x1={pad.l} x2={width - pad.r} y1={y(t)} y2={y(t)} className="cz-grid" /><text x={pad.l - 6} y={y(t) + 4} textAnchor="end" className="cz-t-axis">{defaultFmt(t)}</text></g>)}
-              {reference.map((p, i) => <circle key={`r${i}`} cx={x(p[a]!)} cy={y(p[b]!)} r={3.2} className="dm-ref-fill" opacity={0.55}><title>{`Reference ${referenceIds[i] ?? i}`}</title></circle>)}
-              {compared.map((p, i) => <Diamond key={`c${i}`} x={x(p[a]!)} y={y(p[b]!)} r={4} className="dm-cmp-fill" title={`Compared ${comparedIds[i] ?? i}`} />)}
+              <g clipPath="url(#dm-plot-clip)">
+                {ellR ? <polygon points={poly(ellR)} className="dm-ell dm-ell-ref"><title>{`Reference: empirical ${Math.round(100 * ELLIPSE_LEVEL)} % concentration ellipse`}</title></polygon> : null}
+                {ellC ? <polygon points={poly(ellC)} className="dm-ell dm-ell-cmp"><title>{`Compared: empirical ${Math.round(100 * ELLIPSE_LEVEL)} % concentration ellipse`}</title></polygon> : null}
+              </g>
+              {reference.map((p, i) => <circle key={`r${i}`} cx={x(p[a]!)} cy={y(p[b]!)} r={3.2} className="dm-ref-fill" opacity={0.55}><title>{tip("Reference", referenceIds, referenceInfo, i)}</title></circle>)}
+              {compared.map((p, i) => <Diamond key={`c${i}`} x={x(p[a]!)} y={y(p[b]!)} r={4} className="dm-cmp-fill" title={tip("Compared", comparedIds, comparedInfo, i)} />)}
               {len > 12 ? <line x1={x(cr[0]!)} y1={y(cr[1]!)} x2={x(cc[0]!) - (dx / len) * 8} y2={y(cc[1]!) - (dy / len) * 8} className="dm-arrow" markerEnd="url(#dm-arrow)" /> : null}
               <circle cx={x(cr[0]!)} cy={y(cr[1]!)} r={7} className="dm-ref-fill dm-centroid"><title>Reference centroid</title></circle>
               <Diamond x={x(cc[0]!)} y={y(cc[1]!)} r={8} className="dm-cmp-fill dm-centroid" title="Compared centroid" />
@@ -137,6 +195,7 @@ export function PcaOverlap({ reference, compared, explained, referenceIds, compa
           );
         }}
       </Responsive>
+      {ellipses ? <p className="dm-note">Ellipse = empirical concentration: shape from the sample covariance of the two scores, size = the {Math.round(100 * ELLIPSE_LEVEL)}th percentile of each domain&apos;s own Mahalanobis distances (no normality assumed). It is neither a prediction ellipse nor a confidence region of the centroid. Hover a point for its samples and metadata.</p> : null}
     </div>
   );
 }

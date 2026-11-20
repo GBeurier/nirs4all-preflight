@@ -125,6 +125,8 @@ export interface TrackInputs {
   distortion?: { axis: readonly number[]; values: readonly (number | null)[]; unit: string | null; provenance: string } | null;
   /** Source axis the map is drawn on. */
   axis: readonly number[];
+  /** Provenance of the event band counts when they do not come from the engine report (e.g. the explorer). */
+  eventsProvenance?: string | undefined;
 }
 
 const NOT_COMPUTED_DISTORTION = "Not computed: open the preprocessing explorer to evaluate a configuration.";
@@ -157,7 +159,7 @@ export function buildTracks(input: TrackInputs): QualityTrack[] {
   const frequency = (id: TrackId, label: string, events: EventBandInput | null) => {
     const counts = events ? onSameAxis(input.axis, events.axis, events.counts) : null;
     const share = counts && input.observations > 0 ? counts.map((c) => (c === null || c === undefined ? null : c / input.observations)) : null;
-    return sequential(id, label, "fraction of spectra", "s-quality", share, RAMPS.browns, `Engine band counts divided by ${input.observations} spectra; a spike also counts on its two neighbouring bands.`, "Not computed: intrinsic events were not requested or have no band counts.", "engine", true);
+    return sequential(id, label, "fraction of spectra", "s-quality", share, RAMPS.browns, `${input.eventsProvenance ?? "Engine band counts"} divided by ${input.observations} spectra; a spike also counts on its two neighbouring bands.`, "Not computed: intrinsic events were not requested or have no band counts.", input.eventsProvenance ? "derived" : "engine", true);
   };
   const distortion = input.distortion ? onSameAxis(input.axis, input.distortion.axis, input.distortion.values) : null;
   const ratio = same(p?.noiseToDiversity);

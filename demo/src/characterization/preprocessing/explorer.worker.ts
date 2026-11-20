@@ -4,6 +4,7 @@
 import type { StepRecipe } from "./catalog";
 import { benchmarkPoint, diagnose, evaluatePipeline, type Diagnostics, type EvaluationInput } from "./evaluate";
 import { loadMethodsKernel } from "./methodsKernel";
+import { runChemometricComparison } from "./chemometrics";
 import type { ExplorerRequest, ExplorerResponse } from "./protocol";
 
 let state: { input: EvaluationInput; before: Diagnostics } | null = null;
@@ -16,6 +17,11 @@ self.onmessage = async (event: MessageEvent<ExplorerRequest>) => {
     if (msg.op === "init") {
       state = { input: msg.input, before: diagnose(kernel, msg.input, msg.input.matrix) };
       reply({ id: msg.id, ok: true, op: "init", before: state.before });
+      return;
+    }
+    if (msg.op === "chemometrics") {
+      const result = runChemometricComparison(kernel, msg.population, msg.configs, (done, total) => reply({ id: msg.id, ok: true, op: "chemo_progress", done, total }));
+      reply({ id: msg.id, ok: true, op: "chemometrics", result });
       return;
     }
     if (!state) throw new Error("Explorer worker not initialised.");

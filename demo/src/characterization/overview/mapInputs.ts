@@ -3,7 +3,7 @@
 import { extractIntrinsic, metricLabel, type QualificationReportView } from "nirs4all-ui/qualification";
 import type { Scope } from "../../Sections";
 import { readBandCounts } from "../integrity/model";
-import { bandProfiles } from "../repeatability/profiles";
+import { bandProfiles, type ContextChoice } from "../repeatability/profiles";
 import type { TrackInputs } from "./tracks";
 
 const REPLICATE_REASON = "Not available: no technical replicate groups have been declared.";
@@ -25,11 +25,11 @@ function eventObservations(view: QualificationReportView, sourceId: string): num
 }
 
 /** Inputs of every track for the selected source; null when the source has no axis. */
-export function qualityMapInputs(scope: Pick<Scope, "view" | "input" | "sourceId">, distortion: TrackInputs["distortion"] = null): TrackInputs | null {
+export function qualityMapInputs(scope: Pick<Scope, "view" | "input" | "sourceId">, distortion: TrackInputs["distortion"] = null, context: ContextChoice = {}): TrackInputs | null {
   const { view, input, sourceId } = scope;
   const source = sourceId ? input.sources.find((s) => s.source_id === sourceId) : undefined;
   if (!source || !sourceId || !source.axis.length) return null;
-  const profiles = bandProfiles(scope);
+  const profiles = bandProfiles(scope, context);
   const disabled = input.options.analysis_families?.repeatability === false;
   const reason = replicateReason(view, sourceId, disabled);
   const spikes = readBandCounts(view, sourceId, "spike");
@@ -54,7 +54,8 @@ export function qualityMapInputs(scope: Pick<Scope, "view" | "input" | "sourceId
           diversityBasis: profiles.diversityBasis,
           provenance: profiles.provenance,
           // The engine's own availability state (or a disabled analysis) refines the module's generic reason.
-          unavailable: { ...profiles.unavailable, ...(reason && !profiles.repeatabilitySd ? { repeatability_sd: reason, icc: reason } : {}) },
+          // (Only when no context has replicate groups: a context without repeats keeps the module's own reason.)
+          unavailable: { ...profiles.unavailable, ...(reason && !profiles.repeatabilitySd && !profiles.repeats.length ? { repeatability_sd: reason, icc: reason } : {}) },
         }
       : null,
   };

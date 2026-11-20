@@ -1,6 +1,7 @@
 // Pure evaluation core of the explorer: applies a pipeline through an injected kernel and
 // compares the same spectra and bands before/after with fixed diagnostic parameters.
 // The Methods-backed kernel lives in methodsKernel.ts; tests inject fakes or the real kernel.
+import { localTransform } from "./localSteps";
 import { STEP_SPECS, pipelineComparability, pipelinePreservesUnits, stepIssue, type Comparability, type StepRecipe } from "./catalog";
 import type { DiagnosticSettings } from "./data";
 import {
@@ -16,6 +17,8 @@ import {
   spectralAngleDeg,
   type Matrix,
 } from "./metrics";
+
+export type { Matrix } from "./metrics";
 
 export interface NoiseResult {
   snrDb: (number | null)[];
@@ -40,7 +43,10 @@ export interface RepeatResult {
 
 /** Owner kernels (Methods). Each diagnostic may be unavailable (null) without failing the run. */
 export interface ExplorerKernel {
+  /** Fits the step on `X` and transforms `X`. */
   transform(step: StepRecipe, X: Matrix, axisStep: number | null): Matrix;
+  /** Fits the step on `fit` only, then transforms `fit` and each matrix of `apply` (returned in that order). */
+  fitTransform?(step: StepRecipe, fit: Matrix, apply: readonly Matrix[], axisStep: number | null): Matrix[];
   noise(X: Matrix): NoiseResult | null;
   events(X: Matrix, settings: DiagnosticSettings): EventsResult | null;
   noiseProfile(X: Matrix, settings: DiagnosticSettings): ProfileResult | null;
@@ -87,20 +93,67 @@ export function diagnose(kernel: ExplorerKernel, input: EvaluationInput, X: Matr
   };
 }
 
-/** Applies the ordered pipeline on a copy; the input matrix is never written. */
+const checkOutput = (step: StepRecipe, out: Matrix, like: Matrix): Matrix => {
+  if (out.rows !== like.rows || out.cols !== like.cols) throw new Error(`${STEP_SPECS[step.kind].label}: output shape changed`);
+  for (let k = 0; k < out.data.length; k++) {
+    if (!Number.isFinite(out.data[k]!)) throw new Error(`${STEP_SPECS[step.kind].label}: non-finite output`);
+  }
+  return out;
+};
+const checkStep = (step: StepRecipe, cols: number) => {
+  const issue = stepIssue({ id: "", ...step }, cols);
+  if (issue) throw new Error(`${STEP_SPECS[step.kind].label}: ${issue}`);
+};
+
+/** Applies the ordered pipeline on a copy; the input matrix is never written. Learned steps fit on `X` itself. */
 export function applyPipeline(kernel: ExplorerKernel, X: Matrix, steps: readonly StepRecipe[], axisStep: number | null): Matrix {
   let current: Matrix = { data: Float64Array.from(X.data), rows: X.rows, cols: X.cols };
   for (const step of steps) {
-    const issue = stepIssue({ id: "", ...step }, X.cols);
-    if (issue) throw new Error(`${STEP_SPECS[step.kind].label}: ${issue}`);
-    const out = kernel.transform(step, current, axisStep);
-    if (out.rows !== X.rows || out.cols !== X.cols) throw new Error(`${STEP_SPECS[step.kind].label}: output shape changed`);
-    for (let k = 0; k < out.data.length; k++) {
-      if (!Number.isFinite(out.data[k]!)) throw new Error(`${STEP_SPECS[step.kind].label}: non-finite output`);
-    }
-    current = out;
+    checkStep(step, X.cols);
+    current = checkOutput(step, localTransform(step, current) ?? kernel.transform(step, current, axisStep), X);
   }
   return current;
+}
+
+/**
+ * Applies the ordered pipeline with every learned parameter fitted on `fit` only: each step is fitted on
+ * the fit rows as transformed by the previous steps (MSC reference = their mean), then applied to the fit
+ * rows and to every matrix of `apply`. Per-spectrum steps learn nothing. Inputs are never written.
+ */
+export function applyPipelineFitted(kernel: ExplorerKernel, steps: readonly StepRecipe[], fit: Matrix, apply: readonly Matrix[], axisStep: number | null): { fit: Matrix; apply: Matrix[] } {
+  let f: Matrix = { data: Float64Array.from(fit.data), rows: fit.rows, cols: fit.cols };
+  let a: Matrix[] = apply.map((m) => {
+    if (m.cols !== fit.cols) throw new Error("applyPipelineFitted: band count differs between fit and apply rows.");
+    return { data: Float64Array.from(m.data), rows: m.rows, cols: m.cols };
+  });
+  for (const step of steps) {
+    checkStep(step, fit.cols);
+    let outs: Matrix[];
+    const local = localTransform(step, f);
+    if (local) outs = [local, ...a.map((m) => localTransform(step, m)!)];
+    else if (kernel.fitTransform) outs = kernel.fitTransform(step, f, a, axisStep);
+    else if (!STEP_SPECS[step.kind].learned) outs = [kernel.transform(step, f, axisStep), ...a.map((m) => kernel.transform(step, m, axisStep))];
+    else throw new Error(`${STEP_SPECS[step.kind].label}: this kernel cannot fit on reference rows.`);
+    f = checkOutput(step, outs[0]!, f);
+    a = a.map((m, k) => checkOutput(step, outs[k + 1]!, m));
+  }
+  return { fit: f, apply: a };
+}
+
+/** Row subset of a matrix (copy, order kept). */
+export function takeRows(X: Matrix, rows: readonly number[]): Matrix {
+  const data = new Float64Array(rows.length * X.cols);
+  rows.forEach((r, i) => {
+    if (!(r >= 0 && r < X.rows)) throw new Error(`Row ${r} out of range.`);
+    data.set(X.data.subarray(r * X.cols, (r + 1) * X.cols), i * X.cols);
+  });
+  return { data, rows: rows.length, cols: X.cols };
+}
+
+/** applyPipelineFitted on row indices of one matrix: fit on X[fitRows], apply to X[applyRows]. */
+export function applyPipelineFittedRows(kernel: ExplorerKernel, steps: readonly StepRecipe[], X: Matrix, fitRows: readonly number[], applyRows: readonly number[], axisStep: number | null): { fit: Matrix; apply: Matrix } {
+  const r = applyPipelineFitted(kernel, steps, takeRows(X, fitRows), [takeRows(X, applyRows)], axisStep);
+  return { fit: r.fit, apply: r.apply[0]! };
 }
 
 /** One metric with its denominator, or the reason it is withheld. */
@@ -192,6 +245,10 @@ export function benchmarkGrid(bands: number): { label: string; steps: StepRecipe
     if (window <= bands) out.push({ label: `SG ${window} (order 3)`, steps: [{ kind: "savgol", params: { window, polyorder: 3 } }] });
   }
   for (const sigma of [0.5, 1, 1.5, 2, 3, 4, 6]) out.push({ label: `Gaussian σ ${sigma}`, steps: [{ kind: "gaussian", params: { sigma } }] });
+  for (const window of [3, 5, 7, 9, 11, 15, 21]) {
+    if (window <= bands) out.push({ label: `Median ${window}`, steps: [{ kind: "median", params: { window } }] });
+  }
+  for (const threshold of [3.5, 5, 6, 8, 12]) out.push({ label: `Despike z ${threshold}`, steps: [{ kind: "despike", params: { threshold, half_window: 3 } }] });
   for (const family of ["db4", "sym4", "haar"]) {
     for (const level of [1, 2, 3, 4]) {
       if (2 ** level <= bands) out.push({ label: `Wavelet ${family} L${level}`, steps: [{ kind: "wavelet", params: { family, level, threshold_mode: "soft" } }] });
@@ -217,6 +274,8 @@ export function sweepOf(steps: readonly StepRecipe[]): Sweep | null {
     const k = Number(p.polyorder);
     return { key: `savgol:${k}`, label: `Savitzky–Golay, order ${k} (window)`, order: Number(p.window), short: k === SG_SWEEP_POLYORDER ? `SG ${p.window}` : `SG ${p.window} o${k}` };
   }
+  if (kind === "median") return { key: "median", label: "Median filter (window)", order: Number(p.window), short: `Median ${p.window}` };
+  if (kind === "despike") return { key: `despike:${p.half_window}`, label: `Despiking, half-window ${p.half_window} (threshold)`, order: -Number(p.threshold), short: `z ${p.threshold}` };
   if (kind === "gaussian") return { key: "gaussian", label: "Gaussian (sigma)", order: Number(p.sigma), short: `σ ${p.sigma}` };
   if (kind === "wavelet") return { key: `wavelet:${p.family}:${p.threshold_mode}`, label: `Wavelet ${p.family}, ${p.threshold_mode} (level)`, order: Number(p.level), short: `${p.family} L${p.level}` };
   return null;

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Locale } from "nirs4all-ui/lab";
 import { buildQualificationReportView, extractIntrinsic, type EngineReport, reportSourceIds, reportTargetIds } from "nirs4all-ui/qualification";
 import timings from "./data/analysis-timings.json";
@@ -14,6 +14,9 @@ import { Icon, type IconName } from "./icons";
 import { countIndependenceGroups, defaultConfig, parseSeed, ANALYSIS_FAMILIES, metadataColumns, type MetadataRole, type AnalysisConfig, type EngineInput, type IndependenceUnit } from "./input";
 import { DECLARABLE_REPETITIONS, type RepetitionDeclaration } from "./dataset";
 import { AssociationSection, ClusteringSection, ConfoundingSection, DomainShiftSection, DuplicatesSection, ProbeSection, SensitivitySection, presentSections } from "./Blocks";
+import { scrollToSettled } from "./characterization/shared/scroll";
+import { DesignSection, DesignSelectionProvider } from "./characterization/design";
+import { JointSection, ScenarioAuditSection } from "./characterization/joint";
 import { CharacterizationOverview, CharacterizationProvider, DetailedProfiles, DiversityRubric, IntegrityRubric, NoiseRubric, PHASES, PhaseArrow, RUBRICS, SpectralQualityMap, hasQualityMap } from "./characterization/overview";
 import { CapabilitiesSection, DiagnosisSummary, EvidenceSection, PopulationsSection, Section, StructureSection, TargetSection, TechnicalSection, type Scope } from "./Sections";
 
@@ -25,6 +28,9 @@ const DIAG_LINKS: readonly { id: string; label: TextKey }[] = [
   { id: "s-populations", label: "navPopulations" },
   { id: "s-structure", label: "navStructure" },
   { id: "s-target", label: "navTarget" },
+  { id: "s-design", label: "navDesign" },
+  { id: "s-joint", label: "navJoint" },
+  { id: "s-scenarios", label: "navScenarios" },
 ];
 /** Characterization sections (not in the shared i18n table): menu entries with their own English labels. */
 const CHARACTERIZATION_LINKS: readonly { id: string; label: string }[] = [
@@ -56,7 +62,7 @@ function issueGroups(validation: EngineValidation) {
  * characterization mockup: overview, detailed diagnostics (spectral quality, repeatability), preprocessing
  * explorer, spectral quality map, then the remaining analyses.
  */
-const DIAG_ORDER = ["s-overview", "s-populations", "s-characterization", "s-detailed", "s-quality", "s-repeat", "s-diversity", "s-preprocessing", "s-quality-map", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-target", "s-association", "s-confounding", "s-shift", "s-probe"];
+const DIAG_ORDER = ["s-overview", "s-populations", "s-characterization", "s-detailed", "s-quality", "s-repeat", "s-diversity", "s-preprocessing", "s-quality-map", "s-duplicates", "s-structure", "s-sensitivity", "s-clustering", "s-target", "s-design", "s-association", "s-joint", "s-confounding", "s-scenarios", "s-shift", "s-probe"];
 const diagMenu = (scope: Scope, qualityMap: boolean): { id: string; label: string }[] =>
   [
     { id: "s-overview", label: scope.t("diagTitle" as TextKey) },
@@ -72,6 +78,28 @@ function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id
   const [active, setActive] = useState(items[0]?.id ?? "");
   const side = useRef<HTMLElement>(null);
   const ids = items.map((i) => i.id).join(" ");
+  // A section may decide not to render (e.g. no noise or repeatability result): its entry is hidden.
+  const [missing, setMissing] = useState("");
+  useLayoutEffect(() => {
+    const main = side.current?.parentElement?.querySelector(".diag-main");
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const next = ids.split(" ").filter((id) => !document.getElementById(id)).join(" ");
+      setMissing((cur) => (cur === next ? cur : next));
+    };
+    update();
+    if (!main || typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => {
+      frame ||= requestAnimationFrame(update);
+    });
+    observer.observe(main, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [ids]);
+  const hidden = new Set(missing ? missing.split(" ") : []);
   useEffect(() => {
     // Horizontal bar on narrow screens: keep the current section's link in view.
     const bar = side.current;
@@ -94,7 +122,7 @@ function DiagnosisMenu({ t, items, alerts }: { t: T; alerts: Alerts; items: { id
       <nav aria-label={t("diagCharts")}>
         <p className="diag-side-title">{t("diagCharts")}</p>
         <ol>
-          {items.map((item) => (
+          {items.filter((item) => !hidden.has(item.id)).map((item) => (
             <li key={item.id}><a href={`#${item.id}`} aria-current={active === item.id ? "location" : undefined}>{item.label}{alerts[item.id] ? <span className="alert-dot" data-level={alerts[item.id]!.critical ? "critical" : "attention"} aria-label={`${alerts[item.id]!.n} ${alerts[item.id]!.critical ? "critical " : ""}alert${alerts[item.id]!.n > 1 ? "s" : ""}`}>{alerts[item.id]!.n}</span> : null}</a></li>
           ))}
         </ol>
@@ -184,8 +212,8 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
   };
   useEffect(() => {
     if (!scrollTo) return;
-    const el = document.getElementById(scrollTo);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Re-aligns while the sections above the anchor are still growing (charts, lazy panels).
+    scrollToSettled(scrollTo);
     setScrollTo(null);
   }, [scrollTo, view]);
 
@@ -229,7 +257,7 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
               {synthetic ? <span className="tag tag-synth">{t("synthetic")}</span> : null}
             </div>
             {synthetic ? <p className="ws-sub">{t("demoLabel")}</p> : null}
-            {DEMO_DATASETS.filter((d) => d.name === origin.name).map((d) => <p className="ws-sub" key={d.id}>Source: <a href={d.source} target="_blank" rel="noreferrer">{d.attribution}</a> · {d.license}. Original demonstration split; see <a href={`${import.meta.env.BASE_URL}data/demo/SOURCES.md`} target="_blank" rel="noreferrer">dataset provenance</a>.</p>)}
+            {DEMO_DATASETS.filter((d) => d.name === origin.name).map((d) => <p className="ws-sub" key={d.id}>Source: <a href={d.source} target="_blank" rel="noreferrer">{d.attribution}</a> · {d.license}. {d.caveat ? "Demonstration split" : "Original demonstration split"}; see <a href={`${import.meta.env.BASE_URL}data/demo/SOURCES.md`} target="_blank" rel="noreferrer">dataset provenance</a>.{d.caveat ? <><br /><strong>{d.caveat}</strong></> : null}</p>)}
             {origin.tables?.length ? (
               <p className="ws-sub ws-files">
                 {t("detectedFiles")}{" "}
@@ -352,8 +380,14 @@ export function Workspace({ t, locale, input, origin, config, onConfig, run, res
             <SensitivitySection {...scope} />
             <ClusteringSection {...scope} />
             <TargetSection {...scope} />
+            {/* Joint interpretation (§12): design → metadata and target → joint landscape → confounding detail → scenarios; one shared selected factor. */}
+            <DesignSelectionProvider key={`design-${source ?? ""}`}>
+            <DesignSection {...scope} />
             <AssociationSection {...scope} />
+            <JointSection key={`joint-${source ?? ""}`} {...scope} />
             <ConfoundingSection {...scope} />
+            <ScenarioAuditSection key={`scenarios-${source ?? ""}`} {...scope} />
+            </DesignSelectionProvider>
             <DomainShiftSection key={`shift-${source ?? ""}`} {...scope} onOpenSettings={openSettings} />
             <ProbeSection {...scope} />
             </CharacterizationProvider>

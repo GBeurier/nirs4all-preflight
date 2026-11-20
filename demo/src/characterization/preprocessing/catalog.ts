@@ -1,12 +1,11 @@
-// Preprocessing step catalog for the explorer. Every available step is a `@nirs4all/methods`
-// 1.5 transformer (see methodsKernel.ts); nothing here computes a spectrum. Steps that the
-// request lists but Methods does not expose are declared `unavailable` (debt), never hand-rolled.
+// Preprocessing step catalog for the explorer. Every step is a `@nirs4all/methods` 1.5 transformer
+// (see methodsKernel.ts) except the median filter and despiking, which Methods does not expose yet:
+// they are interim local transformers (localSteps.ts, `local: true`), recorded as Methods debt.
 
 /** How a step's output can be compared with the raw spectra on the same scale. */
 export type Comparability = "comparable" | "caution" | "not_comparable";
 
-export type StepKind = "savgol" | "gaussian" | "wavelet" | "snv" | "msc" | "detrend" | "sg_d1" | "sg_d2";
-export type UnavailableKind = "median" | "despike";
+export type StepKind = "savgol" | "gaussian" | "wavelet" | "median" | "despike" | "snv" | "msc" | "detrend" | "sg_d1" | "sg_d2";
 
 export type ParamSpec =
   | { name: string; label: string; type: "int"; min: number; max: number; step?: number; odd?: boolean; unit?: string }
@@ -27,6 +26,10 @@ export interface StepSpec {
   params: readonly ParamSpec[];
   defaults: ParamValues;
   note: string;
+  /** Interim implementation computed in the demo (localSteps.ts), not a Methods transformer. */
+  local?: boolean;
+  /** Learns parameters from the rows it is fitted on (applyPipelineFitted fits them on reference rows only). */
+  learned?: boolean;
 }
 
 const window = (max = 101): ParamSpec => ({ name: "window", label: "Window length", type: "int", min: 3, max, step: 2, odd: true, unit: "bands" });
@@ -54,6 +57,23 @@ export const STEP_SPECS: Record<StepKind, StepSpec> = {
     ],
     defaults: { family: "db4", level: 3, threshold_mode: "soft" }, note: "Universal threshold with a median (MAD) noise estimate, periodization edges.",
   },
+  median: {
+    kind: "median", label: "Median filter", methodId: "local.median_filter", family: "denoising",
+    comparability: "comparable", preservesUnits: true, local: true,
+    params: [{ name: "window", label: "Window length", type: "int", min: 3, max: 51, step: 2, odd: true, unit: "bands" }],
+    defaults: { window: 5 },
+    note: "Running median over the window; edges reflected (half-sample symmetric, as scipy.ndimage 'reflect'). Computed locally in the demo (interim, no Methods transformer yet).",
+  },
+  despike: {
+    kind: "despike", label: "Despiking (Whitaker–Hayes)", methodId: "local.despike_whitaker_hayes", family: "denoising",
+    comparability: "comparable", preservesUnits: true, local: true,
+    params: [
+      { name: "threshold", label: "Modified z-score threshold", type: "float", min: 2, max: 20, step: 0.5 },
+      { name: "half_window", label: "Replacement half-window", type: "int", min: 1, max: 10, unit: "bands" },
+    ],
+    defaults: { threshold: 6, half_window: 3 },
+    note: "Flags points whose first difference has |modified z| = |0.6745·(Δ − median Δ)/MAD| above the threshold; each is replaced by the median of the unflagged points within the half-window. Computed locally in the demo (interim, no Methods transformer yet).",
+  },
   snv: {
     kind: "snv", label: "SNV", methodId: "preprocessing.scatter.snv", family: "scatter",
     comparability: "caution", preservesUnits: false, params: [], defaults: {},
@@ -61,8 +81,8 @@ export const STEP_SPECS: Record<StepKind, StepSpec> = {
   },
   msc: {
     kind: "msc", label: "MSC", methodId: "preprocessing.scatter.msc", family: "scatter",
-    comparability: "caution", preservesUnits: true, params: [], defaults: {},
-    note: "Reference = mean of the spectra entering this step (the explorer subset), fitted here, not on a training split.",
+    comparability: "caution", preservesUnits: true, params: [], defaults: {}, learned: true,
+    note: "Reference = mean of the spectra the step is fitted on: the explorer subset here; the training fold only in the chemometric validation.",
   },
   detrend: {
     kind: "detrend", label: "Detrending", methodId: "preprocessing.baselines.detrend", family: "baseline",
@@ -86,11 +106,6 @@ export const STEP_SPECS: Record<StepKind, StepSpec> = {
 
 export const STEP_KINDS = Object.keys(STEP_SPECS) as StepKind[];
 
-/** Requested steps that `@nirs4all/methods` 1.5.0 still does not expose as transformers (checked 2026-11-20). */
-export const UNAVAILABLE_STEPS: readonly { kind: UnavailableKind; label: string; reason: string }[] = [
-  { kind: "median", label: "Median filter", reason: "No median-filter transformer in @nirs4all/methods 1.5.0 (owner debt: Methods kernel)." },
-  { kind: "despike", label: "Despiking", reason: "No despiking transformer in @nirs4all/methods 1.5.0 (owner debt: Methods kernel)." },
-];
 
 export interface PipelineStep {
   /** Stable client id for React keys and reordering. */
@@ -132,6 +147,7 @@ export function stepIssue(step: PipelineStep, bands: number): string | null {
     if (k >= w) return `Polynomial order ${k} must be below the window ${w}.`;
     if (k < deriv) return `Polynomial order must be at least the derivative order ${deriv}.`;
   }
+  if (step.kind === "median" && Number(p.window) > bands) return `Window ${p.window} exceeds the ${bands} bands.`;
   if (step.kind === "detrend" && Number(p.polyorder) >= bands) return `Polynomial order must be below the ${bands} bands.`;
   if (step.kind === "wavelet" && 2 ** Number(p.level) > bands) return `Level ${p.level} needs at least ${2 ** Number(p.level)} bands.`;
   return null;

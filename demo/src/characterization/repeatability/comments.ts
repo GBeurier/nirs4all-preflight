@@ -55,13 +55,18 @@ export function repeatStats(p: RepeatProfile): RepeatStats {
     p5Icc: quantile(icc, 0.05),
     negative: icc.filter((v) => v < 0).length,
     belowHalf: icc.filter((v) => v < 0.5).length,
-    medianRatio: quantile(p.ratio, 0.5),
+    // R is monotone in the ICC: with a negative ANOVA ICC (σb² estimate ≤ 0) R is not defined per band, so the
+    // median R is the transform of the median ICC (consistent with the median ICC shown next to it), null when < 0.
+    medianRatio: p.betweenKind === "anova" ? (() => {
+      const m = quantile(icc, 0.5);
+      return m === null || m < 0 || m >= 1 ? null : Math.sqrt(m / (1 - m));
+    })() : quantile(p.ratio, 0.5),
   };
 }
 
 /**
  * Repeatability rules. Region rule: ≥ 3 contiguous bands with ICC < 0.50. Few-groups rule: fewer
- * than 10 physical samples with ≥ 2 repeats. R statement: balanced ICC(1,1) only (model-exact).
+ * than 10 physical samples with ≥ 2 repeats. R statement: model-exact only (balanced ICC(1,1) or the engine's REML components).
  */
 export function repeatabilityComments(profiles: readonly RepeatProfile[], axis: readonly number[], axisUnit: string, f: Fmt = fmt): string[] {
   if (!profiles.length) return [NO_REPLICATES_COMMENT];
@@ -81,7 +86,7 @@ export function repeatabilityComments(profiles: readonly RepeatProfile[], axis: 
       const widest = [...low].sort((a, b) => b.i1 - b.i0 - (a.i1 - a.i0))[0]!;
       out.push(`${tag}ICC stays below 0.50 over ${low.length} contiguous region${low.length > 1 ? "s" : ""} of at least 3 bands; the widest spans ${span(axis, widest, axisUnit, f)}.`);
     }
-    if (p.iccKind === "icc_1_1" && s.medianRatio !== null) {
+    if (p.betweenKind !== "approximate" && s.medianRatio !== null) {
       out.push(`${tag}Between-sample spectral variability is approximately ${f(s.medianRatio, 2)} times the within-sample measurement variability (median over evaluable bands).`);
     }
     const rc = p.uncertainty?.repeatCounts;

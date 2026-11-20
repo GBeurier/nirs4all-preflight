@@ -111,3 +111,9 @@
 .dp-chart { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 10px); padding: 10px 12px 6px; }
 .dp-links { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: .84rem; font-weight: 600; }
 .dp-links a { color: var(--teal-d); }
+
+/* Wave 3: rubric-wide controls and quality-map mode / context controls */
+.rb-controls { margin: 0 0 12px; }
+.qm-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 0 6px; }
+.qm-mode-note { margin: 0 0 10px; }
+.qm-controls .seg button:disabled { opacity: .5; cursor: not-allowed; }

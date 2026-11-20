@@ -7,8 +7,8 @@ export const S = {
     "These are inspection flags, not automatic rejection criteria. Unusual but chemically meaningful spectral features may also be detected. Common artifacts shared by most spectra may remain undetected.",
   eventsLimits: [
     "Flags mark derivatives atypical relative to the other spectra at the same band (robust deviation above the threshold), not confirmed defects.",
-    "The number of events is not a severity: several adjacent flagged positions may belong to a single physical anomaly. Per-spectrum event positions are not reported by the engine, so contiguous flags cannot be merged here.",
-    "In the band profile a spike also counts on its two neighbouring bands; band counts are therefore not event counts.",
+    "The number of events is not a severity: several adjacent flagged positions may belong to a single physical anomaly. The engine reports counts only; the event map merges contiguous flags of a spectrum into physical events from positions recomputed in this page (interim).",
+    "In the band profile each flag counts at one band (middle band of a second-difference stencil, upper band of a first-difference pair); one narrow spike can raise several adjacent flags of both types.",
     "The flag rate depends on the number of bands, the spectral step and the reference population (development spectra); rare chemical bands can be flagged and an artifact common to all spectra can pass unnoticed.",
   ],
   eventsInvestigate: [

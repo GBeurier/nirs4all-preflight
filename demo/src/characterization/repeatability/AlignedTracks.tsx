@@ -228,6 +228,9 @@ export function AlignedTracks(props: AlignedTracksProps) {
   const [ownCursor, setOwnCursor] = useState<number | null>(null);
   const cursor = props.cursor !== undefined ? props.cursor : ownCursor;
   const setCursor = (i: number | null) => (props.onCursor ? props.onCursor(i) : setOwnCursor(i));
+  // A controlled cursor may come from another chart (shared hover): the tooltip shows only where the pointer or focus is.
+  const [local, setLocal] = useState(false);
+  const showTooltip = props.cursor === undefined || local;
   const [ownSelection, setOwnSelection] = useState<BandRange | null>(null);
   const selection = props.selection !== undefined ? props.selection : ownSelection;
   const [brush, setBrush] = useState<{ start: number; end: number; pan?: { x: number; domain: [number, number] } } | null>(null);
@@ -349,7 +352,13 @@ export function AlignedTracks(props: AlignedTracksProps) {
             setDomain([brush.pan.domain[0] - dx, brush.pan.domain[1] - dx]);
           } else if (brush) setBrush({ ...brush, end: i });
         }}
-        onPointerLeave={() => setCursor(null)}
+        onPointerEnter={() => setLocal(true)}
+        onPointerLeave={() => {
+          setLocal(false);
+          setCursor(null);
+        }}
+        onFocus={() => setLocal(true)}
+        onBlur={() => setLocal(false)}
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -515,7 +524,7 @@ export function AlignedTracks(props: AlignedTracksProps) {
           {tracks.some((t) => t.nonEvaluable?.some(Boolean)) ? <li><span className="at-legend-na" aria-hidden="true" />Not evaluable</li> : null}
         </ul>
       ) : null}
-      {cursor !== null && cursor < n ? (
+      {cursor !== null && cursor < n && showTooltip ? (
         <div className="at-tooltip" role="status" style={{ left: Math.min(width - 220, Math.max(0, x(axis[cursor]!) + 12)) }}>
           <strong>{axisLabel}: {defaultFormat(axis[cursor]!)}</strong> <span className="at-dim">(band {cursor + 1})</span>
           {tracks.map((t) => {

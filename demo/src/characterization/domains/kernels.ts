@@ -25,7 +25,7 @@ export function loadMethods(): Promise<Methods> {
   return methods;
 }
 
-const matrix = (rows: readonly (readonly number[])[]) => {
+export const matrix = (rows: readonly (readonly number[])[]) => {
   const n = rows.length;
   const p = rows[0]?.length ?? 0;
   const data = new Float64Array(n * p);
@@ -152,13 +152,71 @@ export interface EnergyBenchmark extends EnergyContext {
   observed: number | null;
 }
 
+/** Residual spectral profiles x − reconstruction of the compared units above the Q limit (complete spectra). */
+export interface ResidualProfiles {
+  components: number;
+  /** Compared unit indices (into `compared`) above the monitor Q limit, highest Q first, at most MAX_RESIDUAL_PROFILES. */
+  units: number[];
+  /** Units above the Q limit in total. */
+  total: number;
+  profiles: number[][];
+  /** Squared residual norms of those profiles. */
+  q: number[];
+  /** True when the monitor ran on complete spectra: `q` then reproduces the monitor Q. */
+  sameSpace: boolean;
+  /** Per-band P5 / P95 of the reference residuals in the full reference fit (in-sample). */
+  refP5: number[];
+  refP95: number[];
+}
+
+export const MAX_RESIDUAL_PROFILES = 12;
+
+/** Residuals of `rows` after the reference PCA (centred on the reference mean, k resolved components). */
+export function referenceResiduals(m: Methods, reference: readonly (readonly number[])[], rows: readonly (readonly number[])[], k: number): number[][] {
+  const p = reference[0]?.length ?? 0;
+  const mean = new Array<number>(p).fill(0);
+  for (const r of reference) r.forEach((v, c) => (mean[c]! += v / reference.length));
+  let comps: number[] = [];
+  let L: Float64Array = new Float64Array(0);
+  if (k > 0) {
+    const pca = m.preflightPca(matrix(reference), Math.min(k, reference.length - 1, p));
+    comps = Array.from({ length: pca.loadings.rows }, (_, a) => a).filter((a) => !pca.unresolved[a]);
+    L = pca.loadings.data;
+  }
+  return rows.map((x) => {
+    const d = x.map((v, c) => v - mean[c]!);
+    for (const a of comps) {
+      let t = 0;
+      for (let c = 0; c < p; c++) t += d[c]! * L[a * p + c]!;
+      for (let c = 0; c < p; c++) d[c]! -= t * L[a * p + c]!;
+    }
+    return d;
+  });
+}
+
 export interface DomainDiagnostics {
   space: "complete_spectra" | "leading_pca";
   monitor: MonitorResult | null;
+  residuals: ResidualProfiles | null;
   overlap: OverlapResult | null;
   neighbours: NeighbourResult | null;
   energy: EnergyBenchmark;
   notes: string[];
+}
+
+/**
+ * The engine's leading space (`domain_shift.rs` `leading_space`): resolved scores of a Methods PCA of every
+ * development unit, k = min(50, n − 2, p), fitted without labels; null (complete spectra) when k is 0 or p.
+ */
+export function leadingSpace(m: Methods, development: readonly (readonly number[])[]): number[][] | null {
+  const n = development.length;
+  const p = development[0]?.length ?? 0;
+  const k = Math.min(50, Math.max(0, n - 2), p);
+  if (k <= 0 || k >= p) return null;
+  const pca = m.preflightPca(matrix(development), k);
+  const keep = Array.from({ length: pca.scores.cols }, (_, c) => c).filter((c) => !pca.unresolved[c]);
+  if (!keep.length) return null;
+  return Array.from({ length: n }, (_, i) => keep.map((c) => pca.scores.data[i * pca.scores.cols + c]!));
 }
 
 /** Engine monitor shape: K = min(10, n_r) folds and k = min(10, n_r − ceil(n_r / K) − 1, p). */
@@ -236,17 +294,7 @@ export async function computeDiagnostics(pop: DomainPopulations, opts: SpaceOpti
   const notes: string[] = [];
   const full = (us: readonly Unit[]) => us.map((u) => u.spectrum);
   // Leading label-free PCA space of every development unit (factor comparisons), as the engine.
-  let reduced: number[][] | null = null;
-  if (!opts.audit && !(opts.energyOnSpectra && opts.monitorOnSpectra)) {
-    const n = pop.development.length;
-    const p = pop.axis.length;
-    const k = Math.min(50, Math.max(0, n - 2), p);
-    if (k > 0 && k < p) {
-      const pca = m.preflightPca(matrix(full(pop.development)), k);
-      const keep = Array.from({ length: pca.scores.cols }, (_, c) => c).filter((c) => !pca.unresolved[c]);
-      if (keep.length) reduced = Array.from({ length: n }, (_, i) => keep.map((c) => pca.scores.data[i * pca.scores.cols + c]!));
-    }
-  }
+  const reduced = !opts.audit && !(opts.energyOnSpectra && opts.monitorOnSpectra) ? leadingSpace(m, full(pop.development)) : null;
   const index = new Map(pop.development.map((u, i) => [u, i]));
   const inSpace = (us: readonly Unit[], onSpectra: boolean) => (reduced && !onSpectra ? us.map((u) => reduced![index.get(u)!]!) : full(us));
   const refMon = inSpace(pop.reference, opts.monitorOnSpectra);
@@ -270,6 +318,30 @@ export async function computeDiagnostics(pop: DomainPopulations, opts: SpaceOpti
       folds,
     };
   } else notes.push("Fewer than three reference units: no individual T²/Q.");
+
+  // Residual spectral profiles of the units above the Q limit, in complete spectra with the monitor's components.
+  let residuals: ResidualProfiles | null = null;
+  if (monitor) {
+    const high = monitor.comparedQ.map((q, i) => ({ q, i })).filter((x) => x.q > monitor!.qLimit).sort((a, b) => b.q - a.q);
+    if (high.length) {
+      const refFull = full(pop.reference);
+      const shown = high.slice(0, MAX_RESIDUAL_PROFILES).map((x) => x.i);
+      const profiles = referenceResiduals(m, refFull, shown.map((i) => pop.compared[i]!.spectrum), monitor.components);
+      const refRes = referenceResiduals(m, refFull, refFull, monitor.components);
+      const p = pop.axis.length;
+      const band = (q: number) => Array.from({ length: p }, (_, c) => sortedQuantile(refRes.map((r) => r[c]!).sort((a, b) => a - b), q)!);
+      residuals = {
+        components: monitor.components,
+        units: shown,
+        total: high.length,
+        profiles,
+        q: profiles.map((r) => r.reduce((a, v) => a + v * v, 0)),
+        sameSpace: !reduced || opts.monitorOnSpectra,
+        refP5: band(0.05),
+        refP95: band(0.95),
+      };
+    }
+  }
 
   // Overlap plot: PCA fitted on the reference units only (complete spectra), compared units projected.
   let overlap: OverlapResult | null = null;
@@ -306,5 +378,5 @@ export async function computeDiagnostics(pop: DomainPopulations, opts: SpaceOpti
     neighbours = neighbourSummary(D, N, refE.length);
     energy = energyBenchmark(D, N, refE.length, cmpE.length, engineEnergy, (n, b) => m.randomPermutations(ENERGY_SEED, n, b));
   }
-  return { space: reduced ? "leading_pca" : "complete_spectra", monitor, overlap, neighbours, energy, notes };
+  return { space: reduced ? "leading_pca" : "complete_spectra", monitor, residuals, overlap, neighbours, energy, notes };
 }

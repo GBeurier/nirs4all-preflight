@@ -15,14 +15,16 @@ const scopeOf = (x: (number | null)[][]): Scope =>
   }) as Scope;
 
 describe("PreprocessingExplorer (static render)", () => {
-  it("states its denominators and the unavailable steps", () => {
+  it("states its denominators, the local steps and the chemometric opt-in", () => {
     const x: (number | null)[][] = Array.from({ length: 6 }, (_, i) => Array.from({ length: 40 }, (_, j) => 1 + 0.01 * i + Math.sin(j / 5)));
     x[2]![3] = null;
     const html = renderToStaticMarkup(<PreprocessingExplorer scope={scopeOf(x)} />);
     expect(html).toContain("Computed on 5 of 6 spectra");
     expect(html).toContain("Median filter");
     expect(html).toContain("Despiking");
-    expect(html).toContain("Chemometric validation (optional, not available)");
+    expect(html).toContain("computed locally in the demo (interim");
+    expect(html).toContain("Chemometric validation (optional)");
+    expect(html).toContain("No target is declared");
     expect(html).toContain("Impact on spectral characteristics");
     expect(html).toContain("Noise reduction vs spectral distortion");
     expect(html).not.toContain("Zone");

@@ -9,7 +9,7 @@ import { AlignedTracks, type BandSelection, type Track } from "../repeatability/
 import { bandProfiles } from "../repeatability/profiles";
 import { Responsive } from "../shared/charts";
 import { bandSd, meanSpectrum } from "./bandStats";
-import { useCharacterizationSelection } from "./selection";
+import { useCharacterizationSelection, useSharedCursor } from "./selection";
 import { PHASES, RUBRICS } from "./strings";
 import "./overview.css";
 
@@ -37,6 +37,7 @@ export function detailedTracks(scope: Pick<Scope, "view" | "input" | "sourceId">
 export function DetailedProfiles(scope: Scope) {
   const { view, input, sourceId } = scope;
   const shared = useCharacterizationSelection();
+  const [cursor, setCursor] = useSharedCursor(sourceId);
   const tracks = useMemo(() => detailedTracks({ view, input, sourceId }), [view, input, sourceId]);
   const source = input.sources.find((s) => s.source_id === sourceId);
   if (!source || !sourceId || tracks.length < 2) return null;
@@ -55,6 +56,8 @@ export function DetailedProfiles(scope: Scope) {
               title={`${PHASES.detailedTitle} — ${sourceId}`}
               selection={own ? { i0: own.i0, i1: own.i1 } : null}
               onSelect={(sel: BandSelection | null) => shared.select(sel ? { sourceId, ...sel } : null)}
+              cursor={cursor}
+              onCursor={setCursor}
             />
           )}
         </Responsive>

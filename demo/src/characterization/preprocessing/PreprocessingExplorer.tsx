@@ -11,7 +11,6 @@ import { ChartCard, EmptyState, Legend, ParetoScatter, PrincipleIllustration, Re
 import {
   STEP_KINDS,
   STEP_SPECS,
-  UNAVAILABLE_STEPS,
   coerceParam,
   newStep,
   pipelineLabel,
@@ -27,7 +26,8 @@ import { impactRows, type ImpactRow } from "./impact";
 import { bandDescriptor, medianOf, paretoFront, row, type BandDescriptor, type Matrix } from "./metrics";
 import { CancelledError, StaleError, createExplorerHost, spawnExplorerWorker, type ExplorerHost } from "./protocol";
 import { PairedDistribution } from "./charts";
-import { publishDistortionProfile } from "./distortion";
+import { ChemometricPanel } from "./ChemometricPanel";
+import { bandDiagnostics, publishDistortionProfile } from "./distortion";
 import { DEFINITIONS, PRECAUTIONS, S, WORKFLOW } from "./strings";
 import "./preprocessing.css";
 
@@ -66,7 +66,7 @@ const pick = (m: Matrix, idx: number[]) => idx.map((i) => Array.from(row(m, i)))
 const anyPositive = (xs: readonly number[] | undefined) => !!xs?.some((v) => v > 0);
 
 export function PreprocessingExplorer({ scope }: { scope: Scope }) {
-  const { input, sourceId, locale } = scope;
+  const { input, sourceId, targetId, locale } = scope;
   const data = useMemo(() => prepareExplorerData(input, sourceId), [input, sourceId]);
   const settings = useMemo(() => diagnosticSettings(input), [input]);
   const evalInput = useMemo<EvaluationInput | null>(
@@ -140,13 +140,22 @@ export function PreprocessingExplorer({ scope }: { scope: Scope }) {
   const currentLabel = pipelineLabel(steps);
   const label = result?.label ?? currentLabel;
   useEffect(() => {
-    if (!data || !evaluation?.distortion) {
+    if (!data || !evaluation || !before) {
       publishDistortionProfile(null);
       return;
     }
-    publishDistortionProfile({ sourceId: data.sourceId, axis: data.axis, values: evaluation.distortion, label: result!.label, n: data.counts.used, fineScaleReductionPercent: evaluation.metrics.fineScaleReduction.value });
+    const n = data.counts.used;
+    publishDistortionProfile({
+      sourceId: data.sourceId,
+      axis: data.axis,
+      values: evaluation.distortion,
+      label: result!.label,
+      n,
+      fineScaleReductionPercent: evaluation.metrics.fineScaleReduction.value,
+      bands: { raw: bandDiagnostics(before, n), processed: bandDiagnostics(evaluation.after, n), preservesUnits: evaluation.preservesUnits, comparability: evaluation.comparability },
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evaluation, data]);
+  }, [evaluation, data, before]);
   useEffect(() => () => publishDistortionProfile(null), []);
 
   // Drawn spectra: evenly spaced rows of the subset (deterministic).
@@ -338,7 +347,7 @@ export function PreprocessingExplorer({ scope }: { scope: Scope }) {
         <ol className="pp-flow" aria-label={S.workflowLabel}>
           {WORKFLOW.map((w) => (
             <li key={w.n} className={w.href ? "" : "pp-flow-off"}>
-              {w.href ? <a href={w.href}><b>{w.n}. {w.title}</b><span>{w.caption}</span></a> : <span className="pp-flow-static" title={S.chemometricNote}><b>{w.n}. {w.title}</b><span>{w.caption}</span></span>}
+              {w.href ? <a href={w.href}><b>{w.n}. {w.title}</b><span>{w.caption}</span></a> : <span className="pp-flow-static"><b>{w.n}. {w.title}</b><span>{w.caption}</span></span>}
             </li>
           ))}
         </ol>
@@ -397,10 +406,9 @@ export function PreprocessingExplorer({ scope }: { scope: Scope }) {
             <select value="" onChange={(e) => e.target.value && setSteps((prev) => [...prev, newStep(e.target.value as StepKind)])}>
               <option value="">Choose a method…</option>
               {STEP_KINDS.map((k) => <option key={k} value={k}>{STEP_SPECS[k].label}</option>)}
-              {UNAVAILABLE_STEPS.map((u) => <option key={u.kind} value="" disabled>{`${u.label} (${S.unavailable})`}</option>)}
             </select>
           </label>
-          <p className="pp-note" title={UNAVAILABLE_STEPS.map((u) => u.reason).join(" ")}>{`${UNAVAILABLE_STEPS.map((u) => u.label).join(" and ")}: not in @nirs4all/methods 1.5.0 (owner debt).`}</p>
+          <p className="pp-note">{S.localSteps}</p>
           <label className="pp-param">
             <span className="pp-param-row"><span>{S.shownSpectra}</span><b>{Math.min(shown, n)}</b></span>
             <input type="range" min={1} max={Math.min(32, n)} value={Math.min(shown, n)} onChange={(e) => setShown(Number(e.target.value))} />
@@ -535,7 +543,10 @@ export function PreprocessingExplorer({ scope }: { scope: Scope }) {
         ) : null}
       </ChartCard>
 
-      {/* 6. Reference material, collapsed */}
+      {/* 6. Optional chemometric validation (explicit opt-in) */}
+      <ChemometricPanel input={input} sourceId={sourceId} targetId={targetId} host={hostRef.current!} steps={recipe} label={currentLabel} onCancel={cancelBenchmark} locale={locale} />
+
+      {/* 7. Reference material, collapsed */}
       <div className="pp-refs">
         <details className="pp-details">
           <summary>{S.precautions}</summary>
@@ -557,8 +568,7 @@ export function PreprocessingExplorer({ scope }: { scope: Scope }) {
           <dl className="pp-defs">{DEFINITIONS.map((d) => <div key={d.term}><dt>{d.term}</dt><dd>{d.text}</dd></div>)}</dl>
         </details>
         <details className="pp-details">
-          <summary>Chemometric validation (optional, not available)</summary>
-          <p className="pp-meta">{S.chemometricNote}</p>
+          <summary>Synthetic noise scenarios</summary>
           <p className="pp-meta">{S.syntheticNote}</p>
         </details>
       </div>
