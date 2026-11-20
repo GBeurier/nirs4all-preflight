@@ -26,3 +26,24 @@ Formulas, hypotheses and heuristic bands are documented in [../CHARACTERIZATION_
 | **Repository / Methods manifest** | Benchmark presets and unit-preservation metadata for the comparability classes. |
 | **Ecosystem / Datasets catalogue** | Instrument SNR reference data (`integrity/instruments.ts`), with source snapshots. Instrument/manufacturer/representation metadata for public datasets (hand-curated `CATALOGUE` in `demo/scripts/noise-benchmark.test.ts`, from nirs4all-data documentation) and the empirical noise benchmark computed over the catalogue. |
 | **Demo** | Register the remaining characterization strings in `i18n.ts` (wave 3 did overview/ and the repeatability leads). Wave 3 added the shared context selector, the shared hover cursor and the Raw / Preprocessed quality map (see the overview note). Deduplicate `bandEnvelope` (integrity and repeatability). Move the main-thread Methods load for residuals into the engine worker. |
+
+## Data debt — Anopheles oocyst split (2026-11-20, to resume)
+
+The retained-test split of the Maia et al. Anopheles oocyst data (Harvard Dataverse
+`10.7910/DVN/YD34OX`) was defective in every derived copy, because they all come from an
+earlier standardized "BACON" export. Of its 106 "test" rows, 59 copy oocyst calibration
+spectra (labels disagree in 26 pairs) and 47 are sporozoite calibration spectra. None is an
+oocyst validation spectrum. The evidence is row matching against the authors' MD5-verified
+`.tdfx` calibration files.
+
+| Copy | State | Next step |
+| --- | --- | --- |
+| Preflight demo (`demo/src/data/demo/anopheles/`) | **Fixed** in #20: rebuilt 227/106 from the original archive with `demo/scripts/build-anopheles-extract.py` (takes `dataverse_files.zip`, checks the Dataverse MD5s, labels y = `actual` − 1); `SOURCES.md` records the correction | — |
+| nirs4all-datasets `harvard_dataverse_malaria_anopheles_gambiae_nir` (rebuilt from the BACON export) | Defective. A "Known data defects (tracked debt)" note is written in `docs/PUBLIC_ORIGIN_LOADING.md` but **not committed** (that checkout carries unrelated in-progress release changes) | Commit the note; rebuild from the original-source recipe with a guestbook response (guestbook 293), keeping the 227/106 split |
+| nirs4all-data `regression/MALARIA/Malaria_Oocist_333_Maia` | Defective (same 59 + 47 pattern) | Regenerate from the original archive (the Preflight generator can be reused) |
+| nirs4all-data `classification/MALARIA/Oocist2C_333_Maia_Acc87.6` | Defective (all 106 test rows equal calibration spectra) | Same |
+| nirs4all-web demo `web-app/src/data/demo/anopheles` | Defective (bundled from the BACON export, commit 38ebfca) | Replace with the corrected Preflight extract and its provenance |
+
+Until these copies are fixed, consumers must not use their test split as a hold-out.
+The original archive is guestbook-gated: anyone can download it after declaring
+name, email, institution and intended use. The raw archive is never committed.
