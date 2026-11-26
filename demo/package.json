@@ -13,7 +13,7 @@
     "test:browser": "node scripts/dataset-smoke.mjs"
   },
   "dependencies": {
-    "@nirs4all/formats-wasm": "^0.2.0",
+    "@nirs4all/formats-wasm": "^0.3.0",
     "@nirs4all/io-wasm": "^0.3.0",
     "@nirs4all/methods": "~1.5.0",
     "@nirs4all/preflight": "file:../bindings/wasm",
